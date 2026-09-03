@@ -24,6 +24,66 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
             try expect(stopped.name == .stop, "Stop was not parsed")
             try expect(stopped.lastAssistantMessagePresent, "assistant message presence was not captured")
         },
+        CodexBarTestCase(name: "summarizes apply_patch without retaining raw input") {
+            let fullPath = "/Users/example/private-client/Sources/CodexBarCore/TaskStore.swift"
+            let exampleSecret = "example-private-token"
+            let patch = """
+            *** Begin Patch
+            *** Update File: \(fullPath)
+            @@
+            -let token = "\(exampleSecret)"
+            +let token = "replacement"
+            *** End Patch
+            """
+            let input = try JSONSerialization.data(withJSONObject: [
+                "session_id": "session-A",
+                "turn_id": "turn-1",
+                "cwd": "/tmp/project-alpha",
+                "hook_event_name": "PreToolUse",
+                "tool_name": "apply_patch",
+                "tool_use_id": "tool-apply-1",
+                "tool_input": ["patch": patch],
+                "timestamp": fixedNow.timeIntervalSince1970
+            ])
+
+            let event = try CodexHookEventParser(now: { fixedNow }).parse(input)
+            let activity = try require(event.activity, "apply_patch activity is missing")
+
+            try expect(event.name == .preToolUse, "PreToolUse was not parsed")
+            try expect(event.toolUseID == "tool-apply-1", "tool_use_id was not parsed")
+            try expect(activity.kind == .edit, "apply_patch was not classified as an edit")
+            try expect(activity.safeSubject == "TaskStore.swift", "edit subject is not useful")
+            try expect(event.timestamp == fixedNow, "activity timestamp is wrong")
+
+            let encoded = String(decoding: try JSONEncoder.codexBar.encode(event), as: UTF8.self)
+            try expect(!encoded.contains(fullPath), "full file path was retained")
+            try expect(!encoded.contains(exampleSecret), "patch secret was retained")
+            try expect(!encoded.contains("*** Begin Patch"), "raw patch was retained")
+            try expect(!encoded.contains("replacement"), "patch body was retained")
+        },
+        CodexBarTestCase(name: "classifies Swift tests and keys IDs by tool use") {
+            func payload(toolUseID: String) throws -> Data {
+                try JSONSerialization.data(withJSONObject: [
+                    "session_id": "session-A",
+                    "turn_id": "turn-1",
+                    "cwd": "/tmp/project-alpha",
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "Bash",
+                    "tool_use_id": toolUseID,
+                    "tool_input": ["command": "swift test --filter HookParsingTests"],
+                    "timestamp": fixedNow.timeIntervalSince1970
+                ])
+            }
+            let parser = CodexHookEventParser(now: { fixedNow })
+
+            let first = try parser.parse(payload(toolUseID: "tool-test-1"))
+            let second = try parser.parse(payload(toolUseID: "tool-test-2"))
+
+            try expect(first.activity?.kind == .test, "Swift test command was not classified as a test")
+            try expect(first.toolUseID == "tool-test-1", "first tool_use_id is wrong")
+            try expect(second.toolUseID == "tool-test-2", "second tool_use_id is wrong")
+            try expect(first.id != second.id, "different tool_use_id values produced the same event ID")
+        },
         CodexBarTestCase(name: "tolerates missing hook fields") {
             let event = try CodexHookEventParser(now: { fixedNow }).parse(Data("{}".utf8))
 
