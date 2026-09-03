@@ -14,6 +14,7 @@ struct CodexBarTestRunner {
         tests += privacyStaticTestCases()
         tests += windowTitleMatchingTestCases()
         tests += windowActivationSequencingTestCases()
+        tests += taskOpeningTestCases()
         tests += startupReconciliationTestCases()
         tests += taskRecoveryThrottleTestCases()
         tests += appServerSnapshotSourceTestCases()
