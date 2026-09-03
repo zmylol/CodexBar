@@ -7,6 +7,7 @@ struct TaskListView: View {
 
     @ObservedObject var model: CodexBarAppModel
     @ObservedObject private var store: TaskStore
+    @ObservedObject private var activityStore: LiveTaskActivityStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -22,6 +23,7 @@ struct TaskListView: View {
     ) {
         self.model = model
         self.store = model.store
+        self.activityStore = model.activityStore
         self.onTaskHoverChanged = onTaskHoverChanged
         self.onTaskFocusChanged = onTaskFocusChanged
         self.onDismissTaskDetail = onDismissTaskDetail
@@ -128,6 +130,7 @@ struct TaskListView: View {
                         ForEach(sortedTasks, id: \.cwd) { task in
                             CompactTaskRow(
                                 task: task,
+                                activitySummary: activityStore.nodes(for: task).last?.summary,
                                 coordinateSpaceName: Self.coordinateSpaceName,
                                 action: { model.activate(task) },
                                 deleteAction: { model.remove(task) },
@@ -180,6 +183,7 @@ private struct CompactTaskRow: View {
     }
 
     let task: CodexTask
+    let activitySummary: String?
     let coordinateSpaceName: String
     let action: () -> Void
     let deleteAction: () -> Void
@@ -196,6 +200,9 @@ private struct CompactTaskRow: View {
                 for: task,
                 relativeTo: context.date
             )
+            let accessibilityActivityText = activitySummary.map {
+                "，最近动作，\($0)"
+            } ?? ""
 
             GeometryReader { geometry in
                 let rowMidY = geometry.frame(in: .named(coordinateSpaceName)).midY
@@ -229,6 +236,7 @@ private struct CompactTaskRow: View {
                     )
                     .accessibilityValue(
                         "\(task.isUnread ? "未读，" : "")\(accessibilityTimeText)"
+                            + accessibilityActivityText
                     )
                     .accessibilityHint("打开对应的 Codex 任务")
                     .accessibilityInputLabels([task.workspaceName, task.title])
@@ -297,56 +305,51 @@ private struct CompactTaskRow: View {
 }
 
 struct TaskHoverDetailView: View {
-    let task: CodexTask
+    @ObservedObject private var store: TaskStore
+    @ObservedObject private var activityStore: LiveTaskActivityStore
+
+    let cwd: String
     let onOpen: () -> Void
     let onHoverChanged: (Bool) -> Void
     let onDismiss: () -> Void
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
+    init(
+        store: TaskStore,
+        activityStore: LiveTaskActivityStore,
+        cwd: String,
+        onOpen: @escaping () -> Void,
+        onHoverChanged: @escaping (Bool) -> Void,
+        onDismiss: @escaping () -> Void
+    ) {
+        self.store = store
+        self.activityStore = activityStore
+        self.cwd = cwd
+        self.onOpen = onOpen
+        self.onHoverChanged = onHoverChanged
+        self.onDismiss = onDismiss
+    }
+
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 7) {
-                    Image(systemName: task.status.symbolName)
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(task.status.color)
-                    Text(task.workspaceName)
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                    Text(task.status.label)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(task.status.color)
+        Group {
+            if let task = store.tasks.first(where: { $0.cwd == cwd }) {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    detailContent(
+                        task: task,
+                        nodes: activityStore.nodes(for: task),
+                        relativeTo: context.date
+                    )
                 }
-
-                Text(task.title)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                Text(detailTimeText(relativeTo: context.date))
-                    .font(.system(size: 10).monospacedDigit())
-                    .foregroundStyle(.secondary)
-
-                Divider().opacity(0.32)
-
-                Button(action: onOpen) {
-                    Label("打开 VS Code", systemImage: "arrow.up.forward.app")
-                        .font(.system(size: 11, weight: .medium))
-                        .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+            } else {
+                Color.clear
             }
-            .padding(12)
-            .frame(
-                width: CodexBarPanelLayout.detailWidth,
-                height: CodexBarPanelLayout.detailHeight,
-                alignment: .topLeading
-            )
         }
+        .frame(
+            width: CodexBarPanelLayout.detailWidth,
+            height: CodexBarPanelLayout.detailHeight,
+            alignment: .topLeading
+        )
         .background {
             if reduceTransparency {
                 Color(nsColor: .windowBackgroundColor)
@@ -364,7 +367,89 @@ struct TaskHoverDetailView: View {
         .accessibilityHidden(true)
     }
 
-    private func detailTimeText(relativeTo date: Date) -> String {
+    private func detailContent(
+        task: CodexTask,
+        nodes: [CodexTaskActivity],
+        relativeTo date: Date
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 7) {
+                Image(systemName: task.status.symbolName)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(task.status.color)
+                Text(task.workspaceName)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Text(task.status.label)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(task.status.color)
+            }
+
+            Text(task.title)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            activityList(nodes, status: task.status, accent: task.status.color)
+                .frame(maxWidth: .infinity, minHeight: 48, alignment: .topLeading)
+
+            Divider().opacity(0.32)
+
+            HStack(spacing: 6) {
+                Text(detailTimeText(for: task, relativeTo: date))
+                    .font(.system(size: 10).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Button(action: onOpen) {
+                    Label("打开", systemImage: "arrow.up.forward.app")
+                        .font(.system(size: 11, weight: .medium))
+                        .frame(minHeight: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(12)
+    }
+
+    @ViewBuilder
+    private func activityList(
+        _ nodes: [CodexTaskActivity],
+        status: CodexTaskStatus,
+        accent: Color
+    ) -> some View {
+        if nodes.isEmpty {
+            Label(
+                status == .ready ? "暂无实时动作" : "等待 Codex 执行动作…",
+                systemImage: status == .ready ? "minus" : "ellipsis"
+            )
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+        } else {
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(nodes) { node in
+                    HStack(spacing: 6) {
+                        Image(systemName: node.kind.symbolName)
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(node.id == nodes.last?.id ? accent : .secondary)
+                            .frame(width: 10)
+                        Text(node.summary)
+                            .font(.system(
+                                size: 10,
+                                weight: node.id == nodes.last?.id ? .medium : .regular
+                            ))
+                            .foregroundStyle(node.id == nodes.last?.id ? .primary : .secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+        }
+    }
+
+    private func detailTimeText(for task: CodexTask, relativeTo date: Date) -> String {
         let timeText = CodexTaskTimeFormatter.text(for: task, relativeTo: date)
         switch task.status {
         case .running:
@@ -373,6 +458,23 @@ struct TaskHoverDetailView: View {
             return "\(timeText)需要处理"
         case .ready:
             return "\(timeText)变为可查看"
+        }
+    }
+}
+
+private extension CodexTaskActivityKind {
+    var symbolName: String {
+        switch self {
+        case .read:
+            return "doc.text"
+        case .search:
+            return "magnifyingglass"
+        case .edit:
+            return "pencil"
+        case .test:
+            return "checkmark.diamond"
+        case .command:
+            return "terminal"
         }
     }
 }

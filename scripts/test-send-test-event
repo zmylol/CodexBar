@@ -16,13 +16,18 @@ workspace="$test_root/projects/project-alpha"
 "$script_dir/send-test-event" attention "$workspace"
 "$script_dir/send-test-event" ready "$workspace"
 
-events=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
-[[ ${#events} == 4 ]]
-/usr/bin/grep -l 'UserPromptSubmit' "$events[@]" >/dev/null
-/usr/bin/grep -l 'PreToolUse' "$events[@]" >/dev/null
-/usr/bin/grep -l '"toolUseID"' "$events[@]" >/dev/null
-/usr/bin/grep -l 'PermissionRequest' "$events[@]" >/dev/null
-/usr/bin/grep -l 'Stop' "$events[@]" >/dev/null
+lifecycle_events=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
+activity_events=("$CODEXBAR_SUPPORT_ROOT/Activity"/*.json(N))
+[[ ${#lifecycle_events} == 3 ]]
+[[ ${#activity_events} == 1 ]]
+/usr/bin/grep -l 'UserPromptSubmit' "$lifecycle_events[@]" >/dev/null
+/usr/bin/grep -l 'PreToolUse' "$activity_events[@]" >/dev/null
+if /usr/bin/grep -q 'manual-swift-test' "$activity_events[@]"; then
+    print -u2 "Raw tool_use_id leaked into the transient activity event"
+    exit 1
+fi
+/usr/bin/grep -l 'PermissionRequest' "$lifecycle_events[@]" >/dev/null
+/usr/bin/grep -l 'Stop' "$lifecycle_events[@]" >/dev/null
 
 if "$script_dir/send-test-event" unsupported "$workspace" >/dev/null 2>&1; then
     print -u2 "Unsupported simulated state unexpectedly succeeded"

@@ -70,6 +70,7 @@ function run(argv) {
     const expectedEvents = ["PermissionRequest", "PreToolUse", "Stop", "UserPromptSubmit"];
     const foundEvents = [];
     const asyncEvents = [];
+    const activityMatchers = [];
 
     Object.keys(configuration.hooks).forEach(function (eventName) {
         const groups = configuration.hooks[eventName];
@@ -88,6 +89,9 @@ function run(argv) {
                     if (handler.async === true) {
                         asyncEvents.push(eventName);
                     }
+                    if (eventName === "PreToolUse") {
+                        activityMatchers.push(group.matcher);
+                    }
                 }
             });
         });
@@ -99,6 +103,10 @@ function run(argv) {
     }
     if (JSON.stringify(asyncEvents) !== JSON.stringify(["PreToolUse"])) {
         throw new Error("Only PreToolUse may be asynchronous, got: " + asyncEvents.join(", "));
+    }
+    const expectedMatcher = "^(Bash|apply_patch|Edit|Write|Read|read_file|Grep|Glob|rg|search|view_image)$";
+    if (JSON.stringify(activityMatchers) !== JSON.stringify([expectedMatcher])) {
+        throw new Error("PreToolUse matcher is missing or broader than the activity allowlist");
     }
 }
 JXA

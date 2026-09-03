@@ -1,6 +1,9 @@
 import Foundation
 
 public struct InboxWriter {
+    private static let maximumPendingActivityEvents = 12
+    private static let maximumActivityEventBytes = 4 * 1_024 * 1_024
+
     private let paths: CodexBarPaths
     private let fileManager: FileManager
 
@@ -12,11 +15,15 @@ public struct InboxWriter {
     @discardableResult
     public func write(_ event: CodexHookEvent) throws -> URL {
         try paths.prepareEventDirectories(fileManager: fileManager)
+        if event.name == .userPromptSubmit {
+            removeQueuedActivity(forCWD: event.cwd)
+        }
 
         let eventData = try JSONEncoder.codexBar.encode(event)
         let stem = "\(filenameTimestamp(event.timestamp))_\(UUID().uuidString.lowercased())"
-        let temporaryURL = paths.inbox.appendingPathComponent(".\(stem).tmp")
-        let finalURL = paths.inbox.appendingPathComponent("\(stem).json")
+        let destination = event.name == .preToolUse ? paths.activity : paths.inbox
+        let temporaryURL = destination.appendingPathComponent(".\(stem).tmp")
+        let finalURL = destination.appendingPathComponent("\(stem).json")
 
         guard fileManager.createFile(
             atPath: temporaryURL.path,
@@ -32,7 +39,69 @@ public struct InboxWriter {
             ofItemAtPath: temporaryURL.path
         )
         try fileManager.moveItem(at: temporaryURL, to: finalURL)
+        if event.name == .preToolUse {
+            trimPendingActivity(preserving: finalURL)
+        }
         return finalURL
+    }
+
+    private func removeQueuedActivity(forCWD cwd: String?) {
+        guard let cwd = canonicalCWD(cwd),
+              let urls = try? fileManager.contentsOfDirectory(
+                  at: paths.activity,
+                  includingPropertiesForKeys: nil,
+                  options: [.skipsHiddenFiles]
+              )
+        else {
+            return
+        }
+        for url in urls where url.pathExtension.lowercased() == "json" {
+            guard let resourceValues = try? url.resourceValues(
+                forKeys: [.fileSizeKey, .isRegularFileKey]
+            ),
+                  resourceValues.isRegularFile == true,
+                  (resourceValues.fileSize ?? Int.max) <= Self.maximumActivityEventBytes,
+                  let data = try? Data(contentsOf: url),
+                  let event = try? JSONDecoder.codexBar.decode(CodexHookEvent.self, from: data),
+                  let eventCWD = canonicalCWD(event.cwd)
+            else {
+                try? fileManager.removeItem(at: url)
+                continue
+            }
+            if eventCWD == cwd {
+                try? fileManager.removeItem(at: url)
+            }
+        }
+    }
+
+    private func trimPendingActivity(preserving finalURL: URL) {
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: paths.activity,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+        let files = urls
+            .filter { $0.pathExtension.lowercased() == "json" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        var excess = max(0, files.count - Self.maximumPendingActivityEvents)
+        for url in files where excess > 0 && url != finalURL {
+            if (try? fileManager.removeItem(at: url)) != nil {
+                excess -= 1
+            }
+        }
+    }
+
+    private func canonicalCWD(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty,
+              value.count <= 4_096,
+              (value as NSString).isAbsolutePath
+        else {
+            return nil
+        }
+        return (value as NSString).standardizingPath
     }
 
     private func filenameTimestamp(_ date: Date) -> String {
@@ -58,6 +127,8 @@ public struct CodexHookProbeRecord: Codable, Equatable, Sendable {
     public let prompt: String?
     public let lastAssistantMessage: String?
     public let toolName: String?
+    public let activityKind: CodexTaskActivityKind?
+    public let activitySubject: String?
     public let timestamp: Date
 
     public init(event: CodexHookEvent) {
@@ -68,6 +139,8 @@ public struct CodexHookProbeRecord: Codable, Equatable, Sendable {
         self.prompt = event.promptSummary
         self.lastAssistantMessage = event.lastAssistantMessagePresent ? "[REDACTED]" : nil
         self.toolName = event.toolName
+        self.activityKind = event.activity?.kind
+        self.activitySubject = event.activity?.safeSubject
         self.timestamp = event.timestamp
     }
 }

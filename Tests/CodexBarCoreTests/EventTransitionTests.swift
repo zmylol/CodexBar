@@ -109,7 +109,7 @@ func eventTransitionTestCases() -> [CodexBarTestCase] {
                 toolUseID: "matching",
                 timestamp: 103,
                 toolInput: [
-                    "patch": "*** Begin Patch\n*** Update File: /tmp/project-alpha/TaskStore.swift\n*** End Patch"
+                    "command": "*** Begin Patch\n*** Update File: /tmp/project-alpha/TaskStore.swift\n*** End Patch"
                 ]
             )
             try expect(
@@ -130,6 +130,39 @@ func eventTransitionTestCases() -> [CodexBarTestCase] {
                 node.occurredAt == Date(timeIntervalSince1970: 103),
                 "activity node timestamp is wrong"
             )
+        },
+        CodexBarTestCase(name: "revalidates an activity summary loaded from disk") {
+            let taskStore = TaskStore()
+            let activityStore = LiveTaskActivityStore()
+            let start = event(.userPromptSubmit, timestamp: 100, prompt: "Validate activity")
+            _ = try await taskStore.apply(start)
+            _ = activityStore.apply(start, deliveryID: "delivery-start", currentTasks: taskStore.tasks)
+            let injected = CodexHookEvent(
+                id: "event-injected",
+                sessionID: "session-A",
+                turnID: "turn-1",
+                cwd: "/tmp/project-alpha",
+                name: .preToolUse,
+                promptSummary: nil,
+                toolName: "Read",
+                timestamp: Date(timeIntervalSince1970: 101),
+                lastAssistantMessagePresent: false,
+                activity: CodexHookActivitySummary(
+                    kind: .read,
+                    safeSubject: "secret=example-private-value\u{202E}File.swift"
+                )
+            )
+
+            _ = activityStore.apply(
+                injected,
+                deliveryID: "delivery-injected",
+                currentTasks: taskStore.tasks
+            )
+
+            let task = try require(taskStore.tasks.first, "active task is missing")
+            let summary = try require(activityStore.nodes(for: task).first?.summary, "summary is missing")
+            try expect(!summary.contains("example-private-value"), "injected secret reached the UI")
+            try expect(!summary.contains("\u{202E}"), "injected bidi control reached the UI")
         },
         CodexBarTestCase(name: "keeps three nodes and replaces adjacent activity kinds") {
             let taskStore = TaskStore()
@@ -172,7 +205,7 @@ func eventTransitionTestCases() -> [CodexBarTestCase] {
                 toolUseID: "edit",
                 timestamp: 104,
                 toolInput: [
-                    "patch": "*** Begin Patch\n*** Update File: /tmp/project-alpha/C.swift\n*** End Patch"
+                    "command": "*** Begin Patch\n*** Update File: /tmp/project-alpha/C.swift\n*** End Patch"
                 ]
             )
             let command = try parsedActivityEvent(
@@ -243,6 +276,85 @@ func eventTransitionTestCases() -> [CodexBarTestCase] {
             )
             try expect(activityStore.nodes(for: completedTask) == frozenNodes, "late activity changed frozen nodes")
         },
+        CodexBarTestCase(name: "keeps activity when a continued turn stops with a new turn id") {
+            let taskStore = TaskStore()
+            let activityStore = LiveTaskActivityStore()
+            let start = event(
+                .userPromptSubmit,
+                session: "same-session",
+                turn: "initial-turn",
+                timestamp: 100,
+                prompt: "Finish with a continued turn"
+            )
+            _ = try await taskStore.apply(start)
+            _ = activityStore.apply(start, deliveryID: "delivery-start", currentTasks: taskStore.tasks)
+            let edit = try parsedActivityEvent(
+                toolName: "apply_patch",
+                toolUseID: "edit-before-stop",
+                session: "same-session",
+                turn: "initial-turn",
+                timestamp: 110,
+                toolInput: [
+                    "command": "*** Begin Patch\n*** Update File: /tmp/project-alpha/Continued.swift\n*** End Patch"
+                ]
+            )
+            _ = activityStore.apply(edit, deliveryID: "delivery-edit", currentTasks: taskStore.tasks)
+
+            let stop = event(
+                .stop,
+                session: "same-session",
+                turn: "continued-turn",
+                timestamp: 120
+            )
+            _ = try await taskStore.apply(stop)
+            _ = activityStore.apply(stop, deliveryID: "delivery-stop", currentTasks: taskStore.tasks)
+
+            let completedTask = try require(taskStore.tasks.first, "continued task is missing")
+            let node = try require(
+                activityStore.nodes(for: completedTask).first,
+                "continued stop discarded the activity trace"
+            )
+            try expect(completedTask.turnID == "continued-turn", "test did not exercise a continued turn")
+            try expect(node.summary == "修改 Continued.swift", "continued trace changed during migration")
+        },
+        CodexBarTestCase(name: "freezes activity when recovery marks a task ready") {
+            let taskStore = TaskStore()
+            let activityStore = LiveTaskActivityStore()
+            let start = event(.userPromptSubmit, timestamp: 100, prompt: "Recover this turn")
+            _ = try await taskStore.apply(start)
+            _ = activityStore.apply(start, deliveryID: "delivery-start", currentTasks: taskStore.tasks)
+            let read = try parsedActivityEvent(
+                toolName: "Read",
+                toolUseID: "read-before-recovery",
+                timestamp: 110,
+                toolInput: ["file_path": "/tmp/project-alpha/BeforeRecovery.swift"]
+            )
+            _ = activityStore.apply(read, deliveryID: "delivery-read", currentTasks: taskStore.tasks)
+
+            _ = try await taskStore.apply(event(.stop, timestamp: 120))
+            activityStore.synchronize(with: taskStore.tasks)
+            let recoveredTask = try require(taskStore.tasks.first, "recovered task is missing")
+            let nodesBeforeLateEvent = activityStore.nodes(for: recoveredTask)
+            let late = try parsedActivityEvent(
+                toolName: "Bash",
+                toolUseID: "late-after-recovery",
+                timestamp: 130,
+                toolInput: ["command": "git status --short"]
+            )
+
+            try expect(
+                !activityStore.apply(
+                    late,
+                    deliveryID: "delivery-late",
+                    currentTasks: taskStore.tasks
+                ),
+                "late activity changed a task completed by recovery"
+            )
+            try expect(
+                activityStore.nodes(for: recoveredTask) == nodesBeforeLateEvent,
+                "recovery-completed task did not freeze its trace"
+            )
+        },
         CodexBarTestCase(name: "clears activity when a new turn replaces the task") {
             let taskStore = TaskStore()
             let activityStore = LiveTaskActivityStore()
@@ -311,6 +423,26 @@ func eventTransitionTestCases() -> [CodexBarTestCase] {
                 reloadedActivityStore.nodes(for: reloadedTask).isEmpty,
                 "activity survived a LiveTaskActivityStore reload"
             )
+        },
+        CodexBarTestCase(name: "drops activity as soon as its task is removed") {
+            let taskStore = TaskStore()
+            let activityStore = LiveTaskActivityStore()
+            let start = event(.userPromptSubmit, timestamp: 100, prompt: "Remove this trace")
+            _ = try await taskStore.apply(start)
+            _ = activityStore.apply(start, deliveryID: "delivery-start", currentTasks: taskStore.tasks)
+            let read = try parsedActivityEvent(
+                toolName: "Read",
+                toolUseID: "read-before-remove",
+                timestamp: 101,
+                toolInput: ["file_path": "/tmp/project-alpha/Removed.swift"]
+            )
+            _ = activityStore.apply(read, deliveryID: "delivery-read", currentTasks: taskStore.tasks)
+            let removedTask = try require(taskStore.tasks.first, "task is missing before removal")
+
+            _ = try await taskStore.remove(taskID: removedTask.id)
+            activityStore.synchronize(with: taskStore.tasks)
+
+            try expect(activityStore.nodes(for: removedTask).isEmpty, "removed task kept its activity")
         },
         CodexBarTestCase(name: "applies an Inbox batch as one persisted state") {
             let root = FileManager.default.temporaryDirectory

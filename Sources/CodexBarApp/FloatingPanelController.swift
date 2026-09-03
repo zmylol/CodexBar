@@ -38,6 +38,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     private var detailHideTask: Task<Void, Never>?
     private var panelFrameUpdateTask: Task<Void, Never>?
     private var detailSelection = CodexBarDetailSelection()
+    private var detailTaskID: String?
     private var isDetailHovered = false
     private var isUpdatingPanelFrame = false
 
@@ -121,7 +122,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         frame.size.height = Self.height(taskCount: taskCount, noticeVisible: noticeVisible)
         frame.origin.y = topEdge - frame.height
         guard frame != panel.frame else {
-            if detailPanel.isVisible && !isDetailHovered {
+            if detailPanel.isVisible {
                 refreshTaskDetail()
             }
             return
@@ -251,25 +252,33 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         detailHideTask?.cancel()
         detailHideTask = nil
 
-        let detailView = TaskHoverDetailView(
-            task: task,
-            onOpen: { [weak self] in
-                guard let self else {
-                    return
+        if detailTaskID != task.id {
+            let cwd = task.cwd
+            let detailView = TaskHoverDetailView(
+                store: model.store,
+                activityStore: model.activityStore,
+                cwd: cwd,
+                onOpen: { [weak self] in
+                    guard let self,
+                          let currentTask = model.store.tasks.first(where: { $0.cwd == cwd })
+                    else {
+                        return
+                    }
+                    hideTaskDetail(clearTriggers: true)
+                    model.activate(currentTask)
+                },
+                onHoverChanged: { [weak self] hovering in
+                    self?.detailHoverChanged(hovering)
+                },
+                onDismiss: { [weak self] in
+                    self?.hideTaskDetail(clearTriggers: true)
                 }
-                hideTaskDetail(clearTriggers: true)
-                model.activate(task)
-            },
-            onHoverChanged: { [weak self] hovering in
-                self?.detailHoverChanged(hovering)
-            },
-            onDismiss: { [weak self] in
-                self?.hideTaskDetail(clearTriggers: true)
-            }
-        )
-        let hostingView = NSHostingView(rootView: detailView)
-        hostingView.sizingOptions = []
-        detailPanel.contentView = hostingView
+            )
+            let hostingView = NSHostingView(rootView: detailView)
+            hostingView.sizingOptions = []
+            detailPanel.contentView = hostingView
+            detailTaskID = task.id
+        }
 
         let visibleFrame = (panel.screen ?? NSScreen.main)?.visibleFrame ?? panel.frame
         let detailFrame = CodexBarPanelLayout.detailFrame(
@@ -311,6 +320,8 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         detailHideTask?.cancel()
         detailHideTask = nil
         detailPanel.orderOut(nil)
+        detailPanel.contentView = nil
+        detailTaskID = nil
         isDetailHovered = false
         if clearTriggers {
             detailSelection.clear()
@@ -321,7 +332,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         panelFrameUpdateTask = nil
         isUpdatingPanelFrame = false
         persistPanelOrigin()
-        if detailPanel.isVisible && !isDetailHovered {
+        if detailPanel.isVisible {
             refreshTaskDetail()
         }
     }

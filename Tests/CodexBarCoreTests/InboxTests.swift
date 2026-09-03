@@ -26,6 +26,196 @@ func inboxTestCases() -> [CodexBarTestCase] {
                 "written event does not round-trip"
             )
         },
+        CodexBarTestCase(name: "bounds transient activity separately and prioritizes lifecycle") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            let writer = InboxWriter(paths: paths)
+            _ = try writer.write(inboxEvent(.userPromptSubmit, timestamp: 100))
+            for index in 0..<20 {
+                _ = try writer.write(inboxActionEvent(
+                    timestamp: TimeInterval(101 + index),
+                    toolUseID: "bounded-tool-\(index)"
+                ))
+            }
+
+            let inboxFiles = try FileManager.default.contentsOfDirectory(atPath: paths.inbox.path)
+            let activityFiles = try FileManager.default.contentsOfDirectory(atPath: paths.activity.path)
+            try expect(inboxFiles.count == 1, "activity files entered the lifecycle Inbox")
+            try expect(activityFiles.count == 12, "transient activity queue exceeded its bound")
+
+            let pending = try CodexHookEventSource(paths: paths).pendingEvents()
+            try expect(pending.count == 13, "source did not read both bounded queues")
+            try expect(
+                pending.first?.event.name == .userPromptSubmit,
+                "transient activity was processed ahead of lifecycle state"
+            )
+        },
+        CodexBarTestCase(name: "new prompt clears queued activity only for its workspace") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            let writer = InboxWriter(paths: paths)
+            _ = try writer.write(inboxActionEvent(
+                timestamp: 100,
+                cwd: "/tmp/project-alpha",
+                toolUseID: "alpha-old"
+            ))
+            _ = try writer.write(inboxActionEvent(
+                timestamp: 101,
+                session: "session-B",
+                turn: "turn-B",
+                cwd: "/tmp/project-beta",
+                toolUseID: "beta-current"
+            ))
+
+            _ = try writer.write(inboxEvent(
+                .userPromptSubmit,
+                timestamp: 102,
+                session: "session-new",
+                turn: "turn-new",
+                cwd: "/tmp/project-alpha"
+            ))
+
+            let remainingActivities = try FileManager.default.contentsOfDirectory(
+                at: paths.activity,
+                includingPropertiesForKeys: nil
+            ).map { url in
+                try JSONDecoder.codexBar.decode(CodexHookEvent.self, from: Data(contentsOf: url))
+            }
+            try expect(remainingActivities.count == 1, "new prompt did not replace old workspace activity")
+            try expect(
+                remainingActivities.first?.cwd == "/tmp/project-beta",
+                "new prompt removed another workspace's current activity"
+            )
+        },
+        CodexBarTestCase(name: "new prompt removes malformed transient activity") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            try paths.prepareEventDirectories()
+            try Data("{not-json".utf8).write(
+                to: paths.activity.appendingPathComponent("malformed.json")
+            )
+
+            _ = try InboxWriter(paths: paths).write(inboxEvent(
+                .userPromptSubmit,
+                timestamp: 100
+            ))
+
+            try expect(
+                try FileManager.default.contentsOfDirectory(atPath: paths.activity.path).isEmpty,
+                "a malformed old activity survived the next prompt"
+            )
+        },
+        CodexBarTestCase(name: "does not consume activity past a lifecycle backlog") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            let writer = InboxWriter(paths: paths)
+            for index in 0..<26 {
+                _ = try writer.write(inboxEvent(
+                    .userPromptSubmit,
+                    timestamp: TimeInterval(100 + index),
+                    session: "backlog-session",
+                    turn: "turn-\(index)"
+                ))
+            }
+            _ = try writer.write(inboxActionEvent(
+                timestamp: 126,
+                session: "backlog-session",
+                turn: "turn-25",
+                toolUseID: "backlog-tool"
+            ))
+            let store = TaskStore()
+            let activityStore = LiveTaskActivityStore()
+            let processor = EventProcessor(
+                source: CodexHookEventSource(paths: paths),
+                store: store,
+                activityStore: activityStore
+            )
+
+            let firstCount = try await processor.processPending()
+            try expect(firstCount == 25, "first poll did not stop at the lifecycle bound")
+            try expect(
+                try FileManager.default.contentsOfDirectory(atPath: paths.activity.path).count == 1,
+                "activity was deleted before its prompt could be processed"
+            )
+
+            let secondCount = try await processor.processPending()
+            let task = try require(store.tasks.first, "backlog task is missing")
+            try expect(secondCount == 2, "second poll did not consume prompt and activity")
+            try expect(task.turnID == "turn-25", "backlog did not advance to its final prompt")
+            try expect(
+                activityStore.nodes(for: task).first?.kind == .test,
+                "deferred activity was not attached to its prompt"
+            )
+        },
+        CodexBarTestCase(name: "does not consume activity from a newer lifecycle snapshot") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            try paths.prepareEventDirectories()
+            let writer = InboxWriter(paths: paths)
+            let fileManager = InboxSnapshotRaceFileManager(inboxURL: paths.inbox) {
+                _ = try writer.write(inboxEvent(.userPromptSubmit, timestamp: 100))
+                _ = try writer.write(inboxActionEvent(timestamp: 101))
+            }
+            let source = CodexHookEventSource(paths: paths, fileManager: fileManager)
+
+            let firstPoll = try source.pendingEvents()
+            try expect(
+                firstPoll.allSatisfy { $0.event.name != .preToolUse },
+                "activity overtook the prompt written after the lifecycle snapshot"
+            )
+
+            let secondPoll = try source.pendingEvents()
+            try expect(secondPoll.count == 2, "the deferred prompt and activity were not both retained")
+            try expect(
+                secondPoll.map(\.event.name) == [.userPromptSubmit, .preToolUse],
+                "the deferred activity was not ordered after its prompt"
+            )
+        },
+        CodexBarTestCase(name: "treats a concurrently replaced activity file as consumed") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            let url = try InboxWriter(paths: paths).write(inboxActionEvent(timestamp: 100))
+            let source = CodexHookEventSource(paths: paths)
+            let pending = try require(
+                try source.pendingEvents().first,
+                "activity was not available before the simulated race"
+            )
+            try FileManager.default.removeItem(at: url)
+
+            try source.markProcessed(pending)
+
+            try expect(
+                try FileManager.default.contentsOfDirectory(atPath: paths.activity.path).isEmpty,
+                "concurrently removed activity was recreated"
+            )
+        },
+        CodexBarTestCase(name: "deletes malformed activity without archiving it") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            try paths.prepareEventDirectories()
+            try Data("{not-json".utf8).write(
+                to: paths.activity.appendingPathComponent("malformed.json")
+            )
+
+            let pending = try CodexHookEventSource(paths: paths).pendingEvents()
+
+            try expect(pending.isEmpty, "malformed activity became a pending event")
+            try expect(
+                try FileManager.default.contentsOfDirectory(atPath: paths.activity.path).isEmpty,
+                "malformed activity was retained in the transient queue"
+            )
+            try expect(
+                try FileManager.default.contentsOfDirectory(atPath: paths.failed.path).isEmpty,
+                "malformed activity was persisted in the Failed archive"
+            )
+        },
         CodexBarTestCase(name: "processes each inbox file once") {
             let root = temporaryDirectory()
             defer { try? FileManager.default.removeItem(at: root) }
@@ -102,6 +292,94 @@ func inboxTestCases() -> [CodexBarTestCase] {
             try expect(!taskSnapshot.contains("运行 Swift 测试"), "activity summary leaked into tasks.json")
             try expect(!taskSnapshot.contains("PreToolUse"), "activity event leaked into tasks.json")
         },
+        CodexBarTestCase(name: "keeps activity when a continued turn completes in one Inbox batch") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            let writer = InboxWriter(paths: paths)
+            _ = try writer.write(inboxEvent(
+                .userPromptSubmit,
+                timestamp: 100,
+                session: "same-session",
+                turn: "initial-turn"
+            ))
+            _ = try writer.write(inboxActionEvent(
+                timestamp: 110,
+                session: "same-session",
+                turn: "initial-turn"
+            ))
+            _ = try writer.write(inboxEvent(
+                .stop,
+                timestamp: 120,
+                session: "same-session",
+                turn: "continued-turn"
+            ))
+            let store = TaskStore()
+            let activityStore = LiveTaskActivityStore()
+            let processor = EventProcessor(
+                source: CodexHookEventSource(paths: paths),
+                store: store,
+                activityStore: activityStore
+            )
+
+            _ = try await processor.processPending()
+
+            let task = try require(store.tasks.first, "continued task is missing")
+            try expect(task.turnID == "continued-turn", "continued stop did not replace the turn")
+            try expect(
+                activityStore.nodes(for: task).first?.summary == "运行 Swift 测试",
+                "one-batch continued turn discarded its activity"
+            )
+        },
+        CodexBarTestCase(name: "does not migrate old activity into a newly prompted turn") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            let writer = InboxWriter(paths: paths)
+            let store = TaskStore()
+            let activityStore = LiveTaskActivityStore()
+            let processor = EventProcessor(
+                source: CodexHookEventSource(paths: paths),
+                store: store,
+                activityStore: activityStore
+            )
+            _ = try writer.write(inboxEvent(
+                .userPromptSubmit,
+                timestamp: 100,
+                session: "same-session",
+                turn: "old-turn"
+            ))
+            _ = try writer.write(inboxActionEvent(
+                timestamp: 110,
+                session: "same-session",
+                turn: "old-turn",
+                toolUseID: "old-tool"
+            ))
+            _ = try await processor.processPending()
+            let oldTask = try require(store.tasks.first, "old task is missing")
+            try expect(!activityStore.nodes(for: oldTask).isEmpty, "old task has no trace to reject")
+
+            _ = try writer.write(inboxEvent(
+                .userPromptSubmit,
+                timestamp: 200,
+                session: "same-session",
+                turn: "new-turn"
+            ))
+            _ = try writer.write(inboxEvent(
+                .stop,
+                timestamp: 210,
+                session: "same-session",
+                turn: "new-turn"
+            ))
+            _ = try await processor.processPending()
+
+            let newTask = try require(store.tasks.first, "new task is missing")
+            try expect(newTask.turnID == "new-turn", "new prompt did not replace the old turn")
+            try expect(
+                activityStore.nodes(for: newTask).isEmpty,
+                "newly prompted turn inherited the old turn's activity"
+            )
+        },
         CodexBarTestCase(name: "keeps one current turn when Inbox contains two turns for one cwd") {
             let root = temporaryDirectory()
             defer { try? FileManager.default.removeItem(at: root) }
@@ -154,6 +432,35 @@ func inboxTestCases() -> [CodexBarTestCase] {
             try expect(record.hookEventName == "Stop", "probe event name is wrong")
             try expect(record.lastAssistantMessage == "[REDACTED]", "assistant body was not redacted")
             try expect(!json.contains("private assistant body"), "assistant body leaked into probe")
+        },
+        CodexBarTestCase(name: "captures only a safe activity summary in probe mode") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            let privatePath = "/Users/example/private-client/ProbeOnly.swift"
+            let patchSecret = "example-secret-from-patch"
+            let raw = try JSONSerialization.data(withJSONObject: [
+                "session_id": "probe-session",
+                "turn_id": "probe-turn",
+                "cwd": "/tmp/probe-project",
+                "hook_event_name": "PreToolUse",
+                "tool_name": "apply_patch",
+                "tool_use_id": "probe-tool",
+                "tool_input": [
+                    "command": "*** Begin Patch\n*** Update File: \(privatePath)\n@@\n+\(patchSecret)\n*** End Patch"
+                ]
+            ])
+
+            let url = try HookCaptureService(paths: paths).capture(raw, mode: .probe)
+            let data = try Data(contentsOf: url)
+            let json = String(decoding: data, as: UTF8.self)
+            let record = try JSONDecoder.codexBar.decode(CodexHookProbeRecord.self, from: data)
+
+            try expect(record.activityKind == .edit, "probe omitted the activity kind")
+            try expect(record.activitySubject == "ProbeOnly.swift", "probe activity subject is not safe")
+            try expect(!json.contains(privatePath), "probe retained an absolute activity path")
+            try expect(!json.contains(patchSecret), "probe retained raw patch content")
+            try expect(!json.contains("*** Begin Patch"), "probe retained the raw patch")
         },
         CodexBarTestCase(name: "captures a normal hook into Inbox") {
             let root = temporaryDirectory()
@@ -483,6 +790,35 @@ private enum BatchRecordingError: Error {
     case expectedFailure
 }
 
+private final class InboxSnapshotRaceFileManager: FileManager, @unchecked Sendable {
+    private let inboxURL: URL
+    private let onFirstInboxSnapshot: () throws -> Void
+    private var didInjectRace = false
+
+    init(inboxURL: URL, onFirstInboxSnapshot: @escaping () throws -> Void) {
+        self.inboxURL = inboxURL
+        self.onFirstInboxSnapshot = onFirstInboxSnapshot
+        super.init()
+    }
+
+    override func contentsOfDirectory(
+        at url: URL,
+        includingPropertiesForKeys keys: [URLResourceKey]?,
+        options mask: DirectoryEnumerationOptions = []
+    ) throws -> [URL] {
+        let contents = try super.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: keys,
+            options: mask
+        )
+        if url.standardizedFileURL == inboxURL.standardizedFileURL, !didInjectRace {
+            didInjectRace = true
+            try onFirstInboxSnapshot()
+        }
+        return contents
+    }
+}
+
 private func writeArchiveFixture(_ url: URL, modifiedAt: Date) throws {
     try Data("{}".utf8).write(to: url)
     try FileManager.default.setAttributes(
@@ -505,13 +841,14 @@ private func inboxEvent(
     _ name: CodexHookEventName,
     timestamp: TimeInterval,
     session: String = "session-A",
-    turn: String = "turn-1"
+    turn: String = "turn-1",
+    cwd: String = "/tmp/project-alpha"
 ) -> CodexHookEvent {
     CodexHookEvent(
         id: "event-\(name.rawValue)-\(timestamp)",
         sessionID: session,
         turnID: turn,
-        cwd: "/tmp/project-alpha",
+        cwd: cwd,
         name: name,
         promptSummary: name == .userPromptSubmit ? "Test inbox" : nil,
         toolName: nil,
@@ -520,15 +857,21 @@ private func inboxEvent(
     )
 }
 
-private func inboxActionEvent(timestamp: TimeInterval) throws -> CodexHookEvent {
+private func inboxActionEvent(
+    timestamp: TimeInterval,
+    session: String = "session-A",
+    turn: String = "turn-1",
+    cwd: String = "/tmp/project-alpha",
+    toolUseID: String = "tool-test-1"
+) throws -> CodexHookEvent {
     let date = Date(timeIntervalSince1970: timestamp)
     let payload = try JSONSerialization.data(withJSONObject: [
-        "session_id": "session-A",
-        "turn_id": "turn-1",
-        "cwd": "/tmp/project-alpha",
+        "session_id": session,
+        "turn_id": turn,
+        "cwd": cwd,
         "hook_event_name": "PreToolUse",
         "tool_name": "Bash",
-        "tool_use_id": "tool-test-1",
+        "tool_use_id": toolUseID,
         "tool_input": ["command": "swift test --filter InboxTests"],
         "timestamp": timestamp
     ])

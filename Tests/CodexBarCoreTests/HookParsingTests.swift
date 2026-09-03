@@ -42,7 +42,7 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
                 "hook_event_name": "PreToolUse",
                 "tool_name": "apply_patch",
                 "tool_use_id": "tool-apply-1",
-                "tool_input": ["patch": patch],
+                "tool_input": ["command": patch],
                 "timestamp": fixedNow.timeIntervalSince1970
             ])
 
@@ -50,7 +50,6 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
             let activity = try require(event.activity, "apply_patch activity is missing")
 
             try expect(event.name == .preToolUse, "PreToolUse was not parsed")
-            try expect(event.toolUseID == "tool-apply-1", "tool_use_id was not parsed")
             try expect(activity.kind == .edit, "apply_patch was not classified as an edit")
             try expect(activity.safeSubject == "TaskStore.swift", "edit subject is not useful")
             try expect(event.timestamp == fixedNow, "activity timestamp is wrong")
@@ -60,6 +59,7 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
             try expect(!encoded.contains(exampleSecret), "patch secret was retained")
             try expect(!encoded.contains("*** Begin Patch"), "raw patch was retained")
             try expect(!encoded.contains("replacement"), "patch body was retained")
+            try expect(!encoded.contains("tool-apply-1"), "raw tool_use_id was retained")
         },
         CodexBarTestCase(name: "classifies Swift tests and keys IDs by tool use") {
             func payload(toolUseID: String) throws -> Data {
@@ -80,9 +80,56 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
             let second = try parser.parse(payload(toolUseID: "tool-test-2"))
 
             try expect(first.activity?.kind == .test, "Swift test command was not classified as a test")
-            try expect(first.toolUseID == "tool-test-1", "first tool_use_id is wrong")
-            try expect(second.toolUseID == "tool-test-2", "second tool_use_id is wrong")
             try expect(first.id != second.id, "different tool_use_id values produced the same event ID")
+            let encoded = String(decoding: try JSONEncoder.codexBar.encode(first), as: UTF8.self)
+            try expect(!encoded.contains("tool-test-1"), "raw tool_use_id was retained")
+        },
+        CodexBarTestCase(name: "classifies common Bash reads and searches without retaining arguments") {
+            func payload(toolUseID: String, command: String) throws -> Data {
+                try JSONSerialization.data(withJSONObject: [
+                    "session_id": "session-A",
+                    "turn_id": "turn-1",
+                    "cwd": "/tmp/project-alpha",
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "Bash",
+                    "tool_use_id": toolUseID,
+                    "tool_input": ["command": command],
+                    "timestamp": fixedNow.timeIntervalSince1970
+                ])
+            }
+            let parser = CodexHookEventParser(now: { fixedNow })
+            let privateQuery = "PrivateNeedle"
+            let search = try parser.parse(payload(
+                toolUseID: "tool-search",
+                command: "rg -n \"\(privateQuery)\" Sources"
+            ))
+            let read = try parser.parse(payload(
+                toolUseID: "tool-read",
+                command: "sed -n '1,80p' Sources/App.swift"
+            ))
+
+            try expect(search.activity?.kind == .search, "Bash rg was not classified as a search")
+            try expect(read.activity?.kind == .read, "Bash sed was not classified as a read")
+            let encoded = String(
+                decoding: try JSONEncoder.codexBar.encode(search),
+                as: UTF8.self
+            )
+            try expect(!encoded.contains(privateQuery), "Bash search arguments were retained")
+        },
+        CodexBarTestCase(name: "handles a single quote path without crashing") {
+            let input = try JSONSerialization.data(withJSONObject: [
+                "session_id": "session-A",
+                "turn_id": "turn-1",
+                "cwd": "/tmp/project-alpha",
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Read",
+                "tool_use_id": "tool-single-quote",
+                "tool_input": ["file_path": "'"]
+            ])
+
+            let event = try CodexHookEventParser(now: { fixedNow }).parse(input)
+
+            try expect(event.activity?.kind == .read, "single quote path lost its activity kind")
         },
         CodexBarTestCase(name: "tolerates missing hook fields") {
             let event = try CodexHookEventParser(now: { fixedNow }).parse(Data("{}".utf8))

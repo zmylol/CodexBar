@@ -2,6 +2,7 @@ import Foundation
 
 public enum CodexHookEventName: String, Codable, Equatable, Sendable {
     case userPromptSubmit = "UserPromptSubmit"
+    case preToolUse = "PreToolUse"
     case permissionRequest = "PermissionRequest"
     case stop = "Stop"
 }
@@ -14,6 +15,7 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
     public let name: CodexHookEventName?
     public let promptSummary: String?
     public let toolName: String?
+    public let activity: CodexHookActivitySummary?
     public let timestamp: Date
     public let lastAssistantMessagePresent: Bool
     public let destination: CodexTaskDestination?
@@ -28,6 +30,7 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
         toolName: String?,
         timestamp: Date,
         lastAssistantMessagePresent: Bool,
+        activity: CodexHookActivitySummary? = nil,
         destination: CodexTaskDestination? = nil
     ) {
         self.id = id
@@ -37,6 +40,7 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
         self.name = name
         self.promptSummary = promptSummary
         self.toolName = toolName
+        self.activity = activity
         self.timestamp = timestamp
         self.lastAssistantMessagePresent = lastAssistantMessagePresent
         self.destination = destination
@@ -64,6 +68,14 @@ public struct CodexHookEventParser: Sendable {
         let name = payload.hookEventName.flatMap(CodexHookEventName.init(rawValue:))
         let promptSummary = PromptSanitizer.sanitize(payload.prompt)
         let toolName = bounded(payload.toolName, maximumCharacters: 256)
+        let toolUseID = bounded(payload.toolUseID, maximumCharacters: 512)
+        let activity = name == .preToolUse
+            ? HookActivitySummarizer.summarize(
+                toolName: toolName,
+                toolInput: payload.toolInput,
+                cwd: cwd
+            )
+            : nil
         let suppliedTimestamp = validatedTimestamp(payload.timestamp?.date, receivedAt: receivedAt)
 
         return CodexHookEvent(
@@ -74,6 +86,8 @@ public struct CodexHookEventParser: Sendable {
                 name: name,
                 promptSummary: promptSummary,
                 toolName: toolName,
+                toolUseID: toolUseID,
+                activity: activity,
                 suppliedTimestamp: suppliedTimestamp,
                 lastAssistantMessagePresent: payload.lastAssistantMessagePresent
             )),
@@ -85,6 +99,7 @@ public struct CodexHookEventParser: Sendable {
             toolName: toolName,
             timestamp: suppliedTimestamp ?? receivedAt,
             lastAssistantMessagePresent: payload.lastAssistantMessagePresent,
+            activity: activity,
             destination: destination
         )
     }
@@ -148,6 +163,8 @@ private struct HookPayload: Decodable {
     let prompt: String?
     let lastAssistantMessagePresent: Bool
     let toolName: String?
+    let toolUseID: String?
+    let toolInput: HookToolInput?
     let timestamp: HookTimestamp?
 
     private enum CodingKeys: String, CodingKey {
@@ -158,6 +175,8 @@ private struct HookPayload: Decodable {
         case prompt
         case lastAssistantMessage = "last_assistant_message"
         case toolName = "tool_name"
+        case toolUseID = "tool_use_id"
+        case toolInput = "tool_input"
         case timestamp
     }
 
@@ -169,6 +188,8 @@ private struct HookPayload: Decodable {
         hookEventName = try container.decodeIfPresent(String.self, forKey: .hookEventName)
         prompt = try container.decodeIfPresent(String.self, forKey: .prompt)
         toolName = try container.decodeIfPresent(String.self, forKey: .toolName)
+        toolUseID = try container.decodeIfPresent(String.self, forKey: .toolUseID)
+        toolInput = try? container.decode(HookToolInput.self, forKey: .toolInput)
         timestamp = try container.decodeIfPresent(HookTimestamp.self, forKey: .timestamp)
         if container.contains(.lastAssistantMessage) {
             lastAssistantMessagePresent = try !container.decodeNil(forKey: .lastAssistantMessage)
@@ -228,6 +249,8 @@ private struct StableEventIdentity {
     let name: CodexHookEventName?
     let promptSummary: String?
     let toolName: String?
+    let toolUseID: String?
+    let activity: CodexHookActivitySummary?
     let suppliedTimestamp: Date?
     let lastAssistantMessagePresent: Bool
 }
@@ -244,6 +267,9 @@ private enum StableEventID {
             identity.name?.rawValue,
             identity.promptSummary,
             identity.toolName,
+            identity.toolUseID,
+            identity.activity?.kind.rawValue,
+            identity.activity?.safeSubject,
             timestampBits,
             identity.lastAssistantMessagePresent ? "1" : "0"
         ]
@@ -267,5 +293,210 @@ private enum StableEventID {
 
         let hexadecimal = String(hash, radix: 16)
         return "event-" + String(repeating: "0", count: 16 - hexadecimal.count) + hexadecimal
+    }
+}
+
+private struct HookToolInput: Decodable {
+    let command: String?
+    let patch: String?
+    let path: String?
+    let filePath: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case command
+        case patch
+        case path
+        case filePath = "file_path"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        command = try? container.decode(String.self, forKey: .command)
+        patch = try? container.decode(String.self, forKey: .patch)
+        path = try? container.decode(String.self, forKey: .path)
+        filePath = try? container.decode(String.self, forKey: .filePath)
+    }
+}
+
+private enum HookActivitySummarizer {
+    static func summarize(
+        toolName: String?,
+        toolInput: HookToolInput?,
+        cwd: String?
+    ) -> CodexHookActivitySummary? {
+        guard let toolName = toolName?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(),
+              !toolName.isEmpty
+        else {
+            return nil
+        }
+
+        switch toolName {
+        case "read", "read_file", "view_image":
+            return CodexHookActivitySummary(
+                kind: .read,
+                safeSubject: safePath(toolInput?.filePath ?? toolInput?.path, cwd: cwd)
+            )
+        case "grep", "glob", "rg", "search", "web_search":
+            return CodexHookActivitySummary(
+                kind: .search,
+                safeSubject: safePath(toolInput?.path, cwd: cwd)
+            )
+        case "apply_patch", "edit", "multiedit", "write":
+            let patchPath = (toolInput?.command ?? toolInput?.patch).flatMap(pathFromPatch)
+            return CodexHookActivitySummary(
+                kind: .edit,
+                safeSubject: safePath(
+                    patchPath ?? toolInput?.filePath ?? toolInput?.path,
+                    cwd: cwd
+                )
+            )
+        case "bash", "shell", "shell_command", "exec_command":
+            return commandSummary(toolInput?.command)
+        default:
+            return CodexHookActivitySummary(kind: .command, safeSubject: nil)
+        }
+    }
+
+    private static func commandSummary(_ command: String?) -> CodexHookActivitySummary {
+        guard let command else {
+            return CodexHookActivitySummary(kind: .command, safeSubject: nil)
+        }
+        let words = command
+            .prefix(1_024)
+            .split(whereSeparator: \Character.isWhitespace)
+            .prefix(32)
+            .map { executableName(String($0)).lowercased() }
+
+        guard let executable = words.first else {
+            return CodexHookActivitySummary(kind: .command, safeSubject: nil)
+        }
+
+        let testSubject: String?
+        if ["python", "python3"].contains(executable),
+           words.dropFirst().prefix(2).elementsEqual(["-m", "pytest"]) {
+            return CodexHookActivitySummary(kind: .test, safeSubject: "Python")
+        }
+        if ["npm", "pnpm", "yarn", "bun", "deno"].contains(executable),
+           isJavaScriptTest(words) {
+            return CodexHookActivitySummary(kind: .test, safeSubject: "JavaScript")
+        }
+        if ["mvn", "mvnw", "gradle", "gradlew"].contains(executable),
+           words.contains("test") {
+            return CodexHookActivitySummary(kind: .test, safeSubject: "Java")
+        }
+        switch executable {
+        case "swift" where words.dropFirst().first == "test":
+            testSubject = "Swift"
+        case "xcodebuild" where words.contains("test"):
+            testSubject = "Xcode"
+        case "pytest":
+            testSubject = "Python"
+        case "go" where words.dropFirst().first == "test":
+            testSubject = "Go"
+        case "cargo" where words.dropFirst().first == "test":
+            testSubject = "Rust"
+        case "dotnet" where words.dropFirst().first == "test":
+            testSubject = ".NET"
+        default:
+            testSubject = nil
+        }
+
+        if let testSubject {
+            return CodexHookActivitySummary(kind: .test, safeSubject: testSubject)
+        }
+
+        if ["rg", "ripgrep", "grep", "egrep", "fgrep", "find", "fd", "fdfind", "ag"]
+            .contains(executable) {
+            return CodexHookActivitySummary(kind: .search, safeSubject: nil)
+        }
+        if ["cat", "head", "tail", "less", "more", "wc", "ls", "tree", "pwd", "stat"]
+            .contains(executable) {
+            return CodexHookActivitySummary(kind: .read, safeSubject: nil)
+        }
+        if executable == "sed", !words.dropFirst().contains(where: { $0.hasPrefix("-i") }) {
+            return CodexHookActivitySummary(kind: .read, safeSubject: nil)
+        }
+        return CodexHookActivitySummary(kind: .command, safeSubject: nil)
+    }
+
+    private static func isJavaScriptTest(_ words: [String]) -> Bool {
+        guard words.count > 1 else {
+            return false
+        }
+        if words[1] == "test" {
+            return true
+        }
+        return words.count > 2 && words[1] == "run" && words[2] == "test"
+    }
+
+    private static func executableName(_ word: String) -> String {
+        let unquoted = word.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        return (unquoted as NSString).lastPathComponent
+    }
+
+    private static func pathFromPatch(_ patch: String) -> String? {
+        let prefixes = [
+            "*** Update File: ",
+            "*** Add File: ",
+            "*** Delete File: ",
+            "*** Move to: "
+        ]
+        for line in patch.prefix(64 * 1_024).split(separator: "\n", omittingEmptySubsequences: false) {
+            for prefix in prefixes where line.hasPrefix(prefix) {
+                return String(line.dropFirst(prefix.count))
+            }
+        }
+        return nil
+    }
+
+    private static func safePath(_ value: String?, cwd: String?) -> String? {
+        guard var value = value?.components(separatedBy: .newlines).first?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty,
+              value.count <= 4_096
+        else {
+            return nil
+        }
+
+        if value.count >= 2,
+           (value.first == "\"" && value.last == "\"")
+            || (value.first == "'" && value.last == "'") {
+            value.removeFirst()
+            value.removeLast()
+        }
+        value = value.replacingOccurrences(of: "\\", with: "/")
+
+        let isAbsolute = value.hasPrefix("/")
+            || value.hasPrefix("~/")
+            || value.range(of: #"^[A-Za-z]:/"#, options: .regularExpression) != nil
+        let standardized = (value as NSString).standardizingPath
+        let candidate: String
+        if isAbsolute {
+            if let cwd,
+               let normalizedCWD = standardizedAbsolutePath(cwd),
+               standardized.hasPrefix(normalizedCWD + "/") {
+                candidate = String(standardized.dropFirst(normalizedCWD.count + 1))
+            } else {
+                candidate = (standardized as NSString).lastPathComponent
+            }
+        } else if standardized == ".." || standardized.hasPrefix("../") {
+            candidate = (standardized as NSString).lastPathComponent
+        } else {
+            candidate = standardized.hasPrefix("./")
+                ? String(standardized.dropFirst(2))
+                : standardized
+        }
+
+        return PromptSanitizer.sanitize(candidate, maxLength: 160)
+    }
+
+    private static func standardizedAbsolutePath(_ value: String) -> String? {
+        let standardized = (value as NSString).standardizingPath
+        guard standardized.hasPrefix("/"), standardized != "/" else {
+            return nil
+        }
+        return standardized
     }
 }

@@ -3,10 +3,16 @@ import Foundation
 public struct PendingCodexEvent: Equatable, Sendable {
     public let event: CodexHookEvent
     public let sourceURL: URL
+    public let normalizedCWD: String?
 
-    public init(event: CodexHookEvent, sourceURL: URL) {
+    public init(
+        event: CodexHookEvent,
+        sourceURL: URL,
+        normalizedCWD: String? = nil
+    ) {
         self.event = event
         self.sourceURL = sourceURL
+        self.normalizedCWD = normalizedCWD
     }
 }
 
@@ -27,6 +33,7 @@ public extension CodexEventSource {
 public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
     private static let maximumEventBytes = 4 * 1_024 * 1_024
     private static let maximumEventsPerPoll = 25
+    private static let maximumActivityEventsPerPoll = 12
     private static let archiveRetentionSweepInterval: TimeInterval = 60 * 60
     private let paths: CodexBarPaths
     private let fileManager: FileManager
@@ -62,15 +69,19 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
             )
         }
 
-        let urls = try fileManager.contentsOfDirectory(
-            at: paths.inbox,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
+        // Snapshot activity first so a prompt and its first action cannot arrive
+        // between the two directory reads and let the action overtake the prompt.
+        let queuedActivityEvents = try candidateURLs(in: paths.activity)
+        let queuedLifecycleEvents = try candidateURLs(in: paths.inbox)
+        let lifecycleCandidates = Array(
+            queuedLifecycleEvents.prefix(Self.maximumEventsPerPoll)
         )
-        let candidates = urls
-            .filter { $0.pathExtension.lowercased() == "json" }
+        let activityCandidates = queuedLifecycleEvents.count > Self.maximumEventsPerPoll
+            ? []
+            : Array(queuedActivityEvents.prefix(Self.maximumActivityEventsPerPoll))
+        let transientActivityCandidates = Set(activityCandidates)
+        let candidates = (lifecycleCandidates + activityCandidates)
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
-            .prefix(Self.maximumEventsPerPoll)
 
         var pendingEvents: [PendingCodexEvent] = []
         var quarantinedURLs: Set<URL> = []
@@ -88,16 +99,38 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
                     CodexHookEvent.self,
                     from: Data(contentsOf: url)
                 )
-                pendingEvents.append(PendingCodexEvent(event: event, sourceURL: url))
+                pendingEvents.append(PendingCodexEvent(
+                    event: event,
+                    sourceURL: url,
+                    normalizedCWD: event.cwd.flatMap(PathNormalizer.normalize)
+                ))
             } catch {
+                if isMissingFileError(error) || !fileManager.fileExists(atPath: url.path) {
+                    continue
+                }
+                if transientActivityCandidates.contains(url) {
+                    do {
+                        try fileManager.removeItem(at: url)
+                    } catch {
+                        if isMissingFileError(error) {
+                            continue
+                        }
+                        throw error
+                    }
+                    continue
+                }
                 let destination = uniqueDestinationURL(
                     for: url.lastPathComponent,
                     in: paths.failed
                 )
-                try fileManager.moveItem(
-                    at: url,
-                    to: destination
-                )
+                do {
+                    try fileManager.moveItem(at: url, to: destination)
+                } catch {
+                    if isMissingFileError(error) {
+                        continue
+                    }
+                    throw error
+                }
                 quarantinedURLs.insert(destination)
             }
         }
@@ -111,6 +144,16 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
         return pendingEvents
     }
 
+    private func candidateURLs(in directory: URL) throws -> [URL] {
+        try fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        .filter { $0.pathExtension.lowercased() == "json" }
+        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
     public func markProcessed(_ pendingEvent: PendingCodexEvent) throws {
         try markProcessed([pendingEvent])
     }
@@ -122,12 +165,25 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
         try paths.prepareEventDirectories(fileManager: fileManager)
         var destinations: Set<URL> = []
         for pendingEvent in pendingEvents {
+            if pendingEvent.event.name == .preToolUse {
+                do {
+                    try fileManager.removeItem(at: pendingEvent.sourceURL)
+                } catch {
+                    if !isMissingFileError(error) {
+                        throw error
+                    }
+                }
+                continue
+            }
             let destination = uniqueDestinationURL(
                 for: pendingEvent.sourceURL.lastPathComponent,
                 in: paths.processed
             )
             try fileManager.moveItem(at: pendingEvent.sourceURL, to: destination)
             destinations.insert(destination)
+        }
+        guard !destinations.isEmpty else {
+            return
         }
         try paths.enforceArchiveRetention(
             in: paths.processed,
@@ -152,6 +208,12 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
                 return candidate
             }
         }
+    }
+
+    private func isMissingFileError(_ error: Error) -> Bool {
+        let error = error as NSError
+        return (error.domain == NSCocoaErrorDomain && error.code == NSFileNoSuchFileError)
+            || (error.domain == NSPOSIXErrorDomain && error.code == 2)
     }
 }
 

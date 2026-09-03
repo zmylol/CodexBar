@@ -89,7 +89,7 @@ function removeCodexBarHandlers(configuration, executables) {
 }
 
 function validateTargetEventGroups(configuration) {
-    ["UserPromptSubmit", "PermissionRequest", "Stop"].forEach(function (eventName) {
+    ["UserPromptSubmit", "PreToolUse", "PermissionRequest", "Stop"].forEach(function (eventName) {
         const groups = configuration.hooks[eventName];
         if (groups === undefined) {
             return;
@@ -115,11 +115,17 @@ function install(configuration, executable, mode, managedExecutables) {
         timeout: 5
     };
 
-    ["UserPromptSubmit", "PermissionRequest", "Stop"].forEach(function (eventName) {
+    ["UserPromptSubmit", "PreToolUse", "PermissionRequest", "Stop"].forEach(function (eventName) {
         if (!Array.isArray(configuration.hooks[eventName])) {
             configuration.hooks[eventName] = [];
         }
-        configuration.hooks[eventName].push({ hooks: [handler] });
+        const eventHandler = Object.assign({}, handler);
+        const eventGroup = { hooks: [eventHandler] };
+        if (eventName === "PreToolUse") {
+            eventHandler.async = true;
+            eventGroup.matcher = "^(Bash|apply_patch|Edit|Write|Read|read_file|Grep|Glob|rg|search|view_image)$";
+        }
+        configuration.hooks[eventName].push(eventGroup);
     });
 }
 

@@ -1,6 +1,18 @@
 import Combine
 import Foundation
 
+struct TaskStoreAppliedEvent: Sendable {
+    let eventID: String
+    let task: CodexTask
+}
+
+struct TaskStoreEventBatchResult: Sendable {
+    let appliedCount: Int
+    let appliedEvents: [TaskStoreAppliedEvent]
+
+    static let empty = TaskStoreEventBatchResult(appliedCount: 0, appliedEvents: [])
+}
+
 public enum TaskStorePersistenceError: Error, Equatable {
     case persistenceUnavailable
     case invalidSnapshot
@@ -35,6 +47,17 @@ public final class TaskStore: ObservableObject {
     public func apply(_ events: [CodexHookEvent]) async throws -> Int {
         guard !events.isEmpty else {
             return 0
+        }
+        let operation = try await storage.apply(events)
+        publish(operation.state)
+        return operation.value.appliedCount
+    }
+
+    func applyForEventProcessing(
+        _ events: [CodexHookEvent]
+    ) async throws -> TaskStoreEventBatchResult {
+        guard !events.isEmpty else {
+            return .empty
         }
         let operation = try await storage.apply(events)
         publish(operation.state)
@@ -165,7 +188,8 @@ private actor TaskStoreStorage {
             let turnID = nonempty(event.turnID, maximumCharacters: 512),
             let cwd = nonempty(event.cwd),
             let normalizedCWD = PathNormalizer.normalize(cwd),
-            let eventName = event.name
+            let eventName = event.name,
+            let eventStatus = status(for: eventName)
         else {
             return false
         }
@@ -185,15 +209,14 @@ private actor TaskStoreStorage {
         var nextTasks = Self.collapsingOlderTurns(tasks)
         if let index = nextTasks.firstIndex(where: { $0.id == taskID }) {
             var task = nextTasks[index]
-            let nextStatus = status(for: eventName)
             let advancesState = eventIsNotStale(
                 timestamp: event.timestamp,
-                status: nextStatus,
+                status: eventStatus,
                 comparedWith: task
             )
 
             if advancesState {
-                task.status = nextStatus
+                task.status = eventStatus
                 task.updatedAt = event.timestamp
                 task.isUnread = eventName != .userPromptSubmit
                 if let destination = event.destination {
@@ -290,7 +313,7 @@ private actor TaskStoreStorage {
                     cwd: normalizedCWD,
                     workspaceName: workspaceName,
                     title: normalizedTitle(event.promptSummary) ?? workspaceName,
-                    status: status(for: eventName),
+                    status: eventStatus,
                     startedAt: event.timestamp,
                     updatedAt: event.timestamp,
                     isUnread: eventName != .userPromptSubmit,
@@ -316,20 +339,26 @@ private actor TaskStoreStorage {
         return true
     }
 
-    func apply(_ events: [CodexHookEvent]) throws -> TaskStoreOperation<Int> {
+    func apply(
+        _ events: [CodexHookEvent]
+    ) throws -> TaskStoreOperation<TaskStoreEventBatchResult> {
         ensureLoaded()
         guard !events.isEmpty else {
-            return operation(0)
+            return operation(.empty)
         }
 
         let previousTasks = tasks
         let previousEventIDs = appliedEventIDs
         var appliedCount = 0
+        var appliedEvents: [TaskStoreAppliedEvent] = []
         for event in events where applyInMemory(event) {
             appliedCount += 1
+            if let task = task(matchingAppliedEvent: event) {
+                appliedEvents.append(TaskStoreAppliedEvent(eventID: event.id, task: task))
+            }
         }
         guard appliedCount > 0 else {
-            return operation(0)
+            return operation(.empty)
         }
 
         do {
@@ -344,7 +373,19 @@ private actor TaskStoreStorage {
             throw error
         }
         revision &+= 1
-        return operation(appliedCount)
+        return operation(TaskStoreEventBatchResult(
+            appliedCount: appliedCount,
+            appliedEvents: appliedEvents
+        ))
+    }
+
+    private func task(matchingAppliedEvent event: CodexHookEvent) -> CodexTask? {
+        guard let sessionID = nonempty(event.sessionID, maximumCharacters: 512),
+              let turnID = nonempty(event.turnID, maximumCharacters: 512)
+        else {
+            return nil
+        }
+        return tasks.first { $0.id == "\(sessionID):\(turnID)" }
     }
 
     func mergeRecoveredTasks(
@@ -683,8 +724,10 @@ private actor TaskStoreStorage {
         PromptSanitizer.sanitize(title, maxLength: 80)
     }
 
-    private func status(for eventName: CodexHookEventName) -> CodexTaskStatus {
+    private func status(for eventName: CodexHookEventName) -> CodexTaskStatus? {
         switch eventName {
+        case .preToolUse:
+            return nil
         case .userPromptSubmit:
             return .running
         case .permissionRequest:

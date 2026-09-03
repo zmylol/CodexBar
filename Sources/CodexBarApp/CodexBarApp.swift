@@ -51,9 +51,15 @@ private final class CodexBarAppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let source = CodexHookEventSource(paths: paths)
-        let processor = EventProcessor(source: source, store: store)
+        let activityStore = LiveTaskActivityStore()
+        let processor = EventProcessor(
+            source: source,
+            store: store,
+            activityStore: activityStore
+        )
         let model = CodexBarAppModel(
             store: store,
+            activityStore: activityStore,
             processor: processor,
             activator: AccessibilityWindowActivator(),
             threadSnapshotLoader: InstalledVSCodeCodexThreadSnapshotSource()

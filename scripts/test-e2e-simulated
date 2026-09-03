@@ -39,10 +39,12 @@ app_pid=$!
 task_store="$CODEXBAR_SUPPORT_ROOT/tasks.json"
 for _ in {1..50}; do
     inbox_files=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
+    activity_files=("$CODEXBAR_SUPPORT_ROOT/Activity"/*.json(N))
     processed_files=("$CODEXBAR_SUPPORT_ROOT/Processed"/*.json(N))
     if [[ -f "$task_store" ]] \
         && /usr/bin/grep -q '"status":"ready"' "$task_store" \
         && [[ ${#inbox_files} == 0 ]] \
+        && [[ ${#activity_files} == 0 ]] \
         && [[ ${#processed_files} == 3 ]]; then
         break
     fi
@@ -58,8 +60,10 @@ if /usr/bin/grep -q '运行 Swift 测试\|PreToolUse' "$task_store"; then
     exit 1
 fi
 inbox_files=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
+activity_files=("$CODEXBAR_SUPPORT_ROOT/Activity"/*.json(N))
 processed_files=("$CODEXBAR_SUPPORT_ROOT/Processed"/*.json(N))
 [[ ${#inbox_files} == 0 ]]
+[[ ${#activity_files} == 0 ]]
 [[ ${#processed_files} == 3 ]]
 /bin/kill -0 "$app_pid"
 [[ ! -s "$test_root/app.stderr" ]]

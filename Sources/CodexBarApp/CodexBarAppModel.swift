@@ -16,6 +16,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     }
 
     let store: TaskStore
+    let activityStore: LiveTaskActivityStore
     var onPresentationChanged: ((Int, Bool, Bool) -> Void)?
     var onPanelPlacementRequested: ((PanelPlacement) -> Void)?
     var onAnnouncementRequested: ((String, Bool) -> Void)?
@@ -42,11 +43,13 @@ final class CodexBarAppModel: NSObject, ObservableObject {
 
     init(
         store: TaskStore,
+        activityStore: LiveTaskActivityStore,
         processor: EventProcessor,
         activator: AccessibilityWindowActivator,
         threadSnapshotLoader: (any CodexThreadSnapshotLoading)? = nil
     ) {
         self.store = store
+        self.activityStore = activityStore
         self.processor = processor
         self.activator = activator
         self.taskOpener = CodexTaskOpener(
@@ -333,6 +336,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         guard inboxProcessingTask == nil else {
             return
         }
+        let priorTasks = store.tasks
         let priorUpdatedAt = Dictionary(
             store.tasks.map { ($0.id, $0.updatedAt) },
             uniquingKeysWith: { max($0, $1) }
@@ -366,6 +370,9 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 return
             }
             guard processedCount > 0 else {
+                return
+            }
+            guard store.tasks != priorTasks else {
                 return
             }
             let shouldAnimate = store.tasks.contains { task in
@@ -537,6 +544,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     }
 
     private func notifyPresentationChanged(animated: Bool) {
+        activityStore.synchronize(with: store.tasks)
         onPresentationChanged?(store.tasks.count, notice != nil, animated)
     }
 }

@@ -6,6 +6,7 @@ public struct CodexBarPaths: Equatable, Sendable {
 
     public let rootDirectory: URL
     public let inbox: URL
+    public let activity: URL
     public let processed: URL
     public let failed: URL
     public let probe: URL
@@ -28,6 +29,7 @@ public struct CodexBarPaths: Equatable, Sendable {
     public init(rootDirectory: URL = CodexBarPaths.defaultRootDirectory) {
         self.rootDirectory = rootDirectory
         self.inbox = rootDirectory.appendingPathComponent("Inbox", isDirectory: true)
+        self.activity = rootDirectory.appendingPathComponent("Activity", isDirectory: true)
         self.processed = rootDirectory.appendingPathComponent("Processed", isDirectory: true)
         self.failed = rootDirectory.appendingPathComponent("Failed", isDirectory: true)
         self.probe = rootDirectory.appendingPathComponent("Probe", isDirectory: true)
@@ -45,6 +47,7 @@ public struct CodexBarPaths: Equatable, Sendable {
     public func prepareEventDirectories(fileManager: FileManager = .default) throws {
         try prepareStorageDirectory(fileManager: fileManager)
         try createPrivateDirectory(inbox, fileManager: fileManager)
+        try createPrivateDirectory(activity, fileManager: fileManager)
         try createPrivateDirectory(processed, fileManager: fileManager)
         try createPrivateDirectory(failed, fileManager: fileManager)
     }
