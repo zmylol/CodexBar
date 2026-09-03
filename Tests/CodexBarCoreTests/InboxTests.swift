@@ -50,6 +50,58 @@ func inboxTestCases() -> [CodexBarTestCase] {
             let secondProcessedCount = try await processor.processPending()
             try expect(secondProcessedCount == 0, "files were processed more than once")
         },
+        CodexBarTestCase(name: "keeps tool activity in memory and out of lifecycle archives") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            let writer = InboxWriter(paths: paths)
+            _ = try writer.write(inboxEvent(.userPromptSubmit, timestamp: 100))
+            _ = try writer.write(inboxActionEvent(timestamp: 105))
+            _ = try writer.write(inboxEvent(.permissionRequest, timestamp: 110))
+            _ = try writer.write(inboxEvent(.stop, timestamp: 120))
+            let store = TaskStore(persistenceURL: paths.taskStore)
+            let activityStore = LiveTaskActivityStore()
+            let processor = EventProcessor(
+                source: CodexHookEventSource(paths: paths),
+                store: store,
+                activityStore: activityStore
+            )
+
+            let processedCount = try await processor.processPending()
+
+            try expect(processedCount == 4, "processor did not consume the activity event")
+            let task = try require(store.tasks.first, "lifecycle task is missing")
+            try expect(task.status == .ready, "lifecycle events did not reach ready")
+            let nodes = activityStore.nodes(for: task)
+            try expect(nodes.count == 1, "activity was not retained as one in-memory node")
+            try expect(nodes.first?.kind == .test, "activity kind is wrong")
+            try expect(nodes.first?.summary == "运行 Swift 测试", "activity summary is wrong")
+            try expect(
+                nodes.first?.occurredAt == Date(timeIntervalSince1970: 105),
+                "activity timestamp is wrong"
+            )
+            try expect(
+                try FileManager.default.contentsOfDirectory(atPath: paths.inbox.path).isEmpty,
+                "processed activity remained in Inbox"
+            )
+
+            let archivedEvents = try FileManager.default.contentsOfDirectory(
+                at: paths.processed,
+                includingPropertiesForKeys: nil
+            ).map { url in
+                try JSONDecoder.codexBar.decode(CodexHookEvent.self, from: Data(contentsOf: url))
+            }
+            try expect(archivedEvents.count == 3, "activity was retained in Processed")
+            try expect(
+                archivedEvents.compactMap(\.name).map(\.rawValue).sorted()
+                    == ["PermissionRequest", "Stop", "UserPromptSubmit"],
+                "Processed did not contain only lifecycle events"
+            )
+
+            let taskSnapshot = String(decoding: try Data(contentsOf: paths.taskStore), as: UTF8.self)
+            try expect(!taskSnapshot.contains("运行 Swift 测试"), "activity summary leaked into tasks.json")
+            try expect(!taskSnapshot.contains("PreToolUse"), "activity event leaked into tasks.json")
+        },
         CodexBarTestCase(name: "keeps one current turn when Inbox contains two turns for one cwd") {
             let root = temporaryDirectory()
             defer { try? FileManager.default.removeItem(at: root) }
@@ -466,6 +518,21 @@ private func inboxEvent(
         timestamp: Date(timeIntervalSince1970: timestamp),
         lastAssistantMessagePresent: false
     )
+}
+
+private func inboxActionEvent(timestamp: TimeInterval) throws -> CodexHookEvent {
+    let date = Date(timeIntervalSince1970: timestamp)
+    let payload = try JSONSerialization.data(withJSONObject: [
+        "session_id": "session-A",
+        "turn_id": "turn-1",
+        "cwd": "/tmp/project-alpha",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_use_id": "tool-test-1",
+        "tool_input": ["command": "swift test --filter InboxTests"],
+        "timestamp": timestamp
+    ])
+    return try CodexHookEventParser(now: { date }).parse(payload)
 }
 
 private func temporaryDirectory() -> URL {

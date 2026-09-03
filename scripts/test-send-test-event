@@ -12,12 +12,15 @@ workspace="$test_root/projects/project-alpha"
 /bin/mkdir -p "$workspace"
 
 "$script_dir/send-test-event" running "$workspace" "Build a test feature"
+"$script_dir/send-test-event" action "$workspace"
 "$script_dir/send-test-event" attention "$workspace"
 "$script_dir/send-test-event" ready "$workspace"
 
 events=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
-[[ ${#events} == 3 ]]
+[[ ${#events} == 4 ]]
 /usr/bin/grep -l 'UserPromptSubmit' "$events[@]" >/dev/null
+/usr/bin/grep -l 'PreToolUse' "$events[@]" >/dev/null
+/usr/bin/grep -l '"toolUseID"' "$events[@]" >/dev/null
 /usr/bin/grep -l 'PermissionRequest' "$events[@]" >/dev/null
 /usr/bin/grep -l 'Stop' "$events[@]" >/dev/null
 
@@ -26,4 +29,4 @@ if "$script_dir/send-test-event" unsupported "$workspace" >/dev/null 2>&1; then
     exit 1
 fi
 
-print "PASS send-test-event writes all three lifecycle fixtures"
+print "PASS send-test-event writes one activity and all three lifecycle fixtures"

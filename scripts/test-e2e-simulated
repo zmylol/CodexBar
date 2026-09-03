@@ -32,12 +32,18 @@ CODEXBAR_SUPPORT_ROOT="$CODEXBAR_SUPPORT_ROOT" "$app_binary" \
 app_pid=$!
 
 "$script_dir/send-test-event" running "$workspace" "End-to-end simulated task"
+"$script_dir/send-test-event" action "$workspace"
 "$script_dir/send-test-event" attention "$workspace"
 "$script_dir/send-test-event" ready "$workspace"
 
 task_store="$CODEXBAR_SUPPORT_ROOT/tasks.json"
 for _ in {1..50}; do
-    if [[ -f "$task_store" ]] && /usr/bin/grep -q '"status":"ready"' "$task_store"; then
+    inbox_files=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
+    processed_files=("$CODEXBAR_SUPPORT_ROOT/Processed"/*.json(N))
+    if [[ -f "$task_store" ]] \
+        && /usr/bin/grep -q '"status":"ready"' "$task_store" \
+        && [[ ${#inbox_files} == 0 ]] \
+        && [[ ${#processed_files} == 3 ]]; then
         break
     fi
     /bin/sleep 0.1
@@ -47,6 +53,10 @@ done
 /usr/bin/grep -q 'End-to-end simulated task' "$task_store"
 /usr/bin/grep -q '"status":"ready"' "$task_store"
 /usr/bin/grep -q '"isUnread":true' "$task_store"
+if /usr/bin/grep -q '运行 Swift 测试\|PreToolUse' "$task_store"; then
+    print -u2 "Transient activity leaked into tasks.json"
+    exit 1
+fi
 inbox_files=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
 processed_files=("$CODEXBAR_SUPPORT_ROOT/Processed"/*.json(N))
 [[ ${#inbox_files} == 0 ]]

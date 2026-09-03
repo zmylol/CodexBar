@@ -47,6 +47,63 @@ assert_empty_third_party_group_preserved() {
     fi
 }
 
+assert_codexbar_handler_shape() {
+    local expected_executable=$1
+    /usr/bin/osascript -l JavaScript - "$hooks_file" "$expected_executable" <<'JXA'
+ObjC.import("Foundation");
+
+function unwrap(value) {
+    return ObjC.unwrap(value);
+}
+
+function shellQuote(value) {
+    return "'" + value.replace(/'/g, "'\\''") + "'";
+}
+
+function run(argv) {
+    const path = argv[0];
+    const executable = argv[1];
+    const data = $.NSData.dataWithContentsOfFile(path);
+    const text = $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding);
+    const configuration = JSON.parse(unwrap(text));
+    const commandPrefix = shellQuote(executable) + " --codexbar-managed";
+    const expectedEvents = ["PermissionRequest", "PreToolUse", "Stop", "UserPromptSubmit"];
+    const foundEvents = [];
+    const asyncEvents = [];
+
+    Object.keys(configuration.hooks).forEach(function (eventName) {
+        const groups = configuration.hooks[eventName];
+        if (!Array.isArray(groups)) {
+            return;
+        }
+        groups.forEach(function (group) {
+            if (!group || !Array.isArray(group.hooks)) {
+                return;
+            }
+            group.hooks.forEach(function (handler) {
+                if (handler && typeof handler.command === "string"
+                    && (handler.command === commandPrefix
+                        || handler.command === commandPrefix + " --probe")) {
+                    foundEvents.push(eventName);
+                    if (handler.async === true) {
+                        asyncEvents.push(eventName);
+                    }
+                }
+            });
+        });
+    });
+
+    foundEvents.sort();
+    if (JSON.stringify(foundEvents) !== JSON.stringify(expectedEvents)) {
+        throw new Error("Expected one CodexBar handler for each target event, got: " + foundEvents.join(", "));
+    }
+    if (JSON.stringify(asyncEvents) !== JSON.stringify(["PreToolUse"])) {
+        throw new Error("Only PreToolUse may be asynchronous, got: " + asyncEvents.join(", "));
+    }
+}
+JXA
+}
+
 install_output=$("$script_dir/install-hooks" --probe)
 [[ "$install_output" == *"The IDE chat has no /hooks command"* ]]
 [[ "$install_output" == *"Codex Settings > Hooks"* ]]
@@ -66,12 +123,13 @@ wait "$second_install_pid"
 /usr/bin/grep -q 'existing-hook' "$hooks_file"
 assert_third_party_handlers_preserved
 assert_empty_third_party_group_preserved
+assert_codexbar_handler_shape "$hook_executable"
 if /usr/bin/grep -Fq "$historical_hook_executable" "$hooks_file"; then
     print -u2 "Known historical CodexBar executable remained after migration"
     exit 1
 fi
 handler_count=$(/usr/bin/grep -o 'codexbar-hook.*--probe' "$hooks_file" | /usr/bin/wc -l | /usr/bin/tr -d ' ')
-[[ "$handler_count" == "3" ]]
+[[ "$handler_count" == "4" ]]
 
 second_hook_executable="$support_root/alternate/codexbar-hook"
 /bin/mkdir -p "${second_hook_executable:h}"
@@ -84,7 +142,8 @@ if /usr/bin/grep -Fq "$hook_executable" "$hooks_file"; then
     exit 1
 fi
 second_handler_count=$(/usr/bin/grep -Fo "$second_hook_executable" "$hooks_file" | /usr/bin/wc -l | /usr/bin/tr -d ' ')
-[[ "$second_handler_count" == "3" ]]
+[[ "$second_handler_count" == "4" ]]
+assert_codexbar_handler_shape "$second_hook_executable"
 
 "$script_dir/uninstall-hooks"
 /usr/bin/grep -q '/usr/bin/true' "$hooks_file"
