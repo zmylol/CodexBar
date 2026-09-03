@@ -196,6 +196,9 @@ private actor TaskStoreStorage {
                 task.status = nextStatus
                 task.updatedAt = event.timestamp
                 task.isUnread = eventName != .userPromptSubmit
+                if let destination = event.destination {
+                    task.destination = destination
+                }
 
                 if eventName == .userPromptSubmit,
                    let title = normalizedTitle(event.promptSummary) {
@@ -209,7 +212,8 @@ private actor TaskStoreStorage {
                         status: task.status,
                         startedAt: task.startedAt,
                         updatedAt: task.updatedAt,
-                        isUnread: task.isUnread
+                        isUnread: task.isUnread,
+                        destination: task.destination
                     )
                 }
             } else {
@@ -235,7 +239,8 @@ private actor TaskStoreStorage {
                     status: task.status,
                     startedAt: startedAt,
                     updatedAt: task.updatedAt,
-                    isUnread: task.isUnread
+                    isUnread: task.isUnread,
+                    destination: task.destination
                 )
             }
 
@@ -263,7 +268,8 @@ private actor TaskStoreStorage {
                     status: .ready,
                     startedAt: currentTask.startedAt,
                     updatedAt: event.timestamp,
-                    isUnread: true
+                    isUnread: true,
+                    destination: event.destination ?? currentTask.destination
                 )
             } else {
                 if let currentCWDIndex {
@@ -287,7 +293,8 @@ private actor TaskStoreStorage {
                     status: status(for: eventName),
                     startedAt: event.timestamp,
                     updatedAt: event.timestamp,
-                    isUnread: eventName != .userPromptSubmit
+                    isUnread: eventName != .userPromptSubmit,
+                    destination: event.destination
                 )
             }
 
@@ -403,7 +410,8 @@ private actor TaskStoreStorage {
                     status: task.status,
                     startedAt: task.startedAt,
                     updatedAt: task.updatedAt,
-                    isUnread: task.isUnread
+                    isUnread: task.isUnread,
+                    destination: task.destination
                 )
             }
             changedCount += 1
@@ -459,7 +467,8 @@ private actor TaskStoreStorage {
                 && recovered.status == .ready
                 && current.status != .ready
                 ? true
-                : current.isUnread
+                : current.isUnread,
+            destination: recovered.destination ?? current.destination
         )
     }
 

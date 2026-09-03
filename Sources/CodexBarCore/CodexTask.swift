@@ -17,6 +17,7 @@ public struct CodexTask: Identifiable, Codable, Equatable, Sendable {
     public let startedAt: Date
     public var updatedAt: Date
     public var isUnread: Bool
+    public var destination: CodexTaskDestination?
 
     public init(
         id: String,
@@ -28,7 +29,8 @@ public struct CodexTask: Identifiable, Codable, Equatable, Sendable {
         status: CodexTaskStatus,
         startedAt: Date,
         updatedAt: Date,
-        isUnread: Bool
+        isUnread: Bool,
+        destination: CodexTaskDestination? = nil
     ) {
         self.id = id
         self.sessionID = sessionID
@@ -40,5 +42,6 @@ public struct CodexTask: Identifiable, Codable, Equatable, Sendable {
         self.startedAt = startedAt
         self.updatedAt = updatedAt
         self.isUnread = isUnread
+        self.destination = destination
     }
 }

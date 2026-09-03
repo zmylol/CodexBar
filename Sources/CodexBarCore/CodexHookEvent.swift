@@ -16,6 +16,7 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
     public let toolName: String?
     public let timestamp: Date
     public let lastAssistantMessagePresent: Bool
+    public let destination: CodexTaskDestination?
 
     public init(
         id: String,
@@ -26,7 +27,8 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
         promptSummary: String?,
         toolName: String?,
         timestamp: Date,
-        lastAssistantMessagePresent: Bool
+        lastAssistantMessagePresent: Bool,
+        destination: CodexTaskDestination? = nil
     ) {
         self.id = id
         self.sessionID = sessionID
@@ -37,14 +39,20 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
         self.toolName = toolName
         self.timestamp = timestamp
         self.lastAssistantMessagePresent = lastAssistantMessagePresent
+        self.destination = destination
     }
 }
 
 public struct CodexHookEventParser: Sendable {
     private let now: @Sendable () -> Date
+    private let destination: CodexTaskDestination?
 
-    public init(now: @escaping @Sendable () -> Date = Date.init) {
+    public init(
+        now: @escaping @Sendable () -> Date = Date.init,
+        destination: CodexTaskDestination? = nil
+    ) {
         self.now = now
+        self.destination = destination
     }
 
     public func parse(_ data: Data) throws -> CodexHookEvent {
@@ -76,7 +84,8 @@ public struct CodexHookEventParser: Sendable {
             promptSummary: promptSummary,
             toolName: toolName,
             timestamp: suppliedTimestamp ?? receivedAt,
-            lastAssistantMessagePresent: payload.lastAssistantMessagePresent
+            lastAssistantMessagePresent: payload.lastAssistantMessagePresent,
+            destination: destination
         )
     }
 

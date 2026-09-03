@@ -8,7 +8,11 @@ do {
        !input.isEmpty,
        input.count <= maximumInputBytes {
         let mode: HookCaptureMode = CommandLine.arguments.contains("--probe") ? .probe : .inbox
-        _ = try? HookCaptureService().capture(input, mode: mode)
+        let destination = CodexTaskDestination.fromHookEnvironment(
+            ProcessInfo.processInfo.environment
+        )
+        let parser = CodexHookEventParser(destination: destination)
+        _ = try? HookCaptureService(parser: parser).capture(input, mode: mode)
     }
 } catch {
     // Lifecycle hooks must fail open and keep stdout/stderr empty.

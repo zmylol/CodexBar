@@ -123,6 +123,34 @@ func taskOpeningTestCases() -> [CodexBarTestCase] {
             try expect(result == .untrustedApplication, "unverified app was not rejected")
             try expect(!attemptedOpen, "unverified app received the thread link")
         },
+        CodexBarTestCase(name: "cancelled desktop activation does not open a stale task") {
+            var attemptedOpen = false
+            let activator = CodexDesktopTaskActivator(
+                applicationURLProvider: {
+                    URL(fileURLWithPath: "/Applications/ChatGPT.app")
+                },
+                signatureValidator: { _ in
+                    try? await Task.sleep(for: .seconds(10))
+                    return true
+                },
+                urlOpener: { _, _ in
+                    attemptedOpen = true
+                    return true
+                }
+            )
+            let activation = Task {
+                await activator.openThread(
+                    sessionID: "018f0000-0000-7000-8000-000000000001"
+                )
+            }
+
+            await Task.yield()
+            activation.cancel()
+            let result = await activation.value
+
+            try expect(result == .openingFailed, "cancelled activation reported success")
+            try expect(!attemptedOpen, "cancelled activation opened the stale task")
+        },
         CodexBarTestCase(name: "routes a known desktop task by session ID only") {
             let vscode = FakeVSCodeTaskActivator(result: .applicationNotRunning)
             let desktop = FakeCodexDesktopTaskActivator(result: .opened)

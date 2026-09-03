@@ -230,7 +230,7 @@ private struct CompactTaskRow: View {
                     .accessibilityValue(
                         "\(task.isUnread ? "未读，" : "")\(accessibilityTimeText)"
                     )
-                    .accessibilityHint("唤起对应的 Visual Studio Code 窗口，并最小化其他窗口")
+                    .accessibilityHint("打开对应的 Codex 任务")
                     .accessibilityInputLabels([task.workspaceName, task.title])
 
                     Menu {

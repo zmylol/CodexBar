@@ -28,10 +28,16 @@ if /usr/bin/grep -q 'secret assistant detail' "$probe_files[1]"; then
     exit 1
 fi
 
-inbox_output=$("$hook_binary" --codexbar-managed < "$repo_root/Tests/CodexBarCoreTests/Fixtures/user-prompt-submit.json" 2>&1)
+inbox_output=$(CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex \
+    "$hook_binary" --codexbar-managed \
+    < "$repo_root/Tests/CodexBarCoreTests/Fixtures/user-prompt-submit.json" 2>&1)
 [[ -z "$inbox_output" ]]
 inbox_files=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
 [[ ${#inbox_files} == 1 ]]
+if ! /usr/bin/grep -q '"destination":"codexDesktop"' "$inbox_files[1]"; then
+    print -u2 "Hook did not preserve the Codex desktop destination"
+    exit 1
+fi
 
 invalid_output=$(print -rn -- '{not-json' | "$hook_binary" 2>&1)
 [[ -z "$invalid_output" ]]
