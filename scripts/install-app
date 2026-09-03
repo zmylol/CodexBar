@@ -1,0 +1,144 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+script_dir=${0:A:h}
+repo_root=${script_dir:h}
+codexbar_user_home=${HOME:?User home is unavailable}
+applications_root=${CODEXBAR_APPLICATIONS_ROOT:-"$codexbar_user_home/Applications"}
+support_root=${CODEXBAR_SUPPORT_ROOT:-"$codexbar_user_home/Library/Application Support/CodexBar"}
+
+require_safe_directory() {
+    local path_value=${1:a}
+    if [[ -L "$path_value" ]]; then
+        print -u2 "Refusing to use a symbolic-link managed directory: $path_value"
+        exit 64
+    fi
+    if [[ -e "$path_value" && ! -d "$path_value" ]]; then
+        print -u2 "Managed directory path is not a directory: $path_value"
+        exit 64
+    fi
+}
+
+require_safe_file() {
+    local path_value=${1:a}
+    if [[ -L "$path_value" ]]; then
+        print -u2 "Refusing to replace a symbolic-link managed file: $path_value"
+        exit 64
+    fi
+    if [[ -e "$path_value" && ! -f "$path_value" ]]; then
+        print -u2 "Managed file path is not a regular file: $path_value"
+        exit 64
+    fi
+}
+
+require_within_root() {
+    local root=$1
+    local path_value=$2
+    local resolved_root
+    local resolved_path
+    resolved_root=$(/bin/realpath "$root")
+    resolved_path=$(/bin/realpath "$path_value")
+    if [[ "$resolved_path" != "$resolved_root" && "$resolved_path" != "$resolved_root/"* ]]; then
+        print -u2 "Managed path resolves outside its configured root: $path_value"
+        exit 64
+    fi
+}
+
+prune_app_backups() {
+    local -a backups
+    local oldest
+    local candidate
+    while true; do
+        backups=("$backup_root"/CodexBar-*.app(N))
+        if (( ${#backups} <= 5 )); then
+            return
+        fi
+        oldest=${backups[1]}
+        for candidate in "${backups[@]}"; do
+            if [[ "$candidate:t" < "$oldest:t" ]]; then
+                oldest=$candidate
+            fi
+        done
+        /bin/rm -rf -- "$oldest"
+    done
+}
+
+if (( EUID == 0 )); then
+    print -u2 "Do not install CodexBar as root."
+    exit 77
+fi
+for target_root in "$applications_root" "$support_root"; do
+    if [[ "$target_root" != /* || "${target_root:a}" == "/" ]]; then
+        print -u2 "Install roots must be absolute, non-root paths: $target_root"
+        exit 64
+    fi
+done
+
+applications_root=${applications_root:a}
+support_root=${support_root:a}
+installed_bundle="$applications_root/CodexBar.app"
+backup_root="$support_root/AppBackups"
+hook_bin="$support_root/bin"
+installed_hook="$hook_bin/codexbar-hook"
+
+require_safe_directory "$applications_root"
+require_safe_directory "$support_root"
+require_safe_directory "$installed_bundle"
+require_safe_directory "$hook_bin"
+require_safe_directory "$backup_root"
+require_safe_file "$installed_hook"
+
+/bin/mkdir -p "$applications_root" "$hook_bin" "$backup_root"
+require_within_root "$applications_root" "$installed_bundle:h"
+require_within_root "$support_root" "$hook_bin"
+require_within_root "$support_root" "$backup_root"
+/bin/chmod 700 "$support_root" "$hook_bin" "$backup_root"
+
+source_bundle=$(/bin/zsh "$script_dir/build-app" | /usr/bin/tail -n 1)
+
+backup_bundle=""
+if [[ -d "$installed_bundle" ]]; then
+    backup_name="CodexBar-$('/bin/date' -u '+%Y%m%dT%H%M%SZ')-$$-$RANDOM.app"
+    backup_bundle="$backup_root/$backup_name"
+    /usr/bin/ditto "$installed_bundle" "$backup_bundle"
+    prune_app_backups
+fi
+
+staging_root=$(/usr/bin/mktemp -d "$applications_root/.codexbar-install.XXXXXX")
+staged_bundle="$staging_root/CodexBar.app"
+hook_temporary=$(/usr/bin/mktemp "$hook_bin/.codexbar-hook.XXXXXX")
+cleanup() {
+    if [[ -d "$staging_root" ]]; then
+        /bin/rm -rf -- "$staging_root"
+    fi
+    if [[ -f "$hook_temporary" ]]; then
+        /bin/rm -f -- "$hook_temporary"
+    fi
+}
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+
+/usr/bin/ditto "$source_bundle" "$staged_bundle"
+/usr/bin/codesign --verify --deep --strict "$staged_bundle"
+/bin/cp "$source_bundle/Contents/Helpers/codexbar-hook" "$hook_temporary"
+/bin/chmod 700 "$hook_temporary"
+
+if [[ -d "$installed_bundle" ]]; then
+    /bin/rm -rf -- "$installed_bundle"
+fi
+if ! /bin/mv "$staged_bundle" "$installed_bundle"; then
+    if [[ -n "$backup_bundle" && -d "$backup_bundle" ]]; then
+        /usr/bin/ditto "$backup_bundle" "$installed_bundle"
+    fi
+    exit 74
+fi
+/bin/mv -f "$hook_temporary" "$installed_hook"
+/bin/rmdir "$staging_root"
+trap - EXIT INT TERM
+/usr/bin/codesign --verify --deep --strict "$installed_bundle"
+
+print "Installed app: $installed_bundle"
+print "Installed hook executable: $installed_hook"
+print "Next: run scripts/install-hooks --probe, reload VS Code, then review it in Codex Settings > Hooks."

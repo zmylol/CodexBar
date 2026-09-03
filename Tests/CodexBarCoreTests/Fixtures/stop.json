@@ -1,0 +1,10 @@
+{
+  "session_id": "session-A",
+  "turn_id": "turn-1",
+  "cwd": "/tmp/project-alpha",
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "Finished. secret assistant detail must not be persisted.",
+  "permission_mode": "default",
+  "timestamp": "2026-08-30T23:42:12Z"
+}

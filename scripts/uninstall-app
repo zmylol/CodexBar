@@ -1,0 +1,80 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+script_dir=${0:A:h}
+codexbar_user_home=${HOME:?User home is unavailable}
+applications_root=${CODEXBAR_APPLICATIONS_ROOT:-"$codexbar_user_home/Applications"}
+support_root=${CODEXBAR_SUPPORT_ROOT:-"$codexbar_user_home/Library/Application Support/CodexBar"}
+purge_data=false
+
+case ${1:-} in
+    "") ;;
+    --purge-data) purge_data=true ;;
+    *)
+        print -u2 "usage: scripts/uninstall-app [--purge-data]"
+        exit 64
+        ;;
+esac
+
+if (( EUID == 0 )); then
+    print -u2 "Do not uninstall CodexBar as root."
+    exit 77
+fi
+
+for target_root in "$applications_root" "$support_root"; do
+    if [[ "$target_root" != /* || "${target_root:a}" == "/" ]]; then
+        print -u2 "Uninstall roots must be absolute, non-root paths: $target_root"
+        exit 64
+    fi
+    if [[ -L "${target_root:a}" ]]; then
+        print -u2 "Refusing to use a symbolic-link managed directory: $target_root"
+        exit 64
+    fi
+done
+
+applications_root=${applications_root:a}
+support_root=${support_root:a}
+if [[ "$purge_data" == true && "$support_root:t" != "CodexBar" ]]; then
+    print -u2 "Refusing to purge a support directory not named CodexBar: $support_root"
+    exit 64
+fi
+installed_bundle="$applications_root/CodexBar.app"
+installed_hook="$support_root/bin/codexbar-hook"
+installed_hook_parent="${installed_hook:h}"
+
+if [[ -L "$installed_bundle" || (-e "$installed_bundle" && ! -d "$installed_bundle") ]]; then
+    print -u2 "Refusing to remove an invalid managed application path: $installed_bundle"
+    exit 64
+fi
+if [[ -L "$installed_hook" || (-e "$installed_hook" && ! -f "$installed_hook") ]]; then
+    print -u2 "Refusing to remove an invalid managed Hook path: $installed_hook"
+    exit 64
+fi
+if [[ -L "$installed_hook_parent" \
+    || (-e "$installed_hook_parent" && ! -d "$installed_hook_parent") ]]; then
+    print -u2 "Refusing to remove a Hook through an invalid parent directory: $installed_hook_parent"
+    exit 64
+fi
+
+CODEXBAR_HOOK_EXECUTABLE="$installed_hook" "$script_dir/uninstall-hooks"
+
+if [[ -d "$installed_bundle" ]]; then
+    /bin/rm -rf -- "$installed_bundle"
+fi
+if [[ -f "$installed_hook" ]]; then
+    /bin/rm -f -- "$installed_hook"
+fi
+if [[ -d "$installed_hook_parent" ]]; then
+    /bin/rmdir "$installed_hook_parent" 2>/dev/null || true
+fi
+
+if [[ "$purge_data" == true ]]; then
+    if [[ -d "$support_root" ]]; then
+        /bin/rm -rf -- "$support_root"
+    fi
+    print "Removed CodexBar, its managed Hook, and Application Support data."
+else
+    print "Removed CodexBar and its managed Hook. Local data remains in $support_root"
+    print "Run scripts/uninstall-app --purge-data to remove that data too."
+fi

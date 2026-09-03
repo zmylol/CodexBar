@@ -1,0 +1,251 @@
+import Foundation
+
+@MainActor
+func privacyStaticTestCases() -> [CodexBarTestCase] {
+    [
+        CodexBarTestCase(name: "app source does not install a global keyboard monitor") {
+            let repositoryRoot = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            let appSource = repositoryRoot
+                .appendingPathComponent("Sources", isDirectory: true)
+                .appendingPathComponent("CodexBarApp", isDirectory: true)
+            let sourceURLs = try FileManager.default.contentsOfDirectory(
+                at: appSource,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ).filter { $0.pathExtension == "swift" }
+            let offenders = try sourceURLs.compactMap { url -> String? in
+                let source = try String(contentsOf: url, encoding: .utf8)
+                return source.contains("addGlobalMonitorForEvents")
+                    ? url.lastPathComponent
+                    : nil
+            }
+
+            try expect(
+                offenders.isEmpty,
+                "global keyboard monitor remains in: \(offenders.joined(separator: ", "))"
+            )
+        },
+        CodexBarTestCase(name: "window discovery preserves and revalidates process identity") {
+            let repositoryRoot = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            let sourceURL = repositoryRoot
+                .appendingPathComponent("Sources", isDirectory: true)
+                .appendingPathComponent("CodexBarWindowing", isDirectory: true)
+                .appendingPathComponent("AccessibilityWindowActivator.swift")
+            let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+            try expect(
+                !source.contains("processIdentifiers:"),
+                "window discovery reduced a verified app identity to a reusable PID"
+            )
+            try expect(
+                source.contains("applicationIdentities:")
+                    && source.contains("isCurrentApplication"),
+                "window discovery does not revalidate the full app identity"
+            )
+        },
+        CodexBarTestCase(name: "app validates storage before constructing the task store") {
+            let repositoryRoot = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            let sourceURL = repositoryRoot
+                .appendingPathComponent("Sources", isDirectory: true)
+                .appendingPathComponent("CodexBarApp", isDirectory: true)
+                .appendingPathComponent("CodexBarApp.swift")
+            let source = try String(contentsOf: sourceURL, encoding: .utf8)
+            let preparation = source.range(of: "try paths.prepareStorageDirectory()")
+            let storeConstruction = source.range(of: "TaskStore(persistenceURL: paths.taskStore)")
+
+            try expect(preparation != nil, "app startup does not prepare private storage")
+            try expect(storeConstruction != nil, "task store construction was not found")
+            if let preparation, let storeConstruction {
+                try expect(
+                    preparation.lowerBound < storeConstruction.lowerBound,
+                    "task store is constructed before private storage is validated"
+                )
+            }
+        },
+        CodexBarTestCase(name: "old-task cleanup uses asynchronous window discovery") {
+            let repositoryRoot = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            let sourceURL = repositoryRoot
+                .appendingPathComponent("Sources", isDirectory: true)
+                .appendingPathComponent("CodexBarApp", isDirectory: true)
+                .appendingPathComponent("CodexBarAppModel.swift")
+            let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+            try expect(
+                !source.contains("activator.discoverWindows()"),
+                "old-task cleanup performs Accessibility I/O on the main actor"
+            )
+            try expect(
+                source.contains("await activator.discoverWindowsAsync()"),
+                "old-task cleanup does not use asynchronous window discovery"
+            )
+        },
+        CodexBarTestCase(name: "task persistence stays off the main actor") {
+            let repositoryRoot = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            let coreSourceURL = repositoryRoot
+                .appendingPathComponent("Sources", isDirectory: true)
+                .appendingPathComponent("CodexBarCore", isDirectory: true)
+                .appendingPathComponent("TaskStore.swift")
+            let appSourceURL = repositoryRoot
+                .appendingPathComponent("Sources", isDirectory: true)
+                .appendingPathComponent("CodexBarApp", isDirectory: true)
+                .appendingPathComponent("CodexBarApp.swift")
+            let coreSource = try String(contentsOf: coreSourceURL, encoding: .utf8)
+            let appSource = try String(contentsOf: appSourceURL, encoding: .utf8)
+            let mainActorSource = coreSource.components(
+                separatedBy: "private actor TaskStoreStorage"
+            ).first ?? coreSource
+            let storageActorSource = coreSource.components(
+                separatedBy: "private actor TaskStoreStorage"
+            ).last ?? ""
+
+            try expect(
+                coreSource.contains("private actor TaskStoreStorage"),
+                "task persistence is not serialized by a storage actor"
+            )
+            try expect(
+                coreSource.contains("public func load() async"),
+                "task snapshots are still loaded synchronously during initialization"
+            )
+            try expect(
+                coreSource.contains("private var publishedRevision")
+                    && coreSource.contains("state.revision > publishedRevision"),
+                "late main-actor resumptions can publish an older storage revision"
+            )
+            try expect(
+                !storageActorSource.contains("await "),
+                "storage transactions can reenter the actor before their commit finishes"
+            )
+            try expect(
+                !mainActorSource.contains("Data(contentsOf:")
+                    && !mainActorSource.contains("JSONEncoder")
+                    && !mainActorSource.contains("JSONDecoder")
+                    && !mainActorSource.contains("FileManager.default")
+                    && !mainActorSource.contains(".sorted {"),
+                "TaskStore still performs filesystem, JSON, or sorting work on the main actor"
+            )
+            try expect(
+                mainActorSource.contains("guard !events.isEmpty else"),
+                "empty event batches still enter storage and rebuild sorted view state"
+            )
+            try expect(
+                appSource.contains("await store.load()"),
+                "app startup does not await the background snapshot load"
+            )
+            try expect(
+                appSource.contains("try await Task.detached")
+                    && appSource.contains("try paths.prepareStorageDirectory()"),
+                "app startup still prepares its storage directory on the main actor"
+            )
+        },
+        CodexBarTestCase(name: "active tasks schedule single-flight App Server reconciliation") {
+            let repositoryRoot = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            let appModelURL = repositoryRoot
+                .appendingPathComponent("Sources", isDirectory: true)
+                .appendingPathComponent("CodexBarApp", isDirectory: true)
+                .appendingPathComponent("CodexBarAppModel.swift")
+            let appModelSource = try String(contentsOf: appModelURL, encoding: .utf8)
+
+            try expect(
+                appModelSource.contains("TaskRecoveryThrottle(interval: 5)"),
+                "active-task App Server reconciliation is not throttled"
+            )
+            try expect(
+                appModelSource.contains("reconcileAppServerTasks(force: false)"),
+                "the normal poll loop does not reconcile a missing Stop"
+            )
+            try expect(
+                appModelSource.contains("matchingActiveTasks: activeTasks")
+                    && appModelSource.contains("reconcileActiveTasks("),
+                "periodic reconciliation still depends on VS Code window discovery"
+            )
+            try expect(
+                appModelSource.contains("startupRecoveryID")
+                    && appModelSource.contains("startupRecoveryID == recoveryID"),
+                "periodic App Server reconciliation has no stale-task identity guard"
+            )
+            let cancellationGuard =
+                "guard !Task.isCancelled, startupRecoveryID == recoveryID else"
+            let cancellationGuardCount = appModelSource.components(
+                separatedBy: cancellationGuard
+            ).count - 1
+            try expect(
+                cancellationGuardCount >= 6,
+                "cancelled or superseded reconciliation can still report stale failures"
+            )
+        },
+        CodexBarTestCase(name: "App Server failures use privacy-safe rate-limited diagnostics") {
+            let repositoryRoot = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            let appModelURL = repositoryRoot
+                .appendingPathComponent("Sources", isDirectory: true)
+                .appendingPathComponent("CodexBarApp", isDirectory: true)
+                .appendingPathComponent("CodexBarAppModel.swift")
+            let source = try String(contentsOf: appModelURL, encoding: .utf8)
+
+            try expect(source.contains("Logger("), "App Server failures have no system diagnostic")
+            try expect(
+                source.contains("nextRecoveryErrorLogAt"),
+                "App Server failure diagnostics are not rate limited"
+            )
+            try expect(
+                source.contains("App Server reconciliation failed; Hook state remains authoritative."),
+                "App Server failure diagnostic is not a fixed privacy-safe message"
+            )
+        },
+        CodexBarTestCase(name: "filesystem-backed task matching stays off the main actor") {
+            let repositoryRoot = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            let appModelURL = repositoryRoot
+                .appendingPathComponent("Sources", isDirectory: true)
+                .appendingPathComponent("CodexBarApp", isDirectory: true)
+                .appendingPathComponent("CodexBarAppModel.swift")
+            let reconcilerURL = repositoryRoot
+                .appendingPathComponent("Sources", isDirectory: true)
+                .appendingPathComponent("CodexBarCore", isDirectory: true)
+                .appendingPathComponent("StartupTaskReconciler.swift")
+            let appModelSource = try String(contentsOf: appModelURL, encoding: .utf8)
+            let reconcilerSource = try String(contentsOf: reconcilerURL, encoding: .utf8)
+            let reconcilerMainActorSource = reconcilerSource.components(
+                separatedBy: "private actor StartupTaskRecoveryWorker"
+            ).first ?? reconcilerSource
+
+            try expect(
+                appModelSource.contains("private actor OldTaskCleanupWorker")
+                    && appModelSource.contains("await oldTaskCleanupWorker.staleTasks"),
+                "old-task cleanup still resolves workspace paths on the main actor"
+            )
+            try expect(
+                reconcilerSource.contains("private actor StartupTaskRecoveryWorker")
+                    && reconcilerSource.contains("await worker.recoveredTasks"),
+                "startup reconciliation has no background path-matching worker"
+            )
+            try expect(
+                !reconcilerMainActorSource.contains("PathNormalizer.normalize")
+                    && !reconcilerMainActorSource.contains("matcher.match"),
+                "startup reconciliation still resolves workspace paths on the main actor"
+            )
+        }
+    ]
+}

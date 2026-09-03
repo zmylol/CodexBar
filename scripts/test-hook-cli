@@ -1,0 +1,58 @@
+#!/bin/zsh
+
+set -euo pipefail
+zmodload zsh/datetime
+
+script_dir=${0:A:h}
+repo_root=${script_dir:h}
+hook_binary="$repo_root/.build/debug/codexbar-hook"
+if [[ ! -x "$hook_binary" ]]; then
+    print -u2 "Build codexbar-hook before running this test."
+    exit 66
+fi
+
+test_root=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/codexbar-hook-cli.XXXXXX")
+trap '/bin/rm -rf -- "$test_root"' EXIT
+export CODEXBAR_SUPPORT_ROOT="$test_root/CodexBar"
+
+started_at=$EPOCHREALTIME
+probe_output=$("$hook_binary" --codexbar-managed --probe < "$repo_root/Tests/CodexBarCoreTests/Fixtures/stop.json" 2>&1)
+elapsed=$(( EPOCHREALTIME - started_at ))
+[[ -z "$probe_output" ]]
+(( elapsed < 1.0 ))
+
+probe_files=("$CODEXBAR_SUPPORT_ROOT/Probe"/*.json(N))
+[[ ${#probe_files} == 1 ]]
+if /usr/bin/grep -q 'secret assistant detail' "$probe_files[1]"; then
+    print -u2 "Probe persisted the assistant message body"
+    exit 1
+fi
+
+inbox_output=$("$hook_binary" --codexbar-managed < "$repo_root/Tests/CodexBarCoreTests/Fixtures/user-prompt-submit.json" 2>&1)
+[[ -z "$inbox_output" ]]
+inbox_files=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
+[[ ${#inbox_files} == 1 ]]
+
+invalid_output=$(print -rn -- '{not-json' | "$hook_binary" 2>&1)
+[[ -z "$invalid_output" ]]
+inbox_files_after_invalid=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
+[[ ${#inbox_files_after_invalid} == 1 ]]
+
+oversized_input="$test_root/oversized.json"
+print -rn -- '{"prompt":"' > "$oversized_input"
+/bin/dd if=/dev/zero bs=1048576 count=5 2>/dev/null \
+    | /usr/bin/tr '\0' 'a' >> "$oversized_input"
+print -rn -- '"}' >> "$oversized_input"
+oversized_output=$("$hook_binary" < "$oversized_input" 2>&1)
+[[ -z "$oversized_output" ]]
+inbox_files_after_oversized=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
+[[ ${#inbox_files_after_oversized} == 1 ]]
+
+for _ in {1..12}; do
+    "$hook_binary" < "$repo_root/Tests/CodexBarCoreTests/Fixtures/user-prompt-submit.json" &
+done
+wait
+inbox_files_after_concurrency=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
+[[ ${#inbox_files_after_concurrency} == 13 ]]
+
+print "PASS hook CLI is silent, fast, app-independent, concurrent-safe, and fail-open"

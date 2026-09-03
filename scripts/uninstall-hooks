@@ -1,0 +1,27 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+script_dir=${0:A:h}
+source "$script_dir/hook-config-common.zsh"
+
+codexbar_validate_config_paths
+codexbar_prepare_directories
+codexbar_acquire_config_lock
+trap codexbar_release_config_lock EXIT
+trap 'codexbar_release_config_lock; exit 130' INT
+trap 'codexbar_release_config_lock; exit 143' TERM
+
+if [[ ! -f "$codexbar_hooks_file" ]]; then
+    print "No hooks.json found; nothing to uninstall."
+    exit 0
+fi
+
+initial_fingerprint=$(codexbar_config_fingerprint)
+updated_json=$(codexbar_transform remove inbox)
+codexbar_assert_config_unchanged "$initial_fingerprint"
+codexbar_backup_current
+codexbar_assert_config_unchanged "$initial_fingerprint"
+codexbar_atomic_write "$updated_json"
+
+print "Removed CodexBar handlers and preserved other hooks in $codexbar_hooks_file"

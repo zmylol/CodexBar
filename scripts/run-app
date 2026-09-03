@@ -1,0 +1,7 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+script_dir=${0:A:h}
+bundle=$(/bin/zsh "$script_dir/build-app" | /usr/bin/tail -n 1)
+/usr/bin/open "$bundle"

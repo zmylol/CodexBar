@@ -1,0 +1,13 @@
+{
+  "session_id": "session-B",
+  "turn_id": "turn-2",
+  "cwd": "/tmp/project-beta",
+  "hook_event_name": "PermissionRequest",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "swift test",
+    "description": "Run tests outside the sandbox"
+  },
+  "permission_mode": "default",
+  "timestamp": "2026-08-30T23:41:12Z"
+}

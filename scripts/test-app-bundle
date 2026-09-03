@@ -1,0 +1,20 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+script_dir=${0:A:h}
+repo_root=${script_dir:h}
+bundle="$repo_root/dist/CodexBar.app"
+/bin/mkdir -p "$bundle/Contents/Resources"
+/usr/bin/touch "$bundle/Contents/Resources/stale-build-artifact"
+"$script_dir/build-app"
+
+[[ -x "$bundle/Contents/MacOS/CodexBar" ]]
+[[ -x "$bundle/Contents/Helpers/codexbar-hook" ]]
+[[ ! -e "$bundle/Contents/Resources/stale-build-artifact" ]]
+/usr/bin/plutil -lint "$bundle/Contents/Info.plist" >/dev/null
+bundle_identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$bundle/Contents/Info.plist")
+[[ "$bundle_identifier" == "com.codexbar.CodexBar" ]]
+/usr/bin/codesign --verify --deep --strict "$bundle"
+
+print "PASS native CodexBar.app bundle is valid and ad-hoc signed"

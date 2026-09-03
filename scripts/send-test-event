@@ -1,0 +1,40 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+script_dir=${0:A:h}
+repo_root=${script_dir:h}
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+    print -u2 "usage: scripts/send-test-event <running|attention|ready> <absolute-cwd> [title]"
+    exit 64
+fi
+
+state=$1
+workspace_path=$2
+title=${3:-}
+if [[ "$state" != "running" && "$state" != "attention" && "$state" != "ready" ]]; then
+    print -u2 "Unsupported state: $state"
+    exit 64
+fi
+if [[ "$workspace_path" != /* ]]; then
+    print -u2 "cwd must be an absolute path"
+    exit 64
+fi
+
+codexbar_user_home=${HOME:?User home is unavailable}
+support_root=${CODEXBAR_SUPPORT_ROOT:-"$codexbar_user_home/Library/Application Support/CodexBar"}
+hook_executable=${CODEXBAR_HOOK_EXECUTABLE:-"$support_root/bin/codexbar-hook"}
+if [[ ! -x "$hook_executable" && -x "$repo_root/.build/debug/codexbar-hook" ]]; then
+    hook_executable="$repo_root/.build/debug/codexbar-hook"
+elif [[ ! -x "$hook_executable" && -x "$repo_root/.build/release/codexbar-hook" ]]; then
+    hook_executable="$repo_root/.build/release/codexbar-hook"
+fi
+if [[ ! -x "$hook_executable" ]]; then
+    print -u2 "codexbar-hook was not found. Build or install CodexBar first."
+    exit 66
+fi
+
+payload=$(/usr/bin/osascript -l JavaScript "$script_dir/make-test-event.js" \
+    "$state" "$workspace_path" "$title")
+print -rn -- "$payload" | "$hook_executable"
+print "Sent $state event for $workspace_path"

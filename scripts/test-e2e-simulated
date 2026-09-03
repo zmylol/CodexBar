@@ -1,0 +1,57 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+script_dir=${0:A:h}
+repo_root=${script_dir:h}
+app_binary="$repo_root/.build/debug/CodexBar"
+hook_binary="$repo_root/.build/debug/codexbar-hook"
+if [[ ! -x "$app_binary" || ! -x "$hook_binary" ]]; then
+    print -u2 "Build CodexBar and codexbar-hook before running this test."
+    exit 66
+fi
+
+test_root=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/codexbar-e2e.XXXXXX")
+app_pid=""
+cleanup() {
+    if [[ -n "$app_pid" ]] && /bin/kill -0 "$app_pid" 2>/dev/null; then
+        /bin/kill "$app_pid" 2>/dev/null || true
+        /usr/bin/wait "$app_pid" 2>/dev/null || true
+    fi
+    /bin/rm -rf -- "$test_root"
+}
+trap cleanup EXIT
+
+export CODEXBAR_SUPPORT_ROOT="$test_root/CodexBar"
+export CODEXBAR_HOOK_EXECUTABLE="$hook_binary"
+workspace="$test_root/projects/project-alpha"
+/bin/mkdir -p "$workspace"
+
+CODEXBAR_SUPPORT_ROOT="$CODEXBAR_SUPPORT_ROOT" "$app_binary" \
+    >"$test_root/app.stdout" 2>"$test_root/app.stderr" &
+app_pid=$!
+
+"$script_dir/send-test-event" running "$workspace" "End-to-end simulated task"
+"$script_dir/send-test-event" attention "$workspace"
+"$script_dir/send-test-event" ready "$workspace"
+
+task_store="$CODEXBAR_SUPPORT_ROOT/tasks.json"
+for _ in {1..50}; do
+    if [[ -f "$task_store" ]] && /usr/bin/grep -q '"status":"ready"' "$task_store"; then
+        break
+    fi
+    /bin/sleep 0.1
+done
+
+[[ -f "$task_store" ]]
+/usr/bin/grep -q 'End-to-end simulated task' "$task_store"
+/usr/bin/grep -q '"status":"ready"' "$task_store"
+/usr/bin/grep -q '"isUnread":true' "$task_store"
+inbox_files=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
+processed_files=("$CODEXBAR_SUPPORT_ROOT/Processed"/*.json(N))
+[[ ${#inbox_files} == 0 ]]
+[[ ${#processed_files} == 3 ]]
+/bin/kill -0 "$app_pid"
+[[ ! -s "$test_root/app.stderr" ]]
+
+print "PASS simulated Hook → Inbox → TaskStore → running app flow"

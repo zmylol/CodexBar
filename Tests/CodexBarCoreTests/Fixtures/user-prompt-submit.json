@@ -1,0 +1,9 @@
+{
+  "session_id": "session-A",
+  "turn_id": "turn-1",
+  "cwd": "/tmp/project-alpha",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "  Implement   login flow  \nDo not persist this line",
+  "permission_mode": "default",
+  "timestamp": "2026-08-30T23:40:12Z"
+}

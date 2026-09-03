@@ -1,0 +1,181 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+script_dir=${0:A:h}
+repo_root=${script_dir:h}
+test_root=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/codexbar-hook-config.XXXXXX")
+test_root=${test_root:a}
+trap '/bin/rm -rf -- "$test_root"' EXIT
+
+hooks_file="$test_root/.codex/hooks.json"
+support_root="$test_root/Application Support/CodexBar"
+hook_executable="$support_root/bin/codexbar-hook"
+historical_hook_executable="/Applications/CodexBar-old.app/Contents/MacOS/codexbar-hook"
+managed_executables_file="$support_root/HookConfigOriginal/managed-executables"
+/bin/mkdir -p "${hooks_file:h}" "${hook_executable:h}" "${managed_executables_file:h}"
+/usr/bin/touch "$hook_executable"
+/bin/chmod 700 "$hook_executable"
+print -r -- "$historical_hook_executable" > "$managed_executables_file"
+/bin/chmod 600 "$managed_executables_file"
+/bin/cp "$repo_root/Tests/HookConfig/existing-hooks.json" "$hooks_file"
+/bin/mkdir -p "$support_root/HookConfigBackups"
+for backup_index in {1..12}; do
+    print -r -- '{"hooks": {}}' > "$support_root/HookConfigBackups/hooks-20000101T00000${backup_index}Z-1-${backup_index}.json"
+done
+
+export CODEXBAR_HOOKS_FILE="$hooks_file"
+export CODEXBAR_SUPPORT_ROOT="$support_root"
+export CODEXBAR_HOOK_EXECUTABLE="$hook_executable"
+
+assert_third_party_handlers_preserved() {
+    local command
+    for command in \
+        "'/opt/acme/bin/task-runner' --codexbar-managed" \
+        "'/opt/acme/bin/probe-runner' --codexbar-managed --probe"; do
+        if ! /usr/bin/grep -Fq -- "$command" "$hooks_file"; then
+            print -u2 "Third-party Hook was removed because its arguments ended with a CodexBar marker: $command"
+            return 1
+        fi
+    done
+}
+
+assert_empty_third_party_group_preserved() {
+    if ! /usr/bin/grep -Fq -- "keep-empty-third-party-group" "$hooks_file"; then
+        print -u2 "Third-party empty Hook group was removed"
+        return 1
+    fi
+}
+
+install_output=$("$script_dir/install-hooks" --probe)
+[[ "$install_output" == *"The IDE chat has no /hooks command"* ]]
+[[ "$install_output" == *"Codex Settings > Hooks"* ]]
+[[ "$install_output" != *"Codex CLI"* ]]
+hook_backups=("$support_root/HookConfigBackups"/hooks-*.json(N))
+[[ ${#hook_backups} == 10 ]]
+"$script_dir/install-hooks" --probe > "$test_root/concurrent-install-1.log" &
+first_install_pid=$!
+"$script_dir/install-hooks" --probe > "$test_root/concurrent-install-2.log" &
+second_install_pid=$!
+wait "$first_install_pid"
+wait "$second_install_pid"
+[[ ! -d "$support_root/.hook-config.lock" ]]
+
+/usr/bin/grep -q 'User hooks that CodexBar must preserve' "$hooks_file"
+/usr/bin/grep -q '/usr/bin/true' "$hooks_file"
+/usr/bin/grep -q 'existing-hook' "$hooks_file"
+assert_third_party_handlers_preserved
+assert_empty_third_party_group_preserved
+if /usr/bin/grep -Fq "$historical_hook_executable" "$hooks_file"; then
+    print -u2 "Known historical CodexBar executable remained after migration"
+    exit 1
+fi
+handler_count=$(/usr/bin/grep -o 'codexbar-hook.*--probe' "$hooks_file" | /usr/bin/wc -l | /usr/bin/tr -d ' ')
+[[ "$handler_count" == "3" ]]
+
+second_hook_executable="$support_root/alternate/codexbar-hook"
+/bin/mkdir -p "${second_hook_executable:h}"
+/usr/bin/touch "$second_hook_executable"
+/bin/chmod 700 "$second_hook_executable"
+export CODEXBAR_HOOK_EXECUTABLE="$second_hook_executable"
+"$script_dir/install-hooks"
+if /usr/bin/grep -Fq "$hook_executable" "$hooks_file"; then
+    print -u2 "Previous CodexBar executable path remained after migration"
+    exit 1
+fi
+second_handler_count=$(/usr/bin/grep -Fo "$second_hook_executable" "$hooks_file" | /usr/bin/wc -l | /usr/bin/tr -d ' ')
+[[ "$second_handler_count" == "3" ]]
+
+"$script_dir/uninstall-hooks"
+/usr/bin/grep -q '/usr/bin/true' "$hooks_file"
+/usr/bin/grep -q 'existing-hook' "$hooks_file"
+assert_third_party_handlers_preserved
+assert_empty_third_party_group_preserved
+if /usr/bin/grep -q 'codexbar-hook' "$hooks_file"; then
+    print -u2 "CodexBar handlers remained after uninstall"
+    exit 1
+fi
+
+print -r -- '{"hooks": {}}' > "$hooks_file"
+"$script_dir/restore-hooks" --force
+/usr/bin/grep -q 'User hooks that CodexBar must preserve' "$hooks_file"
+/usr/bin/grep -q '/usr/bin/true' "$hooks_file"
+/usr/bin/grep -q 'existing-hook' "$hooks_file"
+assert_third_party_handlers_preserved
+assert_empty_third_party_group_preserved
+
+/bin/cp "$repo_root/Tests/HookConfig/malformed-hooks.json" "$hooks_file"
+before_hash=$(/usr/bin/shasum -a 256 "$hooks_file" | /usr/bin/awk '{print $1}')
+if "$script_dir/install-hooks" > "$test_root/malformed.stdout" 2> "$test_root/malformed.stderr"; then
+    print -u2 "Malformed hooks.json unexpectedly installed"
+    exit 1
+fi
+[[ -s "$test_root/malformed.stderr" ]]
+after_hash=$(/usr/bin/shasum -a 256 "$hooks_file" | /usr/bin/awk '{print $1}')
+[[ "$before_hash" == "$after_hash" ]]
+
+print -r -- '{"hooks":{"Stop":"keep-this-invalid-value"}}' > "$hooks_file"
+before_hash=$(/usr/bin/shasum -a 256 "$hooks_file" | /usr/bin/awk '{print $1}')
+if "$script_dir/install-hooks" > "$test_root/invalid-schema.stdout" 2> "$test_root/invalid-schema.stderr"; then
+    print -u2 "Invalid Hook event schema was unexpectedly overwritten"
+    exit 1
+fi
+after_hash=$(/usr/bin/shasum -a 256 "$hooks_file" | /usr/bin/awk '{print $1}')
+[[ "$before_hash" == "$after_hash" ]]
+
+missing_root="$test_root/missing-original"
+export CODEXBAR_HOOKS_FILE="$missing_root/.codex/hooks.json"
+export CODEXBAR_SUPPORT_ROOT="$missing_root/Application Support/CodexBar"
+export CODEXBAR_HOOK_EXECUTABLE="$missing_root/codexbar-hook"
+/bin/mkdir -p "$missing_root"
+/usr/bin/touch "$CODEXBAR_HOOK_EXECUTABLE"
+/bin/chmod 700 "$CODEXBAR_HOOK_EXECUTABLE"
+"$script_dir/install-hooks" --probe > "$test_root/missing-install.log"
+[[ -f "$CODEXBAR_HOOKS_FILE" ]]
+"$script_dir/restore-hooks" --force > "$test_root/missing-restore.log"
+[[ ! -e "$CODEXBAR_HOOKS_FILE" ]]
+
+symlink_case_root="$test_root/symlink-managed-directory"
+symlink_hooks_file="$symlink_case_root/.codex/hooks.json"
+symlink_support_root="$symlink_case_root/Application Support/CodexBar"
+symlink_hook_executable="$symlink_support_root/bin/codexbar-hook"
+unrelated_original_root="$symlink_case_root/unrelated-original"
+/bin/mkdir -p \
+    "${symlink_hooks_file:h}" \
+    "${symlink_hook_executable:h}" \
+    "$unrelated_original_root"
+/usr/bin/touch "$symlink_hook_executable"
+/bin/chmod 700 "$symlink_hook_executable"
+/bin/cp "$repo_root/Tests/HookConfig/existing-hooks.json" "$symlink_hooks_file"
+print -r -- "must remain unchanged" > "$unrelated_original_root/hooks.json"
+before_hash=$(/usr/bin/shasum -a 256 "$unrelated_original_root/hooks.json" | /usr/bin/awk '{print $1}')
+/bin/ln -s "$unrelated_original_root" "$symlink_support_root/HookConfigOriginal"
+if CODEXBAR_HOOKS_FILE="$symlink_hooks_file" \
+    CODEXBAR_SUPPORT_ROOT="$symlink_support_root" \
+    CODEXBAR_HOOK_EXECUTABLE="$symlink_hook_executable" \
+    "$script_dir/install-hooks" --probe > "$test_root/symlink-hooks.stdout" 2> "$test_root/symlink-hooks.stderr"; then
+    print -u2 "Hook installer followed a symbolic-link managed directory"
+    exit 1
+fi
+after_hash=$(/usr/bin/shasum -a 256 "$unrelated_original_root/hooks.json" | /usr/bin/awk '{print $1}')
+[[ "$before_hash" == "$after_hash" ]]
+
+trailing_case_root="$test_root/trailing-root-symlink"
+trailing_hooks_file="$trailing_case_root/.codex/hooks.json"
+trailing_support_target="$trailing_case_root/unrelated-support"
+trailing_support_link="$trailing_case_root/support-link"
+trailing_hook_executable="$trailing_support_target/bin/codexbar-hook"
+/bin/mkdir -p "${trailing_hooks_file:h}" "${trailing_hook_executable:h}"
+/usr/bin/touch "$trailing_hook_executable"
+/bin/chmod 700 "$trailing_hook_executable"
+/bin/cp "$repo_root/Tests/HookConfig/existing-hooks.json" "$trailing_hooks_file"
+/bin/ln -s "$trailing_support_target" "$trailing_support_link"
+if CODEXBAR_HOOKS_FILE="$trailing_hooks_file" \
+    CODEXBAR_SUPPORT_ROOT="$trailing_support_link/." \
+    CODEXBAR_HOOK_EXECUTABLE="$trailing_hook_executable" \
+    "$script_dir/install-hooks" --probe > "$test_root/trailing-hooks.stdout" 2> "$test_root/trailing-hooks.stderr"; then
+    print -u2 "Hook installer accepted a symbolic-link root with a trailing dot component"
+    exit 1
+fi
+
+print "PASS hook config merge, concurrency, migration, restore, malformed-input safety, and symlink refusal"

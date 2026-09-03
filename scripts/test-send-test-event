@@ -1,0 +1,29 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+script_dir=${0:A:h}
+test_root=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/codexbar-send-event.XXXXXX")
+trap '/bin/rm -rf -- "$test_root"' EXIT
+
+export CODEXBAR_SUPPORT_ROOT="$test_root/CodexBar"
+export CODEXBAR_HOOK_EXECUTABLE="${script_dir:h}/.build/debug/codexbar-hook"
+workspace="$test_root/projects/project-alpha"
+/bin/mkdir -p "$workspace"
+
+"$script_dir/send-test-event" running "$workspace" "Build a test feature"
+"$script_dir/send-test-event" attention "$workspace"
+"$script_dir/send-test-event" ready "$workspace"
+
+events=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
+[[ ${#events} == 3 ]]
+/usr/bin/grep -l 'UserPromptSubmit' "$events[@]" >/dev/null
+/usr/bin/grep -l 'PermissionRequest' "$events[@]" >/dev/null
+/usr/bin/grep -l 'Stop' "$events[@]" >/dev/null
+
+if "$script_dir/send-test-event" unsupported "$workspace" >/dev/null 2>&1; then
+    print -u2 "Unsupported simulated state unexpectedly succeeded"
+    exit 1
+fi
+
+print "PASS send-test-event writes all three lifecycle fixtures"

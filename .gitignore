@@ -1,0 +1,9 @@
+.build/
+dist/
+.swiftpm/
+DerivedData/
+*.dSYM/
+*.profdata
+*.profraw
+*.xcuserstate
+.DS_Store

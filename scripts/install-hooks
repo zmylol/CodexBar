@@ -1,0 +1,39 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+script_dir=${0:A:h}
+source "$script_dir/hook-config-common.zsh"
+
+capture_mode=inbox
+if [[ ${1:-} == "--probe" ]]; then
+    capture_mode=probe
+elif [[ $# -gt 0 ]]; then
+    print -u2 "usage: scripts/install-hooks [--probe]"
+    exit 64
+fi
+
+codexbar_validate_config_paths
+if [[ ! -x "$codexbar_hook_executable" ]]; then
+    print -u2 "Hook executable is missing or not executable: $codexbar_hook_executable"
+    print -u2 "Run scripts/install-app first, or set CODEXBAR_HOOK_EXECUTABLE."
+    exit 66
+fi
+
+codexbar_prepare_directories
+codexbar_acquire_config_lock
+trap codexbar_release_config_lock EXIT
+trap 'codexbar_release_config_lock; exit 130' INT
+trap 'codexbar_release_config_lock; exit 143' TERM
+initial_fingerprint=$(codexbar_config_fingerprint)
+updated_json=$(codexbar_transform install "$capture_mode")
+codexbar_assert_config_unchanged "$initial_fingerprint"
+codexbar_capture_original_once
+codexbar_backup_current
+codexbar_assert_config_unchanged "$initial_fingerprint"
+codexbar_atomic_write "$updated_json"
+codexbar_record_managed_executable
+codexbar_warn_inline_hooks
+
+print "Installed CodexBar $capture_mode hooks in $codexbar_hooks_file"
+print "The IDE chat has no /hooks command. Reload VS Code, then use Codex Settings > Hooks to review and trust the definitions."

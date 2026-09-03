@@ -1,0 +1,109 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+script_dir=${0:A:h}
+test_root=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/codexbar-install.XXXXXX")
+trap '/bin/rm -rf -- "$test_root"' EXIT
+
+export CODEXBAR_APPLICATIONS_ROOT="$test_root/Applications"
+export CODEXBAR_SUPPORT_ROOT="$test_root/Application Support/CodexBar"
+export CODEXBAR_HOOKS_FILE="$test_root/.codex/hooks.json"
+/bin/mkdir -p "${CODEXBAR_HOOKS_FILE:h}"
+print -r -- '{"hooks": {}}' > "$CODEXBAR_HOOKS_FILE"
+
+"$script_dir/install-app"
+/usr/bin/touch "$CODEXBAR_APPLICATIONS_ROOT/CodexBar.app/Contents/Resources/stale-install-artifact"
+for backup_index in {1..7}; do
+    /bin/mkdir -p "$CODEXBAR_SUPPORT_ROOT/AppBackups/CodexBar-20000101T00000${backup_index}Z-1-${backup_index}.app"
+done
+"$script_dir/install-app"
+
+[[ -x "$CODEXBAR_APPLICATIONS_ROOT/CodexBar.app/Contents/MacOS/CodexBar" ]]
+[[ -x "$CODEXBAR_SUPPORT_ROOT/bin/codexbar-hook" ]]
+[[ ! -e "$CODEXBAR_APPLICATIONS_ROOT/CodexBar.app/Contents/Resources/stale-install-artifact" ]]
+backups=("$CODEXBAR_SUPPORT_ROOT/AppBackups"/CodexBar-*.app(N))
+[[ ${#backups} == 5 ]]
+/usr/bin/codesign --verify --deep --strict "$CODEXBAR_APPLICATIONS_ROOT/CodexBar.app"
+
+private_record="$CODEXBAR_SUPPORT_ROOT/Processed/keep-until-purge.json"
+/bin/mkdir -p "${private_record:h}"
+print -r -- '{"private":"local-only"}' > "$private_record"
+"$script_dir/uninstall-app"
+[[ ! -e "$CODEXBAR_APPLICATIONS_ROOT/CodexBar.app" ]]
+[[ ! -e "$CODEXBAR_SUPPORT_ROOT/bin/codexbar-hook" ]]
+[[ -f "$private_record" ]]
+
+"$script_dir/install-app"
+"$script_dir/uninstall-app" --purge-data
+[[ ! -e "$CODEXBAR_APPLICATIONS_ROOT/CodexBar.app" ]]
+[[ ! -e "$CODEXBAR_SUPPORT_ROOT" ]]
+
+invalid_purge_root="$test_root/invalid-purge"
+invalid_applications_root="$invalid_purge_root/Applications"
+invalid_support_root="$invalid_purge_root/UnexpectedSupportName"
+/bin/mkdir -p \
+    "$invalid_applications_root/CodexBar.app" \
+    "$invalid_support_root/bin"
+print -r -- "app marker" > "$invalid_applications_root/CodexBar.app/marker"
+print -r -- "hook marker" > "$invalid_support_root/bin/codexbar-hook"
+if CODEXBAR_APPLICATIONS_ROOT="$invalid_applications_root" \
+    CODEXBAR_SUPPORT_ROOT="$invalid_support_root" \
+    "$script_dir/uninstall-app" --purge-data \
+    > "$test_root/invalid-purge.stdout" 2> "$test_root/invalid-purge.stderr"; then
+    print -u2 "Uninstaller accepted a purge root not named CodexBar"
+    exit 1
+fi
+[[ -f "$invalid_applications_root/CodexBar.app/marker" ]]
+[[ -f "$invalid_support_root/bin/codexbar-hook" ]]
+
+if CODEXBAR_APPLICATIONS_ROOT=/ "$script_dir/install-app" >/dev/null 2>&1; then
+    print -u2 "Installer accepted the filesystem root as an application target"
+    exit 1
+fi
+
+symlink_case_root="$test_root/symlink-case"
+symlink_applications_root="$symlink_case_root/Applications"
+symlink_support_root="$symlink_case_root/Application Support/CodexBar"
+unrelated_bin="$symlink_case_root/unrelated-bin"
+/bin/mkdir -p "$symlink_applications_root" "$symlink_support_root" "$unrelated_bin"
+print -r -- "must remain unchanged" > "$unrelated_bin/codexbar-hook"
+before_hash=$(/usr/bin/shasum -a 256 "$unrelated_bin/codexbar-hook" | /usr/bin/awk '{print $1}')
+/bin/ln -s "$unrelated_bin" "$symlink_support_root/bin"
+if CODEXBAR_APPLICATIONS_ROOT="$symlink_applications_root" \
+    CODEXBAR_SUPPORT_ROOT="$symlink_support_root" \
+    "$script_dir/install-app" > "$test_root/symlink-install.stdout" 2> "$test_root/symlink-install.stderr"; then
+    print -u2 "Installer followed a symbolic-link managed directory"
+    exit 1
+fi
+after_hash=$(/usr/bin/shasum -a 256 "$unrelated_bin/codexbar-hook" | /usr/bin/awk '{print $1}')
+[[ "$before_hash" == "$after_hash" ]]
+
+if CODEXBAR_APPLICATIONS_ROOT="$symlink_applications_root" \
+    CODEXBAR_SUPPORT_ROOT="$symlink_support_root" \
+    "$script_dir/uninstall-app" \
+    > "$test_root/symlink-uninstall.stdout" 2> "$test_root/symlink-uninstall.stderr"; then
+    print -u2 "Uninstaller followed a symbolic-link Hook parent directory"
+    exit 1
+fi
+after_hash=$(/usr/bin/shasum -a 256 "$unrelated_bin/codexbar-hook" | /usr/bin/awk '{print $1}')
+[[ "$before_hash" == "$after_hash" ]]
+
+trailing_case_root="$test_root/trailing-symlink-case"
+trailing_applications_root="$trailing_case_root/Applications"
+trailing_support_target="$trailing_case_root/unrelated-support"
+trailing_support_link="$trailing_case_root/support-link"
+/bin/mkdir -p "$trailing_applications_root" "$trailing_support_target/bin"
+print -r -- "must remain unchanged" > "$trailing_support_target/bin/codexbar-hook"
+before_hash=$(/usr/bin/shasum -a 256 "$trailing_support_target/bin/codexbar-hook" | /usr/bin/awk '{print $1}')
+/bin/ln -s "$trailing_support_target" "$trailing_support_link"
+if CODEXBAR_APPLICATIONS_ROOT="$trailing_applications_root" \
+    CODEXBAR_SUPPORT_ROOT="$trailing_support_link/" \
+    "$script_dir/install-app" > "$test_root/trailing-symlink.stdout" 2> "$test_root/trailing-symlink.stderr"; then
+    print -u2 "Installer accepted a symbolic-link root with a trailing slash"
+    exit 1
+fi
+after_hash=$(/usr/bin/shasum -a 256 "$trailing_support_target/bin/codexbar-hook" | /usr/bin/awk '{print $1}')
+[[ "$before_hash" == "$after_hash" ]]
+
+print "PASS app install/uninstall stays inside isolated roots, preserves data by default, purges explicitly, and rejects managed symlinks"

@@ -1,0 +1,49 @@
+{
+  "description": "User hooks that CodexBar must preserve",
+  "custom": {
+    "keep": true
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/true",
+            "timeout": 9
+          },
+          {
+            "type": "command",
+            "command": "'/opt/acme/bin/task-runner' --codexbar-managed",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/logger existing-hook"
+          },
+          {
+            "type": "command",
+            "command": "'/opt/acme/bin/probe-runner' --codexbar-managed --probe"
+          },
+          {
+            "type": "command",
+            "command": "'/Applications/CodexBar-old.app/Contents/MacOS/codexbar-hook' --codexbar-managed --probe"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "keep-empty-third-party-group",
+        "hooks": []
+      }
+    ]
+  }
+}

@@ -1,0 +1,52 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+script_dir=${0:A:h}
+source "$script_dir/hook-config-common.zsh"
+
+if [[ ${1:-} != "--force" || $# -ne 1 ]]; then
+    print -u2 "usage: scripts/restore-hooks --force"
+    print -u2 "This replaces the current hooks.json with the pre-install backup."
+    exit 64
+fi
+
+codexbar_validate_config_paths
+state_file="$codexbar_original_root/original-state"
+if [[ ! -f "$state_file" ]]; then
+    print -u2 "No CodexBar original-hook backup is available."
+    exit 66
+fi
+
+codexbar_prepare_directories
+codexbar_acquire_config_lock
+trap codexbar_release_config_lock EXIT
+trap 'codexbar_release_config_lock; exit 130' INT
+trap 'codexbar_release_config_lock; exit 143' TERM
+initial_fingerprint=$(codexbar_config_fingerprint)
+codexbar_backup_current
+codexbar_assert_config_unchanged "$initial_fingerprint"
+original_state=$(<"$state_file")
+if [[ "$original_state" == "existing" ]]; then
+    original_file="$codexbar_original_root/hooks.json"
+    if [[ ! -f "$original_file" ]]; then
+        print -u2 "Original backup metadata exists but hooks.json is missing."
+        exit 66
+    fi
+    if ! codexbar_validate_hooks_file "$original_file"; then
+        print -u2 "The original hooks.json backup is invalid; current configuration was not replaced."
+        exit 65
+    fi
+    codexbar_assert_config_unchanged "$initial_fingerprint"
+    codexbar_atomic_copy "$original_file"
+    print "Restored the pre-install hooks.json. The replaced file remains in HookConfigBackups."
+elif [[ "$original_state" == "missing" ]]; then
+    codexbar_assert_config_unchanged "$initial_fingerprint"
+    if [[ -f "$codexbar_hooks_file" ]]; then
+        /bin/rm -- "$codexbar_hooks_file"
+    fi
+    print "Removed hooks.json because it did not exist before CodexBar installation. A backup was retained."
+else
+    print -u2 "Unrecognized original-hook backup state."
+    exit 65
+fi
