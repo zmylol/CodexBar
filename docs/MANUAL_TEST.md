@@ -17,6 +17,7 @@
 ```sh
 open "$HOME/Applications/CodexBar.app"
 scripts/send-test-event running /absolute/path/to/project-alpha "Refactor authentication hooks"
+scripts/send-test-event action /absolute/path/to/project-alpha
 scripts/send-test-event attention /absolute/path/to/project-beta
 scripts/send-test-event ready /absolute/path/to/project-gamma
 ```
@@ -24,7 +25,8 @@ scripts/send-test-event ready /absolute/path/to/project-gamma
 确认：
 
 - 悬浮条默认只显示三个项目名和状态颜色；
-- 鼠标悬停项目时才显示摘要、状态和时间；
+- 鼠标悬停 `project-alpha` 时显示任务摘要、状态、时间和“运行 Swift 测试”节点；
+- 保持悬停并再次发送 `action`，节点时间和内容应实时更新，不需要移开鼠标重新打开；
 - 鼠标离开、按本地 Escape 或详情失去触发条件后，详情消失；
 - 切换到其他应用后悬浮条仍可见，但不抢键盘焦点；
 - 拖动后位置在重启应用后保留；

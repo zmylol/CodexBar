@@ -10,7 +10,7 @@ Codex Hook 事件可能包含：
 
 - session ID 和 turn ID；
 - 当前工作目录的绝对路径；
-- `UserPromptSubmit`、`PermissionRequest` 或 `Stop` 事件类型；
+- `UserPromptSubmit`、`PreToolUse`、`PermissionRequest` 或 `Stop` 事件类型；
 - prompt 第一行的脱敏摘要，最多 80 个字符；
 - 工具名称；
 - 事件时间；
@@ -31,6 +31,7 @@ App Server 查询失败时，CodexBar 最多每分钟向 macOS 统一日志写�
 ```text
 ~/Library/Application Support/CodexBar/
 ├── Inbox/
+├── Activity/
 ├── Processed/
 ├── Failed/
 ├── Probe/
@@ -45,7 +46,8 @@ CodexBar 管理的目录设置为 0700，事件、任务和 Hook 配置备份设
 
 ## 保留策略
 
-- `Inbox`：事件等待应用处理；成功后移动到 `Processed`，损坏事件移动到 `Failed`。
+- `Inbox`：生命周期事件等待应用处理；成功后移动到 `Processed`，损坏事件移动到 `Failed`。
+- `Activity`：最多 12 个脱敏后的临时动作事件；同一工作区的新 prompt 会替换旧队列，成功处理后直接删除，不归档。
 - `Processed`、`Failed`、`Probe`：每个目录最多 500 个普通文件，且最长保留七天。新归档会立即触发轮转；应用正常运行时首次轮询及之后最多每小时再检查一次。
 - `tasks.json`：当前任务可由用户删除或通过界面清理；用于防止重复处理的事件 ID 独立保留，最多 100,000 个。为防止旧快照在重启后复活已删除行，文件还会保留最多 10,000 个精确 task ID 与删除时间；最旧记录超限时移除。完整数据清除会删除整个文件。
 - 损坏的任务快照：为了诊断而隔离保留，直到用户手动删除或使用完整数据清除。

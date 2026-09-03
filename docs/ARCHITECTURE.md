@@ -5,11 +5,14 @@
 ```text
 Codex Hook stdin
     ↓ codexbar-hook (bounded parse + sanitization)
-Inbox/*.json
+Inbox/*.json + Activity/*.json (bounded to 12)
     ↓ background CodexEventSource worker
-TaskStoreStorage actor (tasks.json)
+EventProcessor
+    ├─ lifecycle → TaskStoreStorage actor (tasks.json) → Processed/
+    └─ PreToolUse → MainActor LiveTaskActivityStore → delete Activity file
+                         (current turn, at most 3 nodes, memory only)
     ↓ revisioned view state
-MainActor TaskStore
+MainActor TaskStore + LiveTaskActivityStore
     ↓ CodexBarAppModel
 compact floating panel
     ↓ explicit user click
@@ -40,6 +43,8 @@ StartupTaskReconciler → TaskStore
 
 - Hook 不向 stdout/stderr 输出普通成功信息，也不改变 Codex 决策；
 - 原始 stdin 有大小上限，持久化前只保留必要且脱敏的字段；
+- `PreToolUse` 不保留原始命令、补丁、搜索词、MCP 参数或工具输出；只生成受限分类和安全路径摘要；
+- 实时活动队列独立于生命周期 Inbox、全局最多 12 条且生命周期事件优先；界面最多保留当前任务三个内存节点，新 prompt 会替换旧节点，应用重启不会恢复；活动事件不改变任务状态、不写入 `tasks.json`，处理后不进入归档；
 - 事件目录和文件分别使用 0700 与 0600 权限；
 - 事件文件读取、移动和归档轮转在后台 actor 中串行执行；每批事件只提交一次任务快照、执行一次归档轮转；
 - 任务快照加载、JSON 编解码、排序、写盘和文件系统路径匹配均在后台 actor 中完成；主线程只发布不落后的 revision；

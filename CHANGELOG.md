@@ -10,6 +10,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 - Compact always-on-top project bar with hover details.
 - Codex Hook ingestion for running, attention, and ready states.
+- Transient live hover previews with up to three sanitized activity nodes for the current task.
 - Conservative startup recovery from the official Codex App Server.
 - Existing-window activation with ambiguity-safe matching.
 - Source build, isolated tests, install, Hook migration, and uninstall scripts.
