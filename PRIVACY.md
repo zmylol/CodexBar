@@ -13,10 +13,15 @@ Codex Hook 事件可能包含：
 - `UserPromptSubmit`、`PreToolUse`、`PermissionRequest` 或 `Stop` 事件类型；
 - prompt 第一行的脱敏摘要，最多 80 个字符；
 - 工具名称；
+- 受限的打开目标（`vscode` 或 `codexDesktop`，无法识别时不保存）；
 - 事件时间；
 - assistant message 是否存在的布尔值。
 
 CodexBar 不保存完整 prompt、完整 assistant message 或 transcript。assistant message 正文不会被解码到持久化模型；只保存“是否存在”。事件去重 ID 只基于已经过长度校验和脱敏的必要字段，不对原始 JSON、原始 prompt 或 assistant message 正文做持久化指纹。
+
+打开目标来自 Hook 进程继承的单个 Codex originator 环境值。CodexBar 只对已知值映射为上述枚举，不保存原始环境值，也不会读取 transcript 来判断客户端。历史任务缺少目标时，点击会先沿用 VS Code 窗口匹配；只有 VS Code 未运行或没有匹配窗口时，才尝试按精确 session ID 打开 Codex 桌面端。
+
+`PreToolUse` 的原始 `tool_input` 只在短生命周期 Hook 进程中解析，不会写入事件文件。CodexBar 只生成“读取 / 搜索 / 修改 / 测试 / 命令”分类，以及可安全展示的相对路径或文件名；不会保存原始命令、原始 tool-use ID、补丁正文、搜索词、MCP 参数或工具输出。为了跨进程交付，脱敏后的活动会短暂写入独立的 `Activity` 队列：全局最多 12 条，同一工作区的新 prompt 会删除旧队列，应用处理后立即删除且不进入 `Processed`。如果应用一直没有启动，最多 12 个脱敏事件会留到下次提交或应用处理。界面仅在内存中保留当前任务最近三个节点，下一次提交、删除任务或退出应用时即消失，也不会写入 `tasks.json`。
 
 启动历史恢复最多扫描 500 条来源为 `vscode` 的未归档 thread 元数据。存在活跃任务期间的节流核对不做全局扫描，只按现有任务的 session ID 读取元数据，每轮最多核对 128 个 `vscode` 或 `cli` thread。请求使用不加载 items 的模式。启动恢复只保存唯一匹配到已打开窗口的必要字段；周期核对只接受与已有任务的 session ID、turn ID 和 cwd 全部相同的快照。两条路径都不会保存 transcript 或 items，也不会重新加入已被用户删除的 task ID。
 
@@ -66,6 +71,8 @@ CodexBar 在用户明确点击项目时使用 Accessibility：
 - 最小化其他标准 VS Code 窗口。
 
 应用启动恢复也会使用窗口标题来匹配已打开项目；执行窗口操作前会再次验证进程身份。CodexBar 不安装全局键盘监听，不读取或记录其他应用的键盘输入。
+
+打开 Codex 桌面端任务不使用 Accessibility。CodexBar 会先验证目标应用的 bundle id 与 OpenAI Team 签名，再将只含 session ID 的 `codex://threads/…` 链接显式交给该应用。
 
 ## 删除数据
 

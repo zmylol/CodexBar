@@ -16,7 +16,9 @@ MainActor TaskStore + LiveTaskActivityStore
     ↓ CodexBarAppModel
 compact floating panel
     ↓ explicit user click
-AccessibilityWindowActivator → existing VS Code window
+CodexTaskOpener
+    ├─ VS Code → AccessibilityWindowActivator → existing window
+    └─ Codex Desktop → verified app + codex://threads/<session-id>
 ```
 
 启动时以及存在活跃任务期间还有一条只读恢复路径：
@@ -34,7 +36,7 @@ StartupTaskReconciler → TaskStore
 ## Targets
 
 - `CodexBarCore`：事件解析、脱敏、Inbox、状态机、持久化、App Server 恢复与窗口匹配；
-- `CodexBarWindowing`：Accessibility 授权、VS Code 进程和窗口操作；
+- `CodexBarWindowing`：Accessibility 授权、VS Code 进程和窗口操作，以及 Codex 桌面端精确 thread 深链；
 - `CodexBarApp`：AppKit/SwiftUI 悬浮条及用户交互；
 - `codexbar-hook`：由 Codex Hooks 调用的静默、快速、fail-open 命令；
 - `codexbar-tests`：无第三方测试框架的统一 Swift 测试可执行文件。
@@ -54,6 +56,7 @@ StartupTaskReconciler → TaskStore
 - Hook 配置只删除 executable 路径精确匹配的 CodexBar handler；
 - VS Code 窗口只有唯一匹配时才能执行操作；
 - VS Code 实时进程在发现和动作前都必须通过 Microsoft Team 签名要求；
+- 桌面 thread 深链只会显式交给 bundle id 与 OpenAI Team 签名均通过验证的 Codex 应用；
 - 不执行 `code -r`，不创建窗口，不猜测歧义目标；
 - App Server 有可执行文件签名、symlink、响应大小、消息数和超时限制；
 - App Server 恢复只读查询 thread/turn 元数据且不加载 items；只有启动历史恢复枚举现有窗口，只有用户明确点击后才会前置或最小化窗口；
