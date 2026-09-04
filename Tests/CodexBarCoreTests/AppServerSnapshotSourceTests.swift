@@ -49,11 +49,11 @@ func appServerSnapshotSourceTestCases() -> [CodexBarTestCase] {
             )
             try expect(
                 snapshots.first(where: { $0.cwd == "/work/interrupted" })?.status == .interrupted,
-                "source did not return an inactive interrupted turn"
+                "source did not return an interrupted turn without completedAt"
             )
             try expect(
                 snapshots.first(where: { $0.cwd == "/work/failed" })?.status == .failed,
-                "source did not return an inactive failed turn"
+                "source did not return a failed turn without completedAt"
             )
         },
         CodexBarTestCase(name: "loads exact CLI and VS Code turns for active Hook tasks") {
@@ -112,10 +112,7 @@ func appServerSnapshotSourceTestCases() -> [CodexBarTestCase] {
             )
             try expect(cli.turnID == "cli-turn", "CLI recovery returned the wrong turn")
             try expect(cli.source == .cli, "CLI recovery lost the thread source")
-            try expect(
-                cli.status == .inProgress,
-                "active CLI turn was treated as terminal"
-            )
+            try expect(cli.status == .interrupted, "CLI interruption was not reported")
             try expect(
                 cli.startedAt == Date(timeIntervalSince1970: 100),
                 "CLI recovery did not safely reuse the Hook start time"
@@ -125,10 +122,7 @@ func appServerSnapshotSourceTestCases() -> [CodexBarTestCase] {
                 "VS Code active snapshot is missing"
             )
             try expect(vscode.source == .vscode, "VS Code recovery lost the thread source")
-            try expect(
-                vscode.status == .inProgress,
-                "active VS Code turn was treated as terminal"
-            )
+            try expect(vscode.status == .failed, "VS Code failure was not reported")
         },
         CodexBarTestCase(name: "surfaces unsupported active-task RPC methods") {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -448,7 +442,6 @@ threads = [
     "preview" => "Terminal task",
     "name" => nil,
     "source" => "cli",
-    "status" => { "type" => "active", "activeFlags" => [] },
     "createdAt" => 100,
     "updatedAt" => 120
   },
@@ -459,7 +452,6 @@ threads = [
     "preview" => "Editor task",
     "name" => nil,
     "source" => "vscode",
-    "status" => { "type" => "active", "activeFlags" => [] },
     "createdAt" => 100,
     "updatedAt" => 121
   },
@@ -470,7 +462,6 @@ threads = [
     "preview" => "Newer turn",
     "name" => nil,
     "source" => "cli",
-    "status" => { "type" => "active", "activeFlags" => [] },
     "createdAt" => 100,
     "updatedAt" => 122
   },
@@ -481,7 +472,6 @@ threads = [
     "preview" => "Wrong cwd",
     "name" => nil,
     "source" => "cli",
-    "status" => { "type" => "active", "activeFlags" => [] },
     "createdAt" => 100,
     "updatedAt" => 123
   }
@@ -530,8 +520,7 @@ STDIN.each_line do |line|
           "items" => [],
           "itemsView" => "notLoaded",
           "status" => status,
-          "startedAt" => (thread_id == "cli-session" ? nil : 110),
-          "completedAt" => (thread_id == "vscode-session" ? 121 : nil)
+          "startedAt" => (thread_id == "cli-session" ? nil : 110)
         }]
       }
     )

@@ -171,7 +171,7 @@ func startupReconciliationTestCases() -> [CodexBarTestCase] {
             try expect(task.id == "new-session:new-turn", "stale turn remained after recovery")
             try expect(task.status == .running, "new active turn did not become running")
         },
-        CodexBarTestCase(name: "advances the same turn when App Server time is rounded down") {
+        CodexBarTestCase(name: "keeps a live Hook turn authoritative over persisted history") {
             let store = TaskStore()
             _ = try await store.apply(startupEvent(
                 .userPromptSubmit,
@@ -192,15 +192,15 @@ func startupReconciliationTestCases() -> [CodexBarTestCase] {
                 windows: [VSCodeWindowDescriptor(id: 1, title: "project-alpha — Visual Studio Code")]
             )
 
-            try expect(changed == 1, "rounded App Server time blocked a completed status")
+            try expect(changed == 0, "persisted history stopped a live Hook turn")
             let task = try require(store.tasks.first, "same-turn task is missing")
-            try expect(task.status == .ready, "same turn did not advance from running to ready")
+            try expect(task.status == .running, "live Hook turn did not remain running")
             try expect(
                 task.updatedAt == Date(timeIntervalSince1970: 100.8),
                 "rounded App Server time regressed the stored timestamp"
             )
         },
-        CodexBarTestCase(name: "marks an interrupted turn ready when no Stop Hook arrives") {
+        CodexBarTestCase(name: "does not infer interruption without a Stop Hook") {
             let store = TaskStore()
             _ = try await store.apply(startupEvent(
                 .userPromptSubmit,
@@ -226,13 +226,13 @@ func startupReconciliationTestCases() -> [CodexBarTestCase] {
                 windows: [VSCodeWindowDescriptor(id: 1, title: "project-alpha — Visual Studio Code")]
             )
 
-            try expect(changed == 1, "interrupted App Server turn was ignored")
+            try expect(changed == 0, "persisted interruption overrode the live Hook turn")
             try expect(
-                store.tasks.first?.status == .ready,
-                "turn without a Stop Hook remained running after interruption"
+                store.tasks.first?.status == .running,
+                "turn without a Stop Hook did not remain running"
             )
         },
-        CodexBarTestCase(name: "marks a failed permission turn ready when no Stop Hook arrives") {
+        CodexBarTestCase(name: "does not infer failure without a Stop Hook") {
             let store = TaskStore()
             _ = try await store.apply(startupEvent(
                 .userPromptSubmit,
@@ -265,10 +265,10 @@ func startupReconciliationTestCases() -> [CodexBarTestCase] {
                 windows: [VSCodeWindowDescriptor(id: 1, title: "project-alpha — Visual Studio Code")]
             )
 
-            try expect(changed == 1, "failed App Server turn was ignored")
+            try expect(changed == 0, "persisted failure overrode the live Hook turn")
             try expect(
-                store.tasks.first?.status == .ready,
-                "failed permission turn remained blocked without a Stop Hook"
+                store.tasks.first?.status == .needsAttention,
+                "permission turn changed without a Stop Hook"
             )
         },
         CodexBarTestCase(name: "marks a terminal CLI turn ready and unread without VS Code windows") {

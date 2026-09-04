@@ -152,7 +152,7 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                 "app startup still prepares its storage directory on the main actor"
             )
         },
-        CodexBarTestCase(name: "active tasks schedule single-flight App Server reconciliation") {
+        CodexBarTestCase(name: "normal polling does not launch App Server recovery") {
             let repositoryRoot = URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
@@ -164,22 +164,22 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             let appModelSource = try String(contentsOf: appModelURL, encoding: .utf8)
 
             try expect(
-                appModelSource.contains("TaskRecoveryThrottle(interval: 5)"),
-                "active-task App Server reconciliation is not throttled"
+                !appModelSource.contains("TaskRecoveryThrottle(interval: 5)"),
+                "normal polling still keeps an App Server recovery throttle"
             )
             try expect(
-                appModelSource.contains("reconcileAppServerTasks(force: false)"),
-                "the normal poll loop does not reconcile a missing Stop"
+                !appModelSource.contains("reconcileAppServerTasks(force: false)"),
+                "the normal poll loop still launches App Server recovery"
             )
             try expect(
-                appModelSource.contains("matchingActiveTasks: activeTasks")
-                    && appModelSource.contains("reconcileActiveTasks("),
-                "periodic reconciliation still depends on VS Code window discovery"
+                !appModelSource.contains("matchingActiveTasks: activeTasks")
+                    && !appModelSource.contains("reconcileActiveTasks("),
+                "the app still queries persisted turns for live tasks"
             )
             try expect(
                 appModelSource.contains("startupRecoveryID")
                     && appModelSource.contains("startupRecoveryID == recoveryID"),
-                "periodic App Server reconciliation has no stale-task identity guard"
+                "startup App Server recovery has no stale-task identity guard"
             )
             let cancellationGuard =
                 "guard !Task.isCancelled, startupRecoveryID == recoveryID else"
@@ -187,8 +187,8 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                 separatedBy: cancellationGuard
             ).count - 1
             try expect(
-                cancellationGuardCount >= 6,
-                "cancelled or superseded reconciliation can still report stale failures"
+                cancellationGuardCount >= 3,
+                "cancelled or superseded startup recovery can report stale failures"
             )
         },
         CodexBarTestCase(name: "App Server failures use privacy-safe rate-limited diagnostics") {
