@@ -295,6 +295,22 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                 headerSource.contains("刷新已打开的 VS Code Codex 任务"),
                 "the refresh control has no accessible description"
             )
+            let hiddenMenuIndicatorCount = viewSource.components(
+                separatedBy: ".menuIndicator(.hidden)"
+            ).count - 1
+            try expect(
+                headerSource.contains("HStack(spacing: 3)")
+                    && headerSource.contains(".padding(.leading, 6)")
+                    && !headerSource.contains("Text(\"· \\(store.tasks.count)\")")
+                    && hiddenMenuIndicatorCount >= 2,
+                "the 112-point bar does not adapt its header and menus to the narrow width"
+            )
+            try expect(
+                viewSource.contains(
+                    ".accessibilityValue(\"共 \\(store.tasks.count) 个任务\")"
+                ),
+                "hiding the visual task count also removed it from VoiceOver"
+            )
             if let menuPosition = headerSource.range(of: "Menu {")?.lowerBound,
                let refreshPosition = headerSource.range(
                    of: "Button(action: model.refreshOpenTasks)"
