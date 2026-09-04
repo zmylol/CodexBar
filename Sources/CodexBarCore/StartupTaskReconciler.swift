@@ -14,8 +14,8 @@ public struct StartupTaskReconciler {
     }
 
     /// Reconciles persisted VS Code turns that belong to windows open right now.
-    /// Hook state wins unless the same turn has reached an App Server terminal state;
-    /// a newer different turn may replace an old row during startup recovery.
+    /// Hook state always wins for the same turn; a newer different turn may
+    /// replace an old row during startup recovery.
     @discardableResult
     public func reconcile(
         snapshots: [CodexThreadSnapshot],
