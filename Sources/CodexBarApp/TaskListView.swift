@@ -397,6 +397,7 @@ struct TaskHoverDetailView: View {
     let cwd: String
     let onOpen: () -> Void
     let onHoverChanged: (Bool) -> Void
+    let onPreferredHeightChanged: (CGFloat) -> Void
     let onDismiss: () -> Void
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -407,6 +408,7 @@ struct TaskHoverDetailView: View {
         cwd: String,
         onOpen: @escaping () -> Void,
         onHoverChanged: @escaping (Bool) -> Void,
+        onPreferredHeightChanged: @escaping (CGFloat) -> Void,
         onDismiss: @escaping () -> Void
     ) {
         self.store = store
@@ -414,10 +416,12 @@ struct TaskHoverDetailView: View {
         self.cwd = cwd
         self.onOpen = onOpen
         self.onHoverChanged = onHoverChanged
+        self.onPreferredHeightChanged = onPreferredHeightChanged
         self.onDismiss = onDismiss
     }
 
     var body: some View {
+        let preferredHeight = currentPreferredHeight
         Group {
             if let task = store.tasks.first(where: { $0.cwd == cwd }) {
                 if let plan = activityStore.plan(for: task) {
@@ -443,7 +447,7 @@ struct TaskHoverDetailView: View {
         }
         .frame(
             width: CodexBarPanelLayout.detailWidth,
-            height: CodexBarPanelLayout.detailHeight,
+            height: preferredHeight,
             alignment: .topLeading
         )
         .background {
@@ -459,8 +463,24 @@ struct TaskHoverDetailView: View {
                 .stroke(Color.white.opacity(0.16), lineWidth: 1)
         }
         .onHover(perform: onHoverChanged)
+        .onChange(of: preferredHeight, perform: onPreferredHeightChanged)
         .onExitCommand(perform: onDismiss)
         .accessibilityHidden(true)
+    }
+
+    private var currentPreferredHeight: CGFloat {
+        guard let task = store.tasks.first(where: { $0.cwd == cwd }) else {
+            return CodexBarPanelLayout.detailHeight(visibleItemCount: 0)
+        }
+        let visibleItemCount: Int
+        if let plan = activityStore.plan(for: task) {
+            visibleItemCount = plan.visibleSteps(
+                maximumCount: CodexBarPanelLayout.maximumVisiblePlanSteps
+            ).count
+        } else {
+            visibleItemCount = activityStore.nodes(for: task).count
+        }
+        return CodexBarPanelLayout.detailHeight(visibleItemCount: visibleItemCount)
     }
 
     private func detailContent(
@@ -496,7 +516,7 @@ struct TaskHoverDetailView: View {
                     activityList(nodes, status: task.status, accent: task.status.color)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
 
             Divider().opacity(0.32)
 

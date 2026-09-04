@@ -57,12 +57,13 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
+        let initialDetailHeight = CodexBarPanelLayout.detailHeight(visibleItemCount: 0)
         self.detailPanel = CodexBarDetailPanel(
             contentRect: NSRect(
                 x: 0,
                 y: 0,
                 width: CodexBarPanelLayout.detailWidth,
-                height: CodexBarPanelLayout.detailHeight
+                height: initialDetailHeight
             ),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -246,6 +247,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     private func showTaskDetail(_ task: CodexTask, rowMidY: CGFloat) {
         detailHideTask?.cancel()
         detailHideTask = nil
+        let preferredHeight = preferredDetailHeight(for: task)
 
         if detailTaskID != task.id {
             let cwd = task.cwd
@@ -265,6 +267,9 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
                 onHoverChanged: { [weak self] hovering in
                     self?.detailHoverChanged(hovering)
                 },
+                onPreferredHeightChanged: { [weak self] preferredHeight in
+                    self?.detailHeightChanged(preferredHeight, cwd: cwd)
+                },
                 onDismiss: { [weak self] in
                     self?.hideTaskDetail(clearTriggers: true)
                 }
@@ -275,14 +280,46 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
             detailTaskID = task.id
         }
 
+        updateDetailFrame(rowMidY: rowMidY, preferredHeight: preferredHeight)
+        detailPanel.orderFrontRegardless()
+    }
+
+    private func preferredDetailHeight(for task: CodexTask) -> CGFloat {
+        let visibleItemCount: Int
+        if let plan = model.activityStore.plan(for: task) {
+            visibleItemCount = plan.visibleSteps(
+                maximumCount: CodexBarPanelLayout.maximumVisiblePlanSteps
+            ).count
+        } else {
+            visibleItemCount = model.activityStore.nodes(for: task).count
+        }
+        return CodexBarPanelLayout.detailHeight(visibleItemCount: visibleItemCount)
+    }
+
+    private func detailHeightChanged(_ preferredHeight: CGFloat, cwd: String) {
+        guard detailPanel.isVisible,
+              let target = detailSelection.selected,
+              target.cwd == cwd,
+              let task = model.store.tasks.first(where: { $0.cwd == cwd }),
+              detailTaskID == task.id
+        else {
+            return
+        }
+        updateDetailFrame(rowMidY: target.rowMidY, preferredHeight: preferredHeight)
+    }
+
+    private func updateDetailFrame(rowMidY: CGFloat, preferredHeight: CGFloat) {
         let visibleFrame = (panel.screen ?? NSScreen.main)?.visibleFrame ?? panel.frame
         let detailFrame = CodexBarPanelLayout.detailFrame(
             panelFrame: panel.frame,
             rowMidYFromTop: rowMidY,
-            visibleFrame: visibleFrame
+            visibleFrame: visibleFrame,
+            detailHeight: preferredHeight
         )
+        guard detailFrame != detailPanel.frame else {
+            return
+        }
         detailPanel.setFrame(detailFrame, display: true)
-        detailPanel.orderFrontRegardless()
     }
 
     private func detailHoverChanged(_ hovering: Bool) {
