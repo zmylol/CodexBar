@@ -375,8 +375,9 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                 controllerSource.contains("panel.isMovableByWindowBackground = false")
                     && !controllerSource.contains("panel.isMovableByWindowBackground = true")
                     && headerSource.contains("PanelDragHandle()")
+                    && viewSource.contains("override func acceptsFirstMouse(")
                     && viewSource.contains("window?.performDrag(with: event)"),
-                "the whole panel background can still steal clicks instead of a dedicated drag handle"
+                "the dedicated drag handle can steal controls or ignore the first mouse press"
             )
             let nonInteractiveDecorationCount = taskListRoot.components(
                 separatedBy: ".allowsHitTesting(false)"
