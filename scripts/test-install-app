@@ -12,7 +12,11 @@ export CODEXBAR_HOOKS_FILE="$test_root/.codex/hooks.json"
 /bin/mkdir -p "${CODEXBAR_HOOKS_FILE:h}"
 print -r -- '{"hooks": {}}' > "$CODEXBAR_HOOKS_FILE"
 
-"$script_dir/install-app"
+install_output=$("$script_dir/install-app")
+[[ "$install_output" == *"Probe mode is diagnostic only"* ]]
+[[ "$install_output" == *"Enable live task updates: scripts/install-hooks"* ]]
+[[ "$install_output" == *"Quit and reopen CodexBar after an update"* ]]
+[[ "$install_output" == *"remove and re-add CodexBar in System Settings"* ]]
 /usr/bin/touch "$CODEXBAR_APPLICATIONS_ROOT/CodexBar.app/Contents/Resources/stale-install-artifact"
 for backup_index in {1..7}; do
     /bin/mkdir -p "$CODEXBAR_SUPPORT_ROOT/AppBackups/CodexBar-20000101T00000${backup_index}Z-1-${backup_index}.app"

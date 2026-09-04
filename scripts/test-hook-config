@@ -115,6 +115,8 @@ JXA
 install_output=$("$script_dir/install-hooks" --probe)
 [[ "$install_output" == *"The IDE chat has no /hooks command"* ]]
 [[ "$install_output" == *"Codex Settings > Hooks"* ]]
+[[ "$install_output" == *"Probe mode is diagnostic only"* ]]
+[[ "$install_output" == *"run scripts/install-hooks without --probe"* ]]
 [[ "$install_output" != *"Codex CLI"* ]]
 hook_backups=("$support_root/HookConfigBackups"/hooks-*.json(N))
 [[ ${#hook_backups} == 10 ]]
