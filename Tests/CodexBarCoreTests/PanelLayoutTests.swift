@@ -5,7 +5,10 @@ import Foundation
 func panelLayoutTestCases() -> [CodexBarTestCase] {
     [
         CodexBarTestCase(name: "uses the approved compact desktop footprint") {
-            try expect(CodexBarPanelLayout.compactWidth == 112, "compact width is not two-thirds")
+            try expect(
+                CodexBarPanelLayout.compactWidth == 126,
+                "compact width is not three-quarters"
+            )
             try expect(CodexBarPanelLayout.detailWidth == 320, "hover detail width changed")
             try expect(
                 CodexBarPanelLayout.maximumVisiblePlanSteps == 5,
@@ -40,7 +43,7 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
                 "notice space was not added to the compact panel"
             )
             try expect(
-                CodexBarPanelLayout.compactWidth == 112,
+                CodexBarPanelLayout.compactWidth == 126,
                 "a notice widened the persistent panel contract"
             )
         },
@@ -107,7 +110,7 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
                 visibleFrame: visibleFrame,
                 detailHeight: detailHeight
             )
-            try expect(rightFrame.origin.x == 138, "hover detail did not follow the narrower bar")
+            try expect(rightFrame.origin.x == 152, "hover detail did not follow the narrower bar")
             try expect(rightFrame.maxY == visibleFrame.maxY, "top edge was not clamped")
 
             let bottomFrame = CodexBarPanelLayout.detailFrame(

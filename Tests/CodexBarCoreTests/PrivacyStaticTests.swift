@@ -303,7 +303,7 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                     && headerSource.contains(".padding(.leading, 6)")
                     && !headerSource.contains("Text(\"· \\(store.tasks.count)\")")
                     && hiddenMenuIndicatorCount >= 2,
-                "the 112-point bar does not adapt its header and menus to the narrow width"
+                "the compact bar does not adapt its header and menus to the narrow width"
             )
             try expect(
                 viewSource.contains(
