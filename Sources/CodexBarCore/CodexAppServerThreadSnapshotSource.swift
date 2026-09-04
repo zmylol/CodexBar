@@ -560,10 +560,17 @@ public actor CodexAppServerThreadSnapshotSource: CodexThreadSnapshotLoading {
         } else {
             return nil
         }
+        let hasCompletionMarker: Bool
         if let completedAt = value["completedAt"], !(completedAt is NSNull) {
             _ = try date(from: completedAt)
+            hasCompletionMarker = true
+        } else {
+            hasCompletionMarker = false
         }
-        return AppServerTurn(id: id, status: status, startedAt: startedAt)
+        let effectiveStatus = status == .inProgress || hasCompletionMarker
+            ? status
+            : .inProgress
+        return AppServerTurn(id: id, status: effectiveStatus, startedAt: startedAt)
     }
 
     private func validatedIdentifier(_ value: Any?) throws -> String {
