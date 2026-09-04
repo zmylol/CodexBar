@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import os
 
 struct TaskStoreAppliedEvent: Sendable {
     let eventID: String
@@ -65,16 +66,8 @@ public final class TaskStore: ObservableObject {
     }
 
     @discardableResult
-    func mergeRecoveredTasks(
-        _ recoveredTasks: [CodexTask],
-        matchingExistingTaskIDs: Set<String>? = nil,
-        markTerminalChangesUnread: Bool = false
-    ) async throws -> Int {
-        let operation = try await storage.mergeRecoveredTasks(
-            recoveredTasks,
-            matchingExistingTaskIDs: matchingExistingTaskIDs,
-            markTerminalChangesUnread: markTerminalChangesUnread
-        )
+    func mergeRecoveredTasks(_ recoveredTasks: [CodexTask]) async throws -> Int {
+        let operation = try await storage.mergeRecoveredTasks(recoveredTasks)
         publish(operation.state)
         return operation.value
     }
@@ -138,6 +131,10 @@ private struct TaskStoreOperation<Value: Sendable>: Sendable {
 
 private actor TaskStoreStorage {
     private static let maximumDeletedTaskTombstones = 10_000
+    private static let logger = Logger(
+        subsystem: "com.codexbar.CodexBar",
+        category: "TaskStore"
+    )
 
     private var tasks: [CodexTask] = []
     private var appliedEventIDs: Set<String> = []
@@ -382,9 +379,7 @@ private actor TaskStoreStorage {
     }
 
     func mergeRecoveredTasks(
-        _ recoveredTasks: [CodexTask],
-        matchingExistingTaskIDs: Set<String>?,
-        markTerminalChangesUnread: Bool
+        _ recoveredTasks: [CodexTask]
     ) throws -> TaskStoreOperation<Int> {
         ensureLoaded()
         var nextTasks = tasks
@@ -395,25 +390,6 @@ private actor TaskStoreStorage {
                 continue
             }
             let existingIndex = nextTasks.firstIndex(where: { $0.cwd == task.cwd })
-            if let matchingExistingTaskIDs {
-                guard matchingExistingTaskIDs.contains(task.id),
-                      let existingIndex,
-                      nextTasks[existingIndex].id == task.id,
-                      (nextTasks[existingIndex].status == .running
-                        || nextTasks[existingIndex].status == .needsAttention),
-                      let merged = mergeSameRecoveredTurn(
-                          task,
-                          with: nextTasks[existingIndex],
-                          markTerminalChangeUnread: markTerminalChangesUnread
-                      )
-                else {
-                    continue
-                }
-                nextTasks[existingIndex] = merged
-                changedCount += 1
-                continue
-            }
-
             guard let index = existingIndex else {
                 nextTasks.append(task)
                 changedCount += 1
@@ -454,47 +430,6 @@ private actor TaskStoreStorage {
         tasks = nextTasks
         revision &+= 1
         return operation(changedCount)
-    }
-
-    private func mergeSameRecoveredTurn(
-        _ recovered: CodexTask,
-        with current: CodexTask,
-        markTerminalChangeUnread: Bool
-    ) -> CodexTask? {
-        let currentOrder = lifecycleOrder(of: current.status)
-        let recoveredOrder = lifecycleOrder(of: recovered.status)
-        guard recoveredOrder >= currentOrder else {
-            return nil
-        }
-        if recoveredOrder == currentOrder {
-            guard recovered.updatedAt > current.updatedAt else {
-                return nil
-            }
-        } else {
-            // App Server timestamps are whole seconds, while Hook timestamps
-            // include fractions. Permit only that rounding difference; an
-            // actually older recovery snapshot must not stop a live Hook turn.
-            guard wholeSecond(recovered.updatedAt) >= wholeSecond(current.updatedAt) else {
-                return nil
-            }
-        }
-
-        return CodexTask(
-            id: current.id,
-            sessionID: current.sessionID,
-            turnID: current.turnID,
-            cwd: recovered.cwd,
-            workspaceName: recovered.workspaceName,
-            title: current.title,
-            status: recovered.status,
-            startedAt: min(current.startedAt, recovered.startedAt),
-            updatedAt: max(current.updatedAt, recovered.updatedAt),
-            isUnread: markTerminalChangeUnread
-                && recovered.status == .ready
-                && current.status != .ready
-                ? true
-                : current.isUnread
-        )
     }
 
     private func recoveredTurnIsNewer(
@@ -636,25 +571,36 @@ private actor TaskStoreStorage {
         case .unsafe:
             persistenceIsAvailable = false
         case .regularFile:
+            let loaded: LoadedTaskStoreSnapshot
             do {
-                let loaded = try Self.loadSnapshot(from: persistenceURL)
-                let snapshot = loaded.snapshot
-                let loadedTasks = Self.collapsingOlderTurns(snapshot.tasks)
-                if loaded.requiresMigration {
-                    try persist(
-                        tasks: loadedTasks,
-                        appliedEventIDs: Set(snapshot.appliedEventIDs),
-                        deletedTaskTombstones: snapshot.deletedTaskTombstones
-                    )
-                }
-                tasks = loadedTasks
-                appliedEventIDs = Set(snapshot.appliedEventIDs)
-                deletedTaskTombstones = snapshot.deletedTaskTombstones
+                loaded = try Self.loadSnapshot(from: persistenceURL)
             } catch {
                 if let recoveryURL = try? Self.quarantineSnapshot(at: persistenceURL) {
                     recoverySnapshotURL = recoveryURL
                 } else {
                     persistenceIsAvailable = false
+                }
+                break
+            }
+
+            let snapshot = loaded.snapshot
+            let loadedTasks = Self.collapsingOlderTurns(snapshot.tasks)
+            tasks = loadedTasks
+            appliedEventIDs = Set(snapshot.appliedEventIDs)
+            deletedTaskTombstones = snapshot.deletedTaskTombstones
+            if loaded.requiresMigration {
+                do {
+                    try persist(
+                        tasks: loadedTasks,
+                        appliedEventIDs: appliedEventIDs,
+                        deletedTaskTombstones: deletedTaskTombstones
+                    )
+                } catch {
+                    // Keep the validated VS Code state in memory and leave the
+                    // original v1 file intact. A later write or launch retries.
+                    Self.logger.error(
+                        "Task snapshot migration write failed; original snapshot preserved."
+                    )
                 }
             }
         }
@@ -1069,6 +1015,19 @@ private struct LoadedTaskStoreSnapshot {
 
 private struct TaskStoreSnapshotVersion: Decodable {
     let schemaVersion: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if container.contains(.schemaVersion) {
+            schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        } else {
+            schemaVersion = nil
+        }
+    }
 }
 
 private struct LegacyTaskStoreSnapshot: Decodable {

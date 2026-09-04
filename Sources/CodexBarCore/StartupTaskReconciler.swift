@@ -19,8 +19,7 @@ public struct StartupTaskReconciler {
     @discardableResult
     public func reconcile(
         snapshots: [CodexThreadSnapshot],
-        windows: [VSCodeWindowDescriptor],
-        matchingExistingTaskIDs: Set<String>? = nil
+        windows: [VSCodeWindowDescriptor]
     ) async throws -> Int {
         let recoveredTasks = await worker.recoveredTasks(
             snapshots: snapshots,
@@ -29,10 +28,7 @@ public struct StartupTaskReconciler {
         guard !Task.isCancelled else {
             return 0
         }
-        return try await store.mergeRecoveredTasks(
-            recoveredTasks,
-            matchingExistingTaskIDs: matchingExistingTaskIDs
-        )
+        return try await store.mergeRecoveredTasks(recoveredTasks)
     }
 }
 

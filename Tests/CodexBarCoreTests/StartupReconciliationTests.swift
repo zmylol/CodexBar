@@ -264,32 +264,6 @@ func startupReconciliationTestCases() -> [CodexBarTestCase] {
                 "permission turn changed without a Stop Hook"
             )
         },
-        CodexBarTestCase(name: "periodic recovery does not restore a deleted active row") {
-            let store = TaskStore()
-            _ = try await store.apply(startupEvent(
-                .userPromptSubmit,
-                session: "deleted-session",
-                turn: "deleted-turn",
-                timestamp: 100,
-                cwd: "/work/project-alpha"
-            ))
-            let taskID = try require(store.tasks.first?.id, "active task id is missing")
-            _ = try await store.remove(taskID: taskID)
-
-            let changed = try await StartupTaskReconciler(store: store).reconcile(
-                snapshots: [startupSnapshot(
-                    session: "deleted-session",
-                    turn: "deleted-turn",
-                    status: .interrupted,
-                    updatedAt: 101
-                )],
-                windows: [VSCodeWindowDescriptor(id: 1, title: "project-alpha — Visual Studio Code")],
-                matchingExistingTaskIDs: [taskID]
-            )
-
-            try expect(changed == 0, "periodic recovery restored a deleted task")
-            try expect(store.tasks.isEmpty, "deleted task reappeared after periodic recovery")
-        },
         CodexBarTestCase(name: "persists deletion across forced startup recovery") {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent(
                 "CodexBarDeletedRecoveryTests-\(UUID().uuidString)",
@@ -441,42 +415,6 @@ func startupReconciliationTestCases() -> [CodexBarTestCase] {
             try expect(
                 reloadedStore.tasks.map(\.id) == ["live-session:live-turn"],
                 "a later persisted mutation lost deletion records"
-            )
-        },
-        CodexBarTestCase(name: "periodic recovery cannot overwrite a replacement Hook turn") {
-            let store = TaskStore()
-            _ = try await store.apply(startupEvent(
-                .userPromptSubmit,
-                session: "old-session",
-                turn: "old-turn",
-                timestamp: 100,
-                cwd: "/work/project-alpha"
-            ))
-            let oldTaskID = try require(store.tasks.first?.id, "old active task id is missing")
-            _ = try await store.apply(startupEvent(
-                .userPromptSubmit,
-                session: "new-session",
-                turn: "new-turn",
-                timestamp: 200,
-                cwd: "/work/project-alpha"
-            ))
-
-            let changed = try await StartupTaskReconciler(store: store).reconcile(
-                snapshots: [startupSnapshot(
-                    session: "old-session",
-                    turn: "old-turn",
-                    status: .interrupted,
-                    updatedAt: 300
-                )],
-                windows: [VSCodeWindowDescriptor(id: 1, title: "project-alpha — Visual Studio Code")],
-                matchingExistingTaskIDs: [oldTaskID]
-            )
-
-            try expect(changed == 0, "old periodic snapshot overwrote a replacement turn")
-            try expect(
-                store.tasks.first?.id == "new-session:new-turn"
-                    && store.tasks.first?.status == .running,
-                "replacement Hook turn did not remain running"
             )
         },
         CodexBarTestCase(name: "does not let an older completed snapshot stop a newer Hook turn") {
