@@ -343,6 +343,10 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     }
 
     private func recoverStartupTasks() {
+        guard AccessibilityAuthorization.isTrusted else {
+            accessibilityRecoveryTrigger.waitForGrant()
+            return
+        }
         guard let threadSnapshotLoader, startupRecoveryTask == nil else {
             return
         }
