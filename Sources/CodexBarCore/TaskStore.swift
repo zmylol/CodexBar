@@ -429,14 +429,7 @@ private actor TaskStoreStorage {
 
             let current = nextTasks[index]
             if current.id == task.id {
-                guard let merged = mergeSameRecoveredTurn(
-                    task,
-                    with: current,
-                    markTerminalChangeUnread: markTerminalChangesUnread
-                ) else {
-                    continue
-                }
-                nextTasks[index] = merged
+                continue
             } else {
                 guard recoveredTurnIsNewer(task, than: current) else {
                     continue

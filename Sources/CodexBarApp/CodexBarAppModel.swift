@@ -33,7 +33,6 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     private var oldTaskCleanupID: UUID?
     private var startupRecoveryTask: Task<Void, Never>?
     private var startupRecoveryID: UUID?
-    private var recoveryThrottle = TaskRecoveryThrottle(interval: 5)
     private let recoveryLogger = Logger(
         subsystem: "com.codexbar.CodexBar",
         category: "AppServerReconciliation"
@@ -65,7 +64,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
             showNotice(message: "任务状态文件损坏，已隔离并重建。")
         }
         processInbox()
-        reconcileAppServerTasks(force: true)
+        recoverStartupTasks()
         pollTimer = Timer.scheduledTimer(
             timeInterval: 0.75,
             target: self,
@@ -79,7 +78,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     }
 
     func stop() {
-        cancelStartupRecovery(resetThrottle: true)
+        cancelStartupRecovery()
         inboxProcessingTask?.cancel()
         inboxProcessingTask = nil
         inboxProcessingID = nil
@@ -329,7 +328,6 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     @objc
     private func pollInbox() {
         processInbox()
-        reconcileAppServerTasks(force: false)
     }
 
     private func processInbox() {
@@ -391,25 +389,8 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         }
     }
 
-    private func reconcileAppServerTasks(force: Bool) {
-        guard let threadSnapshotLoader else {
-            return
-        }
-        let activeTasks = store.tasks.filter { task in
-            switch task.status {
-            case .running, .needsAttention:
-                true
-            case .ready:
-                false
-            }
-        }
-        let activeTaskIDs = Set(activeTasks.map(\.id))
-        guard recoveryThrottle.shouldStart(
-            hasActiveTasks: !activeTaskIDs.isEmpty,
-            isRecoveryInFlight: startupRecoveryTask != nil,
-            now: Date(),
-            force: force
-        ) else {
+    private func recoverStartupTasks() {
+        guard let threadSnapshotLoader, startupRecoveryTask == nil else {
             return
         }
         let recoveryID = UUID()
@@ -422,7 +403,6 @@ final class CodexBarAppModel: NSObject, ObservableObject {
             }
             defer {
                 if startupRecoveryID == recoveryID {
-                    recoveryThrottle.didFinish(at: Date())
                     startupRecoveryTask = nil
                     startupRecoveryID = nil
                 }
@@ -430,75 +410,44 @@ final class CodexBarAppModel: NSObject, ObservableObject {
 
             do {
                 let reconciler = StartupTaskReconciler(store: store)
-                let changedCount: Int
-                if force {
-                    let windows = await activator.discoverWindowsAsync()
-                    guard !Task.isCancelled,
-                          startupRecoveryID == recoveryID,
-                          !windows.isEmpty
-                    else {
-                        return
-                    }
-                    let snapshots: [CodexThreadSnapshot]
-                    do {
-                        snapshots = try await threadSnapshotLoader.loadSnapshots(
-                            matching: windows
-                        )
-                    } catch {
-                        guard !Task.isCancelled, startupRecoveryID == recoveryID else {
-                            return
-                        }
-                        logRecoveryFailureIfNeeded()
-                        return
-                    }
+                let windows = await activator.discoverWindowsAsync()
+                guard !Task.isCancelled,
+                      startupRecoveryID == recoveryID,
+                      !windows.isEmpty
+                else {
+                    return
+                }
+                let snapshots: [CodexThreadSnapshot]
+                do {
+                    snapshots = try await threadSnapshotLoader.loadSnapshots(
+                        matching: windows
+                    )
+                } catch {
                     guard !Task.isCancelled, startupRecoveryID == recoveryID else {
                         return
                     }
-                    let currentWindows = await activator.discoverWindowsAsync()
-                    guard !Task.isCancelled,
-                          startupRecoveryID == recoveryID,
-                          !currentWindows.isEmpty
-                    else {
-                        return
-                    }
-                    changedCount = try await reconciler.reconcile(
-                        snapshots: snapshots,
-                        windows: currentWindows
-                    )
-                } else {
-                    let snapshots: [CodexThreadSnapshot]
-                    do {
-                        snapshots = try await threadSnapshotLoader.loadSnapshots(
-                            matchingActiveTasks: activeTasks
-                        )
-                    } catch {
-                        guard !Task.isCancelled, startupRecoveryID == recoveryID else {
-                            return
-                        }
-                        logRecoveryFailureIfNeeded()
-                        return
-                    }
-                    guard !Task.isCancelled, startupRecoveryID == recoveryID else {
-                        return
-                    }
-                    changedCount = try await reconciler.reconcileActiveTasks(
-                        snapshots: snapshots,
-                        matchingExistingTaskIDs: activeTaskIDs
-                    )
+                    logRecoveryFailureIfNeeded()
+                    return
                 }
                 guard !Task.isCancelled, startupRecoveryID == recoveryID else {
                     return
                 }
+                let currentWindows = await activator.discoverWindowsAsync()
+                guard !Task.isCancelled,
+                      startupRecoveryID == recoveryID,
+                      !currentWindows.isEmpty
+                else {
+                    return
+                }
+                let changedCount = try await reconciler.reconcile(
+                    snapshots: snapshots,
+                    windows: currentWindows
+                )
+                guard !Task.isCancelled, startupRecoveryID == recoveryID else {
+                    return
+                }
                 if changedCount > 0 {
-                    notifyPresentationChanged(animated: !force)
-                    if !force,
-                       let ready = store.tasks.first(where: {
-                           activeTaskIDs.contains($0.id)
-                               && $0.status == .ready
-                               && $0.isUnread
-                       }) {
-                        onAnnouncementRequested?("\(ready.workspaceName) 可查看", false)
-                    }
+                    notifyPresentationChanged(animated: false)
                 }
             } catch {
                 guard !Task.isCancelled, startupRecoveryID == recoveryID else {
@@ -519,13 +468,10 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         nextRecoveryErrorLogAt = now.addingTimeInterval(60)
     }
 
-    private func cancelStartupRecovery(resetThrottle: Bool = false) {
+    private func cancelStartupRecovery() {
         startupRecoveryTask?.cancel()
         startupRecoveryTask = nil
         startupRecoveryID = nil
-        if resetThrottle {
-            recoveryThrottle.reset()
-        }
     }
 
     private func showNotice(
