@@ -11,7 +11,9 @@ Inbox/*.json + Activity/*.json (bounded to 12)
 EventProcessor
     ├─ lifecycle → TaskStoreStorage actor (tasks.json) → Processed/
     └─ PreToolUse → MainActor LiveTaskActivityStore → delete Activity file
-                         (current turn, at most 3 nodes, memory only)
+                         ├─ update_plan: latest whole plan, at most 20 steps
+                         └─ other allowlisted tools: at most 3 activity nodes
+                         (current turn, memory only; hover shows at most 5 plan steps)
     ↓ revisioned view state
 MainActor TaskStore + LiveTaskActivityStore
     ↓ CodexBarAppModel
@@ -45,9 +47,9 @@ StartupTaskReconciler → TaskStore
 - Hook 不向 stdout/stderr 输出普通成功信息，也不改变 Codex 决策；
 - Hook 只接受精确的 `codex_vscode` originator；其他客户端、缺失值和变体均在读取 stdin 前静默退出；
 - 原始 stdin 有大小上限，持久化前只保留必要且脱敏的字段；
-- `PreToolUse` 不保留原始命令、补丁、搜索词、MCP 参数或工具输出；只生成受限分类和安全路径摘要；
-- 实时活动队列独立于生命周期 Inbox、全局最多 12 条且生命周期事件优先；界面最多保留当前任务三个内存节点，新 prompt 会替换旧节点，应用重启不会恢复；活动事件不改变任务状态、不写入 `tasks.json`，处理后不进入归档；
-- 事件目录和文件分别使用 0700 与 0600 权限；
+- `PreToolUse` 不保留原始命令、补丁、搜索词、计划解释、MCP 参数或工具输出；普通动作只生成受限分类和安全路径摘要，`update_plan` 只保留脱敏截断后的步骤文字与三个已知状态；计划标题同时受字素数和 UTF-8 字节数限制；
+- 实时活动队列独立于生命周期 Inbox、全局最多 12 条且生命周期事件优先；队列满时先淘汰普通动作、保留计划快照，不增加容量；每个任务最多保留三个普通动作和一份最多 20 步的最新计划，悬停详情围绕当前步骤显示最多五步；新 prompt 会替换旧进度，Stop 后冻结，应用重启不会恢复；实时事件不改变任务状态、不写入 `tasks.json`，处理后不进入归档；
+- 事件目录和文件分别使用 0700 与 0600 权限；计划只允许出现在精确的 `PreToolUse + update_plan` 临时事件中，不一致事件会直接删除；崩溃遗留且超过五分钟的受管 `.tmp` 会在现有目录扫描中清理；
 - 事件文件读取、移动和归档轮转在后台 actor 中串行执行；每批事件只提交一次任务快照、执行一次归档轮转；
 - 任务快照加载、JSON 编解码、排序、写盘和文件系统路径匹配均在后台 actor 中完成；主线程只发布不落后的 revision；
 - 旧任务清理只会原子删除与后台匹配前完整快照仍一致的条目，期间收到新事件的任务会被保留；
@@ -60,6 +62,7 @@ StartupTaskReconciler → TaskStore
 - 不执行 `code -r`，不创建窗口，不猜测歧义目标；
 - App Server 有可执行文件签名、symlink、响应大小、消息数和超时限制；
 - App Server 恢复只读查询 thread/turn 元数据且不加载 items；只有启动历史恢复枚举现有窗口，只有用户明确点击后才会前置或最小化窗口；
+- 动态计划不监听其他客户端的 App Server，也不轮询完整 thread items 或 transcript；它只由 VS Code Hook 在 `update_plan` 发生时推送，并用独立的同步 matcher 与本地高精度到达时间保证连续快照顺序；
 - App Server 失败日志使用固定、无任务字段的消息，并以一分钟为最小间隔。
 
 ## Packaging boundary

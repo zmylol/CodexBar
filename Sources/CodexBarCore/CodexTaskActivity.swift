@@ -19,6 +19,100 @@ public struct CodexHookActivitySummary: Codable, Equatable, Sendable {
     }
 }
 
+public enum CodexTaskPlanStepStatus: String, Codable, Equatable, Sendable {
+    case pending
+    case inProgress = "in_progress"
+    case completed
+}
+
+public struct CodexTaskPlanStep: Identifiable, Codable, Equatable, Sendable {
+    public let id: Int
+    public let title: String
+    public let status: CodexTaskPlanStepStatus
+
+    public init(id: Int, title: String, status: CodexTaskPlanStepStatus) {
+        self.id = id
+        self.title = title
+        self.status = status
+    }
+}
+
+public struct CodexHookPlanSummary: Codable, Equatable, Sendable {
+    static let maximumSteps = 20
+    static let maximumRawTitleCharacters = 4_096
+    static let maximumRawTitleBytes = 4_096
+    static let maximumTitleCharacters = 160
+    static let maximumTitleBytes = 640
+
+    public let steps: [CodexTaskPlanStep]
+
+    public init(steps: [CodexTaskPlanStep]) {
+        self.steps = steps
+    }
+}
+
+/// The latest whole-plan snapshot for one running task.
+/// It is held only in memory and replaced by the next `update_plan` call.
+public struct CodexTaskPlan: Equatable, Sendable {
+    public let steps: [CodexTaskPlanStep]
+    public let updatedAt: Date
+
+    public init(steps: [CodexTaskPlanStep], updatedAt: Date) {
+        self.steps = steps
+        self.updatedAt = updatedAt
+    }
+
+    public var totalStepCount: Int {
+        steps.count
+    }
+
+    public var completedStepCount: Int {
+        steps.lazy.filter { $0.status == .completed }.count
+    }
+
+    public var isComplete: Bool {
+        !steps.isEmpty && completedStepCount == steps.count
+    }
+
+    public var currentStepNumber: Int {
+        guard !steps.isEmpty else {
+            return 0
+        }
+        if let index = currentStepIndex {
+            return index + 1
+        }
+        if let index = steps.firstIndex(where: { $0.status == .pending }) {
+            return index + 1
+        }
+        return steps.count
+    }
+
+    public var currentStep: CodexTaskPlanStep? {
+        currentStepIndex.map { steps[$0] }
+    }
+
+    public var progressFraction: Double {
+        guard !steps.isEmpty else {
+            return 0
+        }
+        return Double(completedStepCount) / Double(steps.count)
+    }
+
+    public func visibleSteps(maximumCount: Int) -> [CodexTaskPlanStep] {
+        guard maximumCount > 0, steps.count > maximumCount else {
+            return maximumCount > 0 ? steps : []
+        }
+        let currentIndex = max(0, currentStepNumber - 1)
+        let centeredStart = currentIndex - maximumCount / 2
+        let start = min(max(0, centeredStart), steps.count - maximumCount)
+        return Array(steps[start..<(start + maximumCount)])
+    }
+
+    private var currentStepIndex: Int? {
+        steps.firstIndex(where: { $0.status == .inProgress })
+    }
+}
+
 /// A short-lived, display-only node for the task that is currently running.
 public struct CodexTaskActivity: Identifiable, Equatable, Sendable {
     public let id: String
@@ -39,7 +133,7 @@ public struct CodexTaskActivity: Identifiable, Equatable, Sendable {
     }
 }
 
-/// Keeps only the small activity trace needed by the live hover preview.
+/// Keeps only the small activity trace and latest plan needed by the live hover preview.
 /// Nothing in this store is encoded or restored across launches.
 @MainActor
 public final class LiveTaskActivityStore: ObservableObject {
@@ -50,13 +144,15 @@ public final class LiveTaskActivityStore: ObservableObject {
     @Published public private(set) var revision: UInt64 = 0
 
     private var nodesByTaskID: [String: [CodexTaskActivity]] = [:]
+    private var planByTaskID: [String: CodexTaskPlan] = [:]
+    private var latestPlanUpdateByTaskID: [String: Date] = [:]
     private var contextByTaskID: [String: TaskContext] = [:]
     private var activeTaskIDs: Set<String> = []
     private var frozenTaskIDs: Set<String> = []
     private var deliveryIDs: Set<String> = []
     private var deliveryIDOrder: [String] = []
     private var isApplyingBatch = false
-    private var batchChangedVisibleNodes = false
+    private var batchChangedVisibleState = false
 
     public init() {}
 
@@ -154,21 +250,28 @@ public final class LiveTaskActivityStore: ObservableObject {
         let replacedTaskIDs = contextByTaskID.compactMap { taskID, context in
             context.cwd == task.cwd && taskID != task.id ? taskID : nil
         }
-        var removedVisibleNodes = false
+        var removedVisibleState = false
         for taskID in replacedTaskIDs {
-            removedVisibleNodes = nodesByTaskID.removeValue(forKey: taskID) != nil
-                || removedVisibleNodes
+            removedVisibleState = nodesByTaskID.removeValue(forKey: taskID) != nil
+                || removedVisibleState
+            removedVisibleState = planByTaskID.removeValue(forKey: taskID) != nil
+                || removedVisibleState
+            latestPlanUpdateByTaskID.removeValue(forKey: taskID)
             contextByTaskID.removeValue(forKey: taskID)
             activeTaskIDs.remove(taskID)
             frozenTaskIDs.remove(taskID)
         }
-        if removedVisibleNodes {
+        if removedVisibleState {
             publishVisibleChange()
         }
     }
 
     public func nodes(for task: CodexTask) -> [CodexTaskActivity] {
         nodesByTaskID[task.id] ?? []
+    }
+
+    public func plan(for task: CodexTask) -> CodexTaskPlan? {
+        planByTaskID[task.id]
     }
 
     /// Drops traces whose task rows were removed by UI or recovery actions.
@@ -188,7 +291,10 @@ public final class LiveTaskActivityStore: ObservableObject {
                 frozenTaskIDs.insert(task.id)
                 return true
             }
-            let changed = nodesByTaskID.removeValue(forKey: task.id) != nil
+            let removedNodes = nodesByTaskID.removeValue(forKey: task.id) != nil
+            let removedPlan = planByTaskID.removeValue(forKey: task.id) != nil
+            latestPlanUpdateByTaskID.removeValue(forKey: task.id)
+            let changed = removedNodes || removedPlan
             activeTaskIDs.insert(task.id)
             frozenTaskIDs.remove(task.id)
             if changed {
@@ -205,8 +311,45 @@ public final class LiveTaskActivityStore: ObservableObject {
             return true
 
         case .preToolUse:
+            if event.plan != nil {
+                return applyPlan(event, to: task)
+            }
             return applyActivity(event, to: task)
         }
+    }
+
+    private func applyPlan(_ event: CodexHookEvent, to task: CodexTask) -> Bool {
+        guard let plan = sanitizedPlan(event.plan),
+              !frozenTaskIDs.contains(task.id),
+              event.timestamp >= task.startedAt
+        else {
+            return false
+        }
+
+        if !activeTaskIDs.contains(task.id) {
+            guard task.status != .ready else {
+                return false
+            }
+            activeTaskIDs.insert(task.id)
+        }
+        if let latestUpdate = latestPlanUpdateByTaskID[task.id],
+           event.timestamp < latestUpdate {
+            return false
+        }
+        latestPlanUpdateByTaskID[task.id] = event.timestamp
+
+        if plan.steps.isEmpty {
+            if planByTaskID.removeValue(forKey: task.id) != nil {
+                publishVisibleChange()
+            }
+            return true
+        }
+        planByTaskID[task.id] = CodexTaskPlan(
+            steps: plan.steps,
+            updatedAt: event.timestamp
+        )
+        publishVisibleChange()
+        return true
     }
 
     private func applyActivity(_ event: CodexHookEvent, to task: CodexTask) -> Bool {
@@ -265,6 +408,32 @@ public final class LiveTaskActivityStore: ObservableObject {
         return CodexHookActivitySummary(kind: activity.kind, safeSubject: safeSubject)
     }
 
+    private func sanitizedPlan(_ plan: CodexHookPlanSummary?) -> CodexHookPlanSummary? {
+        guard let plan,
+              plan.steps.count <= CodexHookPlanSummary.maximumSteps,
+              plan.steps.filter({ $0.status == .inProgress }).count <= 1
+        else {
+            return nil
+        }
+
+        var steps: [CodexTaskPlanStep] = []
+        steps.reserveCapacity(plan.steps.count)
+        for (index, step) in plan.steps.enumerated() {
+            guard step.title.utf8.count <= CodexHookPlanSummary.maximumRawTitleBytes,
+                  step.title.count <= CodexHookPlanSummary.maximumRawTitleCharacters,
+                  let title = PromptSanitizer.sanitize(
+                      step.title,
+                      maxLength: CodexHookPlanSummary.maximumTitleCharacters
+                  ),
+                  title.utf8.count <= CodexHookPlanSummary.maximumTitleBytes
+            else {
+                return nil
+            }
+            steps.append(CodexTaskPlanStep(id: index, title: title, status: step.status))
+        }
+        return CodexHookPlanSummary(steps: steps)
+    }
+
     private func synchronizeInternal(with currentTasks: [CodexTask]) {
         pruneRemovedTasks(currentTasks)
         freezeReadyTasks(currentTasks)
@@ -273,11 +442,17 @@ public final class LiveTaskActivityStore: ObservableObject {
     private func pruneRemovedTasks(_ currentTasks: [CodexTask]) {
         let currentTaskIDs = Set(currentTasks.map(\.id))
         let previousNodeCount = nodesByTaskID.count
+        let previousPlanCount = planByTaskID.count
         nodesByTaskID = nodesByTaskID.filter { currentTaskIDs.contains($0.key) }
+        planByTaskID = planByTaskID.filter { currentTaskIDs.contains($0.key) }
+        latestPlanUpdateByTaskID = latestPlanUpdateByTaskID.filter {
+            currentTaskIDs.contains($0.key)
+        }
         contextByTaskID = contextByTaskID.filter { currentTaskIDs.contains($0.key) }
         activeTaskIDs.formIntersection(currentTaskIDs)
         frozenTaskIDs.formIntersection(currentTaskIDs)
-        if nodesByTaskID.count != previousNodeCount {
+        if nodesByTaskID.count != previousNodeCount
+            || planByTaskID.count != previousPlanCount {
             publishVisibleChange()
         }
     }
@@ -300,8 +475,19 @@ public final class LiveTaskActivityStore: ObservableObject {
             return
         }
 
+        var migratedVisibleState = false
         if let nodes = nodesByTaskID.removeValue(forKey: previousTaskID) {
             nodesByTaskID[task.id] = nodes
+            migratedVisibleState = true
+        }
+        if let plan = planByTaskID.removeValue(forKey: previousTaskID) {
+            planByTaskID[task.id] = plan
+            migratedVisibleState = true
+        }
+        if let latestUpdate = latestPlanUpdateByTaskID.removeValue(forKey: previousTaskID) {
+            latestPlanUpdateByTaskID[task.id] = latestUpdate
+        }
+        if migratedVisibleState {
             publishVisibleChange()
         }
         contextByTaskID.removeValue(forKey: previousTaskID)
@@ -342,20 +528,20 @@ public final class LiveTaskActivityStore: ObservableObject {
     private func beginBatch() {
         precondition(!isApplyingBatch)
         isApplyingBatch = true
-        batchChangedVisibleNodes = false
+        batchChangedVisibleState = false
     }
 
     private func endBatch() {
         isApplyingBatch = false
-        if batchChangedVisibleNodes {
-            batchChangedVisibleNodes = false
+        if batchChangedVisibleState {
+            batchChangedVisibleState = false
             revision &+= 1
         }
     }
 
     private func publishVisibleChange() {
         if isApplyingBatch {
-            batchChangedVisibleNodes = true
+            batchChangedVisibleState = true
         } else {
             revision &+= 1
         }

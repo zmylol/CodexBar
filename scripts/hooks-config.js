@@ -115,17 +115,26 @@ function install(configuration, executable, mode, managedExecutables) {
         timeout: 5
     };
 
-    ["UserPromptSubmit", "PreToolUse", "PermissionRequest", "Stop"].forEach(function (eventName) {
+    ["UserPromptSubmit", "PermissionRequest", "Stop"].forEach(function (eventName) {
         if (!Array.isArray(configuration.hooks[eventName])) {
             configuration.hooks[eventName] = [];
         }
         const eventHandler = Object.assign({}, handler);
         const eventGroup = { hooks: [eventHandler] };
-        if (eventName === "PreToolUse") {
-            eventHandler.async = true;
-            eventGroup.matcher = "^(Bash|apply_patch|Edit|Write|Read|read_file|Grep|Glob|rg|search|view_image)$";
-        }
         configuration.hooks[eventName].push(eventGroup);
+    });
+
+    if (!Array.isArray(configuration.hooks.PreToolUse)) {
+        configuration.hooks.PreToolUse = [];
+    }
+    const activityHandler = Object.assign({}, handler, { async: true });
+    configuration.hooks.PreToolUse.push({
+        matcher: "^(Bash|apply_patch|Edit|Write|Read|read_file|Grep|Glob|rg|search|view_image)$",
+        hooks: [activityHandler]
+    });
+    configuration.hooks.PreToolUse.push({
+        matcher: "^update_plan$",
+        hooks: [Object.assign({}, handler)]
     });
 }
 

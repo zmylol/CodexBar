@@ -333,6 +333,74 @@ func eventTransitionTestCases() -> [CodexBarTestCase] {
                 activityStore.plan(for: task) == replacedSnapshot,
                 "latest plan changed after a stale update"
             )
+
+            let clearedPlan = try parsedPlanEvent(
+                toolUseID: "plan-clear",
+                timestamp: 103,
+                receivedAt: 103,
+                steps: []
+            )
+            try expect(
+                activityStore.apply(
+                    clearedPlan,
+                    deliveryID: "delivery-plan-clear",
+                    currentTasks: taskStore.tasks
+                ),
+                "empty replacement plan was ignored"
+            )
+            try expect(activityStore.plan(for: task) == nil, "empty plan did not clear the snapshot")
+            let staleAfterClear = try parsedPlanEvent(
+                toolUseID: "plan-stale-after-clear",
+                timestamp: 103,
+                receivedAt: 102.5,
+                steps: [["step": "复活的旧步骤", "status": "in_progress"]]
+            )
+            try expect(
+                !activityStore.apply(
+                    staleAfterClear,
+                    deliveryID: "delivery-plan-stale-after-clear",
+                    currentTasks: taskStore.tasks
+                ),
+                "a stale plan was accepted after a newer empty snapshot"
+            )
+            try expect(
+                activityStore.plan(for: task) == nil,
+                "a stale plan reappeared after a newer empty snapshot"
+            )
+        },
+        CodexBarTestCase(name: "distinguishes active waiting and completed plans") {
+            let waiting = CodexTaskPlan(
+                steps: [
+                    CodexTaskPlanStep(id: 0, title: "等待一", status: .pending),
+                    CodexTaskPlanStep(id: 1, title: "等待二", status: .pending)
+                ],
+                updatedAt: Date(timeIntervalSince1970: 100)
+            )
+            let active = CodexTaskPlan(
+                steps: [
+                    CodexTaskPlanStep(id: 0, title: "完成", status: .completed),
+                    CodexTaskPlanStep(id: 1, title: "进行", status: .inProgress)
+                ],
+                updatedAt: Date(timeIntervalSince1970: 101)
+            )
+            let completed = CodexTaskPlan(
+                steps: [
+                    CodexTaskPlanStep(id: 0, title: "完成一", status: .completed),
+                    CodexTaskPlanStep(id: 1, title: "完成二", status: .completed)
+                ],
+                updatedAt: Date(timeIntervalSince1970: 102)
+            )
+
+            try expect(waiting.currentStep == nil, "a pending step was reported as active")
+            try expect(waiting.currentStepNumber == 1, "waiting position is not the first pending step")
+            try expect(waiting.progressFraction == 0, "an untouched plan showed progress")
+            try expect(active.currentStep?.title == "进行", "the active step is missing")
+            try expect(active.currentStepNumber == 2, "the active position is wrong")
+            try expect(active.progressFraction == 0.5, "active progress did not count completed steps")
+            try expect(completed.currentStep == nil, "a completed step was reported as active")
+            try expect(completed.isComplete, "an all-completed plan was not complete")
+            try expect(completed.currentStepNumber == 2, "completed position is not the final step")
+            try expect(completed.progressFraction == 1, "a completed plan did not show full progress")
         },
         CodexBarTestCase(name: "clears a plan for the next task and freezes it at Stop") {
             let taskStore = TaskStore()
@@ -1274,6 +1342,7 @@ private func parsedActivityEvent(
     session: String = "session-A",
     turn: String = "turn-1",
     timestamp: TimeInterval,
+    receivedAt: TimeInterval? = nil,
     cwd: String = "/tmp/project-alpha",
     toolInput: [String: Any]
 ) throws -> CodexHookEvent {
@@ -1288,7 +1357,7 @@ private func parsedActivityEvent(
         "timestamp": timestamp
     ])
     return try CodexHookEventParser(
-        now: { Date(timeIntervalSince1970: timestamp) },
+        now: { Date(timeIntervalSince1970: receivedAt ?? timestamp) },
         source: .visualStudioCode
     ).parse(input)
 }
@@ -1298,6 +1367,7 @@ private func parsedPlanEvent(
     session: String = "session-A",
     turn: String = "turn-1",
     timestamp: TimeInterval,
+    receivedAt: TimeInterval? = nil,
     cwd: String = "/tmp/project-alpha",
     steps: [[String: String]]
 ) throws -> CodexHookEvent {
@@ -1307,6 +1377,7 @@ private func parsedPlanEvent(
         session: session,
         turn: turn,
         timestamp: timestamp,
+        receivedAt: receivedAt,
         cwd: cwd,
         toolInput: ["plan": steps]
     )

@@ -26,6 +26,57 @@ func inboxTestCases() -> [CodexBarTestCase] {
                 "written event does not round-trip"
             )
         },
+        CodexBarTestCase(name: "orders lifecycle and plan files at microsecond precision") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            let writer = InboxWriter(paths: paths)
+            let baseTimestamp: TimeInterval = 1_700_000_000
+
+            let promptURL = try writer.write(inboxEvent(
+                .userPromptSubmit,
+                timestamp: baseTimestamp + 0.000_1
+            ))
+            let planURL = try writer.write(inboxPlanEvent(
+                timestamp: baseTimestamp + 0.000_2
+            ))
+            let stopURL = try writer.write(inboxEvent(
+                .stop,
+                timestamp: baseTimestamp + 0.000_3
+            ))
+            let prefixes = [promptURL, planURL, stopURL].map { url in
+                String(url.lastPathComponent.prefix { $0 != "_" })
+            }
+
+            try expect(
+                prefixes[0] < prefixes[1] && prefixes[1] < prefixes[2],
+                "submillisecond event timestamps collapsed or sorted out of order"
+            )
+            let pendingNames = try CodexHookEventSource(paths: paths)
+                .pendingEvents()
+                .compactMap(\.event.name)
+            try expect(
+                pendingNames == [.userPromptSubmit, .preToolUse, .stop],
+                "prompt, plan, and Stop were replayed out of order"
+            )
+        },
+        CodexBarTestCase(name: "rejects timestamps outside the filename range") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            var didThrow = false
+
+            do {
+                _ = try InboxWriter(paths: paths).write(inboxEvent(
+                    .stop,
+                    timestamp: 10_000_000_000_000
+                ))
+            } catch {
+                didThrow = true
+            }
+
+            try expect(didThrow, "an out-of-range timestamp reached a trapping integer conversion")
+        },
         CodexBarTestCase(name: "bounds transient activity separately and prioritizes lifecycle") {
             let root = temporaryDirectory()
             defer { try? FileManager.default.removeItem(at: root) }
@@ -49,6 +100,32 @@ func inboxTestCases() -> [CodexBarTestCase] {
             try expect(
                 pending.first?.event.name == .userPromptSubmit,
                 "transient activity was processed ahead of lifecycle state"
+            )
+        },
+        CodexBarTestCase(name: "keeps a plan snapshot through an activity burst") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            let writer = InboxWriter(paths: paths)
+            _ = try writer.write(inboxPlanEvent(timestamp: 100))
+            for index in 0..<12 {
+                _ = try writer.write(inboxActionEvent(
+                    timestamp: TimeInterval(101 + index),
+                    toolUseID: "burst-tool-\(index)"
+                ))
+            }
+
+            let queuedEvents = try FileManager.default.contentsOfDirectory(
+                at: paths.activity,
+                includingPropertiesForKeys: nil
+            ).map { url in
+                try JSONDecoder.codexBar.decode(CodexHookEvent.self, from: Data(contentsOf: url))
+            }
+
+            try expect(queuedEvents.count == 12, "the transient queue exceeded its bound")
+            try expect(
+                queuedEvents.contains(where: { $0.plan != nil }),
+                "an activity burst evicted the current plan snapshot"
             )
         },
         CodexBarTestCase(name: "new prompt clears queued activity only for its workspace") {
@@ -214,6 +291,133 @@ func inboxTestCases() -> [CodexBarTestCase] {
             try expect(
                 try FileManager.default.contentsOfDirectory(atPath: paths.failed.path).isEmpty,
                 "malformed activity was persisted in the Failed archive"
+            )
+        },
+        CodexBarTestCase(name: "deletes stale managed temporary activity files") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            try paths.prepareEventDirectories()
+            let staleURL = paths.activity.appendingPathComponent(
+                ".2026-09-04T00-00-00.000Z_\(UUID().uuidString.lowercased()).plan.tmp"
+            )
+            let recentURL = paths.activity.appendingPathComponent(
+                ".2026-09-04T00-00-01.000Z_\(UUID().uuidString.lowercased()).tmp"
+            )
+            let unrelatedURL = paths.activity.appendingPathComponent(".not-managed.tmp")
+            try Data("private stale plan".utf8).write(to: staleURL)
+            try Data("active writer".utf8).write(to: recentURL)
+            try Data("unrelated".utf8).write(to: unrelatedURL)
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date().addingTimeInterval(-600)],
+                ofItemAtPath: staleURL.path
+            )
+
+            _ = try CodexHookEventSource(paths: paths).pendingEvents()
+
+            try expect(
+                !FileManager.default.fileExists(atPath: staleURL.path),
+                "a stale managed temporary plan file survived polling"
+            )
+            try expect(
+                FileManager.default.fileExists(atPath: recentURL.path),
+                "a recent writer temporary file was removed"
+            )
+            try expect(
+                FileManager.default.fileExists(atPath: unrelatedURL.path),
+                "an unrelated hidden file was removed"
+            )
+        },
+        CodexBarTestCase(name: "drops lifecycle events carrying transient plan data") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            try paths.prepareEventDirectories()
+            let invalidEvent = CodexHookEvent(
+                id: "event-invalid-lifecycle-plan",
+                sessionID: "session-A",
+                turnID: "turn-1",
+                cwd: "/tmp/project-alpha",
+                name: .stop,
+                promptSummary: nil,
+                toolName: "update_plan",
+                timestamp: Date(timeIntervalSince1970: 120),
+                lastAssistantMessagePresent: false,
+                plan: CodexHookPlanSummary(steps: [
+                    CodexTaskPlanStep(id: 0, title: "private transient plan", status: .completed)
+                ]),
+                source: .visualStudioCode
+            )
+            let invalidURL = paths.inbox.appendingPathComponent("invalid-lifecycle-plan.json")
+            try JSONEncoder.codexBar.encode(invalidEvent).write(to: invalidURL)
+            func writeMalformedFixture(
+                _ filename: String,
+                mutate: (inout [String: Any]) -> Void
+            ) throws -> URL {
+                var payload: [String: Any] = [
+                    "id": "event-invalid-transient-plan",
+                    "sessionID": "session-A",
+                    "turnID": "turn-1",
+                    "cwd": "/tmp/project-alpha",
+                    "name": "Stop",
+                    "toolName": "update_plan",
+                    "plan": [
+                        "steps": [[
+                            "id": 0,
+                            "title": "private malformed transient plan",
+                            "status": "completed"
+                        ]]
+                    ],
+                    "timestamp": 120,
+                    "lastAssistantMessagePresent": false,
+                    "source": "vscode"
+                ]
+                mutate(&payload)
+                let url = paths.inbox.appendingPathComponent(filename)
+                try JSONSerialization.data(withJSONObject: payload).write(to: url)
+                return url
+            }
+            let malformedURLs = try [
+                writeMalformedFixture("invalid-plan-status.json") { payload in
+                    payload["plan"] = [
+                        "steps": [[
+                            "id": 0,
+                            "title": "private invalid status plan",
+                            "status": "future_status"
+                        ]]
+                    ]
+                },
+                writeMalformedFixture("invalid-plan-id.json") { payload in
+                    payload["id"] = ["not-a-string"]
+                },
+                writeMalformedFixture("invalid-plan-name.json") { payload in
+                    payload["name"] = "FutureStop"
+                },
+                writeMalformedFixture("invalid-plan-timestamp.json") { payload in
+                    payload["timestamp"] = "not-a-date"
+                }
+            ]
+
+            let pending = try CodexHookEventSource(paths: paths).pendingEvents()
+
+            try expect(pending.isEmpty, "a lifecycle event retained transient plan data")
+            try expect(
+                !FileManager.default.fileExists(atPath: invalidURL.path),
+                "the invalid transient plan remained in Inbox"
+            )
+            for malformedURL in malformedURLs {
+                try expect(
+                    !FileManager.default.fileExists(atPath: malformedURL.path),
+                    "a malformed transient plan remained in Inbox"
+                )
+            }
+            try expect(
+                try FileManager.default.contentsOfDirectory(atPath: paths.processed.path).isEmpty,
+                "the invalid transient plan entered Processed"
+            )
+            try expect(
+                try FileManager.default.contentsOfDirectory(atPath: paths.failed.path).isEmpty,
+                "the invalid transient plan entered Failed"
             )
         },
         CodexBarTestCase(name: "processes each inbox file once") {

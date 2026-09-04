@@ -14,13 +14,18 @@ public struct InboxWriter {
 
     @discardableResult
     public func write(_ event: CodexHookEvent) throws -> URL {
+        guard event.hasConsistentTransientPayload else {
+            throw CodexHookEventCodingError.inconsistentTransientPayload
+        }
         try paths.prepareEventDirectories(fileManager: fileManager)
         if event.name == .userPromptSubmit {
             removeQueuedActivity(forCWD: event.cwd)
         }
 
         let eventData = try JSONEncoder.codexBar.encode(event)
-        let stem = "\(filenameTimestamp(event.timestamp))_\(UUID().uuidString.lowercased())"
+        let planMarker = event.plan == nil ? "" : ".plan"
+        let stem = try filenameTimestamp(event.timestamp)
+            + "_\(UUID().uuidString.lowercased())\(planMarker)"
         let destination = event.name == .preToolUse ? paths.activity : paths.inbox
         let temporaryURL = destination.appendingPathComponent(".\(stem).tmp")
         let finalURL = destination.appendingPathComponent("\(stem).json")
@@ -82,15 +87,28 @@ public struct InboxWriter {
         ) else {
             return
         }
-        let files = urls
-            .filter { $0.pathExtension.lowercased() == "json" }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        let files = urls.filter { $0.pathExtension.lowercased() == "json" }
+        let evictionOrder = files.sorted { lhs, rhs in
+            let lhsIsPlan = isPlanActivityFile(lhs)
+            let rhsIsPlan = isPlanActivityFile(rhs)
+            if lhsIsPlan != rhsIsPlan {
+                return !lhsIsPlan
+            }
+            return lhs.lastPathComponent < rhs.lastPathComponent
+        }
         var excess = max(0, files.count - Self.maximumPendingActivityEvents)
-        for url in files where excess > 0 && url != finalURL {
+        for url in evictionOrder where excess > 0 {
+            if url == finalURL && isPlanActivityFile(url) {
+                continue
+            }
             if (try? fileManager.removeItem(at: url)) != nil {
                 excess -= 1
             }
         }
+    }
+
+    private func isPlanActivityFile(_ url: URL) -> Bool {
+        url.lastPathComponent.hasSuffix(".plan.json")
     }
 
     private func canonicalCWD(_ value: String?) -> String? {
@@ -104,13 +122,28 @@ public struct InboxWriter {
         return (value as NSString).standardizingPath
     }
 
-    private func filenameTimestamp(_ date: Date) -> String {
+    private func filenameTimestamp(_ date: Date) throws -> String {
+        let roundedValue = (date.timeIntervalSince1970 * 1_000_000).rounded()
+        guard let roundedMicroseconds = Int64(exactly: roundedValue) else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
+        let division = roundedMicroseconds.quotientAndRemainder(dividingBy: 1_000_000)
+        var wholeSeconds = division.quotient
+        var fractionalMicroseconds = division.remainder
+        if fractionalMicroseconds < 0 {
+            wholeSeconds -= 1
+            fractionalMicroseconds += 1_000_000
+        }
+
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .iso8601)
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyy-MM-dd'T'HH-mm-ss.SSS'Z'"
-        return formatter.string(from: date)
+        formatter.dateFormat = "yyyy-MM-dd'T'HH-mm-ss"
+        let wholeSecondDate = Date(timeIntervalSince1970: TimeInterval(wholeSeconds))
+        let fraction = String(fractionalMicroseconds)
+        let paddedFraction = String(repeating: "0", count: 6 - fraction.count) + fraction
+        return "\(formatter.string(from: wholeSecondDate)).\(paddedFraction)Z"
     }
 }
 

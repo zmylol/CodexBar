@@ -16,6 +16,7 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
     public let promptSummary: String?
     public let toolName: String?
     public let activity: CodexHookActivitySummary?
+    public let plan: CodexHookPlanSummary?
     public let timestamp: Date
     public let lastAssistantMessagePresent: Bool
     public let source: CodexHookSource
@@ -31,6 +32,7 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
         timestamp: Date,
         lastAssistantMessagePresent: Bool,
         activity: CodexHookActivitySummary? = nil,
+        plan: CodexHookPlanSummary? = nil,
         source: CodexHookSource
     ) {
         self.id = id
@@ -41,6 +43,7 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
         self.promptSummary = promptSummary
         self.toolName = toolName
         self.activity = activity
+        self.plan = plan
         self.timestamp = timestamp
         self.lastAssistantMessagePresent = lastAssistantMessagePresent
         self.source = source
@@ -55,6 +58,7 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
         case promptSummary
         case toolName
         case activity
+        case plan
         case timestamp
         case lastAssistantMessagePresent
         case source
@@ -63,6 +67,18 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let hasActivityPayload: Bool
+        let hasPlanPayload: Bool
+        do {
+            hasActivityPayload = container.contains(.activity)
+                ? try !container.decodeNil(forKey: .activity)
+                : false
+            hasPlanPayload = container.contains(.plan)
+                ? try !container.decodeNil(forKey: .plan)
+                : false
+        } catch {
+            throw CodexHookEventCodingError.inconsistentTransientPayload
+        }
         let rawSource: String?
         if container.contains(.source) {
             rawSource = try? container.decode(String.self, forKey: .source)
@@ -74,21 +90,63 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
         else {
             throw CodexHookEventCodingError.unsupportedOrMissingSource
         }
-        source = decodedSource
 
-        id = try container.decode(String.self, forKey: .id)
-        sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID)
-        turnID = try container.decodeIfPresent(String.self, forKey: .turnID)
-        cwd = try container.decodeIfPresent(String.self, forKey: .cwd)
-        name = try container.decodeIfPresent(CodexHookEventName.self, forKey: .name)
-        promptSummary = try container.decodeIfPresent(String.self, forKey: .promptSummary)
-        toolName = try container.decodeIfPresent(String.self, forKey: .toolName)
-        activity = try container.decodeIfPresent(CodexHookActivitySummary.self, forKey: .activity)
-        timestamp = try container.decode(Date.self, forKey: .timestamp)
-        lastAssistantMessagePresent = try container.decode(
-            Bool.self,
-            forKey: .lastAssistantMessagePresent
-        )
+        do {
+            let decodedID = try container.decode(String.self, forKey: .id)
+            let decodedSessionID = try container.decodeIfPresent(String.self, forKey: .sessionID)
+            let decodedTurnID = try container.decodeIfPresent(String.self, forKey: .turnID)
+            let decodedCWD = try container.decodeIfPresent(String.self, forKey: .cwd)
+            let decodedName = try container.decodeIfPresent(
+                CodexHookEventName.self,
+                forKey: .name
+            )
+            let decodedPromptSummary = try container.decodeIfPresent(
+                String.self,
+                forKey: .promptSummary
+            )
+            let decodedToolName = try container.decodeIfPresent(String.self, forKey: .toolName)
+            guard Self.hasConsistentTransientPayload(
+                name: decodedName,
+                toolName: decodedToolName,
+                hasActivity: hasActivityPayload,
+                hasPlan: hasPlanPayload
+            ) else {
+                throw CodexHookEventCodingError.inconsistentTransientPayload
+            }
+            let decodedActivity = try container.decodeIfPresent(
+                CodexHookActivitySummary.self,
+                forKey: .activity
+            )
+            let decodedPlan = try container.decodeIfPresent(
+                CodexHookPlanSummary.self,
+                forKey: .plan
+            )
+            let decodedTimestamp = try container.decode(Date.self, forKey: .timestamp)
+            let decodedLastAssistantMessagePresent = try container.decode(
+                Bool.self,
+                forKey: .lastAssistantMessagePresent
+            )
+
+            id = decodedID
+            sessionID = decodedSessionID
+            turnID = decodedTurnID
+            cwd = decodedCWD
+            name = decodedName
+            promptSummary = decodedPromptSummary
+            toolName = decodedToolName
+            activity = decodedActivity
+            plan = decodedPlan
+            timestamp = decodedTimestamp
+            lastAssistantMessagePresent = decodedLastAssistantMessagePresent
+            source = decodedSource
+        } catch let error as CodexHookEventCodingError {
+            throw error
+        } catch {
+            if hasActivityPayload || hasPlanPayload {
+                throw CodexHookEventCodingError.inconsistentTransientPayload
+            }
+            throw error
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -101,14 +159,45 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
         try container.encodeIfPresent(promptSummary, forKey: .promptSummary)
         try container.encodeIfPresent(toolName, forKey: .toolName)
         try container.encodeIfPresent(activity, forKey: .activity)
-        try container.encode(timestamp, forKey: .timestamp)
+        try container.encodeIfPresent(plan, forKey: .plan)
+        try container.encode(timestamp.timeIntervalSince1970, forKey: .timestamp)
         try container.encode(lastAssistantMessagePresent, forKey: .lastAssistantMessagePresent)
         try container.encode(source, forKey: .source)
+    }
+
+    var hasConsistentTransientPayload: Bool {
+        Self.hasConsistentTransientPayload(
+            name: name,
+            toolName: toolName,
+            hasActivity: activity != nil,
+            hasPlan: plan != nil
+        )
+    }
+
+    private static func hasConsistentTransientPayload(
+        name: CodexHookEventName?,
+        toolName: String?,
+        hasActivity: Bool,
+        hasPlan: Bool
+    ) -> Bool {
+        let normalizedToolName = toolName?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if hasPlan {
+            return name == .preToolUse
+                && normalizedToolName == "update_plan"
+                && !hasActivity
+        }
+        if hasActivity {
+            return name == .preToolUse && normalizedToolName != "update_plan"
+        }
+        return true
     }
 }
 
 enum CodexHookEventCodingError: Error {
     case unsupportedOrMissingSource
+    case inconsistentTransientPayload
 }
 
 public struct CodexHookEventParser: Sendable {
@@ -133,14 +222,21 @@ public struct CodexHookEventParser: Sendable {
         let promptSummary = PromptSanitizer.sanitize(payload.prompt)
         let toolName = bounded(payload.toolName, maximumCharacters: 256)
         let toolUseID = bounded(payload.toolUseID, maximumCharacters: 512)
-        let activity = name == .preToolUse
+        let isPlanUpdate = name == .preToolUse
+            && toolName?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                == "update_plan"
+        let activity = name == .preToolUse && !isPlanUpdate
             ? HookActivitySummarizer.summarize(
                 toolName: toolName,
                 toolInput: payload.toolInput,
                 cwd: cwd
             )
             : nil
+        let plan = isPlanUpdate
+            ? HookPlanSummarizer.summarize(toolInput: payload.toolInput)
+            : nil
         let suppliedTimestamp = validatedTimestamp(payload.timestamp?.date, receivedAt: receivedAt)
+        let eventTimestamp = isPlanUpdate ? receivedAt : (suppliedTimestamp ?? receivedAt)
 
         return CodexHookEvent(
             id: StableEventID.make(from: StableEventIdentity(
@@ -152,6 +248,7 @@ public struct CodexHookEventParser: Sendable {
                 toolName: toolName,
                 toolUseID: toolUseID,
                 activity: activity,
+                plan: plan,
                 suppliedTimestamp: suppliedTimestamp,
                 lastAssistantMessagePresent: payload.lastAssistantMessagePresent
             )),
@@ -161,9 +258,10 @@ public struct CodexHookEventParser: Sendable {
             name: name,
             promptSummary: promptSummary,
             toolName: toolName,
-            timestamp: suppliedTimestamp ?? receivedAt,
+            timestamp: eventTimestamp,
             lastAssistantMessagePresent: payload.lastAssistantMessagePresent,
             activity: activity,
+            plan: plan,
             source: source
         )
     }
@@ -315,6 +413,7 @@ private struct StableEventIdentity {
     let toolName: String?
     let toolUseID: String?
     let activity: CodexHookActivitySummary?
+    let plan: CodexHookPlanSummary?
     let suppliedTimestamp: Date?
     let lastAssistantMessagePresent: Bool
 }
@@ -334,6 +433,7 @@ private enum StableEventID {
             identity.toolUseID,
             identity.activity?.kind.rawValue,
             identity.activity?.safeSubject,
+            planIdentity(identity.plan),
             timestampBits,
             identity.lastAssistantMessagePresent ? "1" : "0"
         ]
@@ -358,6 +458,12 @@ private enum StableEventID {
         let hexadecimal = String(hash, radix: 16)
         return "event-" + String(repeating: "0", count: 16 - hexadecimal.count) + hexadecimal
     }
+
+    private static func planIdentity(_ plan: CodexHookPlanSummary?) -> String? {
+        plan?.steps.map { step in
+            "\(step.status.rawValue):\(step.title)"
+        }.joined(separator: "\u{1F}")
+    }
 }
 
 private struct HookToolInput: Decodable {
@@ -365,12 +471,14 @@ private struct HookToolInput: Decodable {
     let patch: String?
     let path: String?
     let filePath: String?
+    let plan: [HookPlanItem]?
 
     private enum CodingKeys: String, CodingKey {
         case command
         case patch
         case path
         case filePath = "file_path"
+        case plan
     }
 
     init(from decoder: Decoder) throws {
@@ -379,6 +487,40 @@ private struct HookToolInput: Decodable {
         patch = try? container.decode(String.self, forKey: .patch)
         path = try? container.decode(String.self, forKey: .path)
         filePath = try? container.decode(String.self, forKey: .filePath)
+        plan = try? container.decode([HookPlanItem].self, forKey: .plan)
+    }
+}
+
+private struct HookPlanItem: Decodable {
+    let step: String
+    let status: CodexTaskPlanStepStatus
+}
+
+private enum HookPlanSummarizer {
+    static func summarize(toolInput: HookToolInput?) -> CodexHookPlanSummary? {
+        guard let rawSteps = toolInput?.plan,
+              rawSteps.count <= CodexHookPlanSummary.maximumSteps,
+              rawSteps.filter({ $0.status == .inProgress }).count <= 1
+        else {
+            return nil
+        }
+
+        var steps: [CodexTaskPlanStep] = []
+        steps.reserveCapacity(rawSteps.count)
+        for (index, item) in rawSteps.enumerated() {
+            guard item.step.utf8.count <= CodexHookPlanSummary.maximumRawTitleBytes,
+                  item.step.count <= CodexHookPlanSummary.maximumRawTitleCharacters,
+                  let title = PromptSanitizer.sanitize(
+                      item.step,
+                      maxLength: CodexHookPlanSummary.maximumTitleCharacters
+                  ),
+                  title.utf8.count <= CodexHookPlanSummary.maximumTitleBytes
+            else {
+                return nil
+            }
+            steps.append(CodexTaskPlanStep(id: index, title: title, status: item.status))
+        }
+        return CodexHookPlanSummary(steps: steps)
     }
 }
 

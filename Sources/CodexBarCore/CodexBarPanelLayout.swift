@@ -2,8 +2,8 @@ import CoreGraphics
 
 public enum CodexBarPanelLayout {
     public static let compactWidth: CGFloat = 168
-    public static let detailWidth: CGFloat = 240
-    public static let detailHeight: CGFloat = 176
+    public static let detailWidth: CGFloat = 320
+    public static let detailHeight: CGFloat = 260
     public static let detailGap: CGFloat = 8
     public static let headerHeight: CGFloat = 28
     public static let rowHeight: CGFloat = 28
@@ -11,6 +11,7 @@ public enum CodexBarPanelLayout {
     public static let emptyHeight: CGFloat = 56
     public static let noticeHeight: CGFloat = 84
     public static let maximumRows = 5
+    public static let maximumVisiblePlanSteps = 5
 
     public static func height(taskCount: Int, noticeVisible: Bool) -> CGFloat {
         let visibleTaskCount = min(max(taskCount, 0), maximumRows)

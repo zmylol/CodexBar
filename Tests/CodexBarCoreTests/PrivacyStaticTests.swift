@@ -320,6 +320,18 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                     && source.contains("checkmark.circle"),
                 "hover detail does not expose plan state and N/M progress"
             )
+            try expect(
+                source.contains("planAccessibilitySummary")
+                    && source.contains("计划已完成")
+                    && source.contains("等待第"),
+                "VoiceOver does not distinguish active, waiting, and completed plans"
+            )
+            try expect(
+                !source.contains(
+                    ".foregroundStyle(step.status == .inProgress ? .primary : .secondary)"
+                ),
+                "completed or pending plan text uses a low-contrast secondary color"
+            )
         },
         CodexBarTestCase(name: "Accessibility grant recovery is armed after a denied startup") {
             let repositoryRoot = URL(fileURLWithPath: #filePath)

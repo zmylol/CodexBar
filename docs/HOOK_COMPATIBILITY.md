@@ -19,13 +19,13 @@ scripts/install-app
 scripts/install-hooks --probe
 ```
 
-Reload VS Code，在 Codex 侧栏进入 `Codex settings → Hooks`。必要时点击 `Reload hooks`，打开 `User config`，确认四条定义：
+Reload VS Code，在 Codex 侧栏进入 `Codex settings → Hooks`。必要时点击 `Reload hooks`，打开 `User config`，确认五个 handler（覆盖四种事件）：
 
 - 指向 `~/Library/Application Support/CodexBar/bin/codexbar-hook`；
 - 参数包含 `--codexbar-managed --probe`；
 - 事件分别为 `UserPromptSubmit`、`PreToolUse`、`PermissionRequest` 和 `Stop`；
-- 只有 `PreToolUse` handler 设置为异步，其他三个 handler 保持同步。
-- `PreToolUse` 使用只覆盖 shell、读、搜和编辑工具的 matcher，不捕捉无关的本地工具或 MCP 调用。
+- shell、读、搜和编辑的 `PreToolUse` handler 异步执行；`update_plan` 单独使用同步 handler，以保持连续计划快照的顺序；其他三个生命周期 handler 也保持同步。
+- 两个 `PreToolUse` matcher 互斥且只覆盖上述普通动作与精确的 `update_plan`，不捕捉其他本地工具或 MCP 调用。
 
 核对后由测试者点击 Trust。CodexBar 不会自动代替用户审核 Hook。
 
@@ -43,7 +43,7 @@ VS Code B → project-beta
 1. 在 A 提交短任务并等待 turn 停止。
 2. 在 B 提交不同任务并等待 turn 停止。
 3. 在其中一个 turn 请求一项安全、可拒绝且明确需要授权的操作；看到授权框后拒绝。
-4. 让其中一个 turn 至少执行一次文件读取、编辑或测试命令。
+4. 让其中一个 turn 至少执行一次文件读取、编辑或测试命令，并运行一次带多个步骤的 `update_plan`。
 5. 检查 Probe 文件：
 
 ```sh
@@ -57,11 +57,12 @@ find "$HOME/Library/Application Support/CodexBar/Probe" -maxdepth 1 -name '*.jso
 - 同一 turn 的 `turn_id` 一致；
 - 两个项目都出现 `UserPromptSubmit` 和 `Stop`；
 - 工具动作出现 `PreToolUse`，只包含受限的动作分类和安全路径摘要；
+- 计划更新出现 `toolName: update_plan`；Probe 不保留计划正文，正式模式只把脱敏后的计划短暂传给内存缩略图；
 - 授权场景出现 `PermissionRequest`；
 - prompt 只有脱敏后的首行且不超过 80 个字符；
 - `last_assistant_message` 只能是 `[REDACTED]`，不能出现正文。
 
-同时确认 Probe 中没有原始命令、补丁正文、搜索词、MCP 参数或工具输出。
+同时确认 Probe 中没有原始命令、补丁正文、搜索词、计划正文、MCP 参数或工具输出。
 
 不要把 Probe 文件、完整 ID、绝对 cwd 或 prompt 提交到仓库。
 

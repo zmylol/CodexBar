@@ -164,6 +164,7 @@ struct TaskListView: View {
                             CompactTaskRow(
                                 task: task,
                                 activitySummary: activityStore.nodes(for: task).last?.summary,
+                                plan: activityStore.plan(for: task),
                                 coordinateSpaceName: Self.coordinateSpaceName,
                                 action: { model.activate(task) },
                                 deleteAction: { model.remove(task) },
@@ -217,6 +218,7 @@ private struct CompactTaskRow: View {
 
     let task: CodexTask
     let activitySummary: String?
+    let plan: CodexTaskPlan?
     let coordinateSpaceName: String
     let action: () -> Void
     let deleteAction: () -> Void
@@ -233,7 +235,9 @@ private struct CompactTaskRow: View {
                 for: task,
                 relativeTo: context.date
             )
-            let accessibilityActivityText = activitySummary.map {
+            let accessibilityProgressText = plan.map {
+                "，\(planAccessibilitySummary($0))"
+            } ?? activitySummary.map {
                 "，最近动作，\($0)"
             } ?? ""
 
@@ -269,7 +273,7 @@ private struct CompactTaskRow: View {
                     )
                     .accessibilityValue(
                         "\(task.isUnread ? "未读，" : "")\(accessibilityTimeText)"
-                            + accessibilityActivityText
+                            + accessibilityProgressText
                     )
                     .accessibilityHint("切换到对应的 VS Code 窗口")
                     .accessibilityInputLabels([task.workspaceName, task.title])
@@ -328,6 +332,25 @@ private struct CompactTaskRow: View {
         .frame(height: CodexBarPanelLayout.rowHeight)
     }
 
+    private func planAccessibilitySummary(_ plan: CodexTaskPlan) -> String {
+        let overview: String
+        if plan.isComplete {
+            overview = "计划已完成，共 \(plan.totalStepCount) 步"
+        } else if let currentStep = plan.currentStep {
+            overview = "当前第 \(plan.currentStepNumber) 步，共 \(plan.totalStepCount) 步；"
+                + "已完成 \(plan.completedStepCount) 步；当前：\(currentStep.title)"
+        } else {
+            overview = "等待第 \(plan.currentStepNumber) 步，共 \(plan.totalStepCount) 步；"
+                + "已完成 \(plan.completedStepCount) 步"
+        }
+        let visibleSteps = plan.visibleSteps(
+            maximumCount: CodexBarPanelLayout.maximumVisiblePlanSteps
+        ).map { step in
+            "\(step.status.accessibilityLabel)：\(step.title)"
+        }.joined(separator: "；")
+        return visibleSteps.isEmpty ? overview : "\(overview)；可见步骤：\(visibleSteps)"
+    }
+
     private var showsTaskMenu: Bool {
         isHovered || isRowFocused || voiceOverEnabled
     }
@@ -367,12 +390,22 @@ struct TaskHoverDetailView: View {
     var body: some View {
         Group {
             if let task = store.tasks.first(where: { $0.cwd == cwd }) {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
+                if let plan = activityStore.plan(for: task) {
                     detailContent(
                         task: task,
-                        nodes: activityStore.nodes(for: task),
-                        relativeTo: context.date
+                        nodes: [],
+                        plan: plan,
+                        relativeTo: Date()
                     )
+                } else {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        detailContent(
+                            task: task,
+                            nodes: activityStore.nodes(for: task),
+                            plan: nil,
+                            relativeTo: context.date
+                        )
+                    }
                 }
             } else {
                 Color.clear
@@ -403,6 +436,7 @@ struct TaskHoverDetailView: View {
     private func detailContent(
         task: CodexTask,
         nodes: [CodexTaskActivity],
+        plan: CodexTaskPlan?,
         relativeTo date: Date
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -425,16 +459,40 @@ struct TaskHoverDetailView: View {
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            activityList(nodes, status: task.status, accent: task.status.color)
-                .frame(maxWidth: .infinity, minHeight: 48, alignment: .topLeading)
+            Group {
+                if let plan {
+                    planList(plan)
+                } else {
+                    activityList(nodes, status: task.status, accent: task.status.color)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
             Divider().opacity(0.32)
 
             HStack(spacing: 6) {
-                Text(detailTimeText(for: task, relativeTo: date))
-                    .font(.system(size: 10).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if let plan {
+                    HStack(spacing: 5) {
+                        PlanProgressIndicator(
+                            progressFraction: plan.progressFraction
+                        )
+                        Text(planProgressText(for: plan))
+                            .font(.system(size: 10, weight: .medium).monospacedDigit())
+                            .foregroundStyle(.primary)
+                    }
+                    .padding(.horizontal, 7)
+                    .frame(height: 24)
+                    .background(task.status.color.opacity(0.10), in: Capsule())
+                    .overlay {
+                        Capsule()
+                            .stroke(task.status.color.opacity(0.24), lineWidth: 1)
+                    }
+                } else {
+                    Text(detailTimeText(for: task, relativeTo: date))
+                        .font(.system(size: 10).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 Spacer(minLength: 4)
                 Button(action: onOpen) {
                     Label("切换到 VS Code", systemImage: "arrow.up.forward.app")
@@ -446,6 +504,26 @@ struct TaskHoverDetailView: View {
             }
         }
         .padding(12)
+    }
+
+    private func planList(_ plan: CodexTaskPlan) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(plan.visibleSteps(
+                maximumCount: CodexBarPanelLayout.maximumVisiblePlanSteps
+            )) { step in
+                HStack(spacing: 7) {
+                    PlanStepIndicator(status: step.status)
+                    Text(step.title)
+                        .font(.system(
+                            size: 11,
+                            weight: step.status == .inProgress ? .medium : .regular
+                        ))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .help(step.title)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -491,6 +569,84 @@ struct TaskHoverDetailView: View {
             return "\(timeText)需要处理"
         case .ready:
             return "\(timeText)变为可查看"
+        }
+    }
+
+    private func planProgressText(for plan: CodexTaskPlan) -> String {
+        if plan.isComplete {
+            return "计划已完成 \(plan.totalStepCount) / \(plan.totalStepCount) 步"
+        }
+        if plan.currentStep == nil {
+            return "等待第 \(plan.currentStepNumber) / \(plan.totalStepCount) 步"
+        }
+        return "第 \(plan.currentStepNumber) / \(plan.totalStepCount) 步"
+    }
+}
+
+private struct PlanProgressIndicator: View {
+    let progressFraction: Double
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.primary.opacity(0.35), lineWidth: 1.5)
+            Circle()
+                .trim(from: 0, to: min(max(CGFloat(progressFraction), 0), 1))
+                .stroke(
+                    Color.primary,
+                    style: StrokeStyle(lineWidth: 1.5, lineCap: .round)
+                )
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: 12, height: 12)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct PlanStepIndicator: View {
+    let status: CodexTaskPlanStepStatus
+
+    var body: some View {
+        Group {
+            switch status {
+            case .completed:
+                Image(systemName: "checkmark.circle")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.primary)
+            case .inProgress:
+                ZStack {
+                    Circle()
+                        .stroke(Color.primary.opacity(0.35), lineWidth: 1.5)
+                    Circle()
+                        .trim(from: 0, to: 0.7)
+                        .stroke(
+                            Color.primary,
+                            style: StrokeStyle(lineWidth: 1.5, lineCap: .round)
+                        )
+                        .rotationEffect(.degrees(-90))
+                }
+                .frame(width: 11, height: 11)
+            case .pending:
+                Circle()
+                    .stroke(Color.primary, lineWidth: 1.25)
+                    .frame(width: 9, height: 9)
+                    .padding(1)
+            }
+        }
+        .frame(width: 12, height: 12)
+        .accessibilityHidden(true)
+    }
+}
+
+private extension CodexTaskPlanStepStatus {
+    var accessibilityLabel: String {
+        switch self {
+        case .completed:
+            return "已完成"
+        case .inProgress:
+            return "当前"
+        case .pending:
+            return "待处理"
         }
     }
 }

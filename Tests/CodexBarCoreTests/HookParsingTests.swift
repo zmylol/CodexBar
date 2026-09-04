@@ -76,6 +76,44 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
             try expect(!encoded.contains("private reasoning"), "plan explanation was retained")
             try expect(!encoded.contains("tool-plan-1"), "raw plan tool_use_id was retained")
         },
+        CodexBarTestCase(name: "preserves trusted submillisecond plan arrival order") {
+            func roundTrip(receivedAt: Date, toolUseID: String) throws -> CodexHookEvent {
+                let input = try JSONSerialization.data(withJSONObject: [
+                    "session_id": "session-A",
+                    "turn_id": "turn-1",
+                    "cwd": "/tmp/project-alpha",
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "update_plan",
+                    "tool_use_id": toolUseID,
+                    "tool_input": [
+                        "plan": [["step": "Ordered step", "status": "in_progress"]]
+                    ],
+                    "timestamp": fixedNow.timeIntervalSince1970
+                ])
+                let event = try CodexHookEventParser(
+                    now: { receivedAt },
+                    source: .visualStudioCode
+                ).parse(input)
+                return try JSONDecoder.codexBar.decode(
+                    CodexHookEvent.self,
+                    from: JSONEncoder.codexBar.encode(event)
+                )
+            }
+
+            let first = try roundTrip(
+                receivedAt: fixedNow.addingTimeInterval(0.000_1),
+                toolUseID: "ordered-plan-a"
+            )
+            let second = try roundTrip(
+                receivedAt: fixedNow.addingTimeInterval(0.000_2),
+                toolUseID: "ordered-plan-b"
+            )
+
+            try expect(
+                first.timestamp < second.timestamp,
+                "equal supplied timestamps erased trusted plan arrival order"
+            )
+        },
         CodexBarTestCase(name: "rejects malformed or unbounded plan snapshots") {
             func parse(_ steps: [[String: String]]) throws -> CodexHookEvent {
                 let input = try JSONSerialization.data(withJSONObject: [
@@ -99,9 +137,17 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
             let tooMany = try parse((1...21).map {
                 ["step": "Step \($0)", "status": "pending"]
             })
+            let oversizedCombiningSequence = try parse([[
+                "step": "a" + String(repeating: "\u{0301}", count: 5_000),
+                "status": "pending"
+            ]])
 
             try expect(duplicateCurrent.plan == nil, "multiple current steps were accepted")
             try expect(tooMany.plan == nil, "unbounded plan steps were accepted")
+            try expect(
+                oversizedCombiningSequence.plan == nil,
+                "a byte-unbounded combining sequence was accepted"
+            )
         },
         CodexBarTestCase(name: "summarizes apply_patch without retaining raw input") {
             let fullPath = "/Users/example/private-client/Sources/CodexBarCore/TaskStore.swift"

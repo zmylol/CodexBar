@@ -72,10 +72,11 @@ function run(argv) {
     const text = $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding);
     const configuration = JSON.parse(unwrap(text));
     const commandPrefix = shellQuote(executable) + " --codexbar-managed";
-    const expectedEvents = ["PermissionRequest", "PreToolUse", "Stop", "UserPromptSubmit"];
+    const expectedEvents = ["PermissionRequest", "PreToolUse", "PreToolUse", "Stop", "UserPromptSubmit"];
     const foundEvents = [];
     const asyncEvents = [];
-    const activityMatchers = [];
+    const asyncActivityMatchers = [];
+    const synchronousActivityMatchers = [];
 
     Object.keys(configuration.hooks).forEach(function (eventName) {
         const groups = configuration.hooks[eventName];
@@ -95,7 +96,11 @@ function run(argv) {
                         asyncEvents.push(eventName);
                     }
                     if (eventName === "PreToolUse") {
-                        activityMatchers.push(group.matcher);
+                        if (handler.async === true) {
+                            asyncActivityMatchers.push(group.matcher);
+                        } else {
+                            synchronousActivityMatchers.push(group.matcher);
+                        }
                     }
                 }
             });
@@ -109,9 +114,12 @@ function run(argv) {
     if (JSON.stringify(asyncEvents) !== JSON.stringify(["PreToolUse"])) {
         throw new Error("Only PreToolUse may be asynchronous, got: " + asyncEvents.join(", "));
     }
-    const expectedMatcher = "^(Bash|apply_patch|Edit|Write|Read|read_file|Grep|Glob|rg|search|view_image|update_plan)$";
-    if (JSON.stringify(activityMatchers) !== JSON.stringify([expectedMatcher])) {
-        throw new Error("PreToolUse matcher is missing or broader than the activity allowlist");
+    const expectedActivityMatcher = "^(Bash|apply_patch|Edit|Write|Read|read_file|Grep|Glob|rg|search|view_image)$";
+    if (JSON.stringify(asyncActivityMatchers) !== JSON.stringify([expectedActivityMatcher])) {
+        throw new Error("The asynchronous activity matcher is missing or broader than its allowlist");
+    }
+    if (JSON.stringify(synchronousActivityMatchers) !== JSON.stringify(["^update_plan$"])) {
+        throw new Error("update_plan is not isolated in its ordered synchronous matcher");
     }
 }
 JXA
@@ -150,7 +158,7 @@ if /usr/bin/grep -Fq "$historical_hook_executable" "$hooks_file"; then
     exit 1
 fi
 handler_count=$(/usr/bin/grep -o 'codexbar-hook.*--probe' "$hooks_file" | /usr/bin/wc -l | /usr/bin/tr -d ' ')
-[[ "$handler_count" == "4" ]]
+[[ "$handler_count" == "5" ]]
 
 second_hook_executable="$support_root/alternate/codexbar-hook"
 /bin/mkdir -p "${second_hook_executable:h}"
@@ -163,7 +171,7 @@ if /usr/bin/grep -Fq "$hook_executable" "$hooks_file"; then
     exit 1
 fi
 second_handler_count=$(/usr/bin/grep -Fo "$second_hook_executable" "$hooks_file" | /usr/bin/wc -l | /usr/bin/tr -d ' ')
-[[ "$second_handler_count" == "4" ]]
+[[ "$second_handler_count" == "5" ]]
 assert_codexbar_handler_shape "$second_hook_executable"
 
 "$script_dir/uninstall-hooks"

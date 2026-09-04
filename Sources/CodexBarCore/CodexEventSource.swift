@@ -34,6 +34,7 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
     private static let maximumEventBytes = 4 * 1_024 * 1_024
     private static let maximumEventsPerPoll = 25
     private static let maximumActivityEventsPerPoll = 12
+    private static let staleTemporaryFileAge: TimeInterval = 5 * 60
     private static let archiveRetentionSweepInterval: TimeInterval = 60 * 60
     private let paths: CodexBarPaths
     private let fileManager: FileManager
@@ -104,7 +105,11 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
                     sourceURL: url,
                     normalizedCWD: event.cwd.flatMap(PathNormalizer.normalize)
                 ))
-            } catch CodexHookEventCodingError.unsupportedOrMissingSource {
+            } catch let error as CodexHookEventCodingError {
+                switch error {
+                case .unsupportedOrMissingSource, .inconsistentTransientPayload:
+                    break
+                }
                 do {
                     try fileManager.removeItem(at: url)
                 } catch {
@@ -154,13 +159,49 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
     }
 
     private func candidateURLs(in directory: URL) throws -> [URL] {
-        try fileManager.contentsOfDirectory(
+        let urls = try fileManager.contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            options: []
         )
-        .filter { $0.pathExtension.lowercased() == "json" }
-        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        let staleBefore = Date().addingTimeInterval(-Self.staleTemporaryFileAge)
+        for url in urls where isManagedTemporaryFile(url) {
+            guard let values = try? url.resourceValues(
+                forKeys: [.contentModificationDateKey, .isRegularFileKey]
+            ),
+                  values.isRegularFile == true,
+                  let modifiedAt = values.contentModificationDate,
+                  modifiedAt <= staleBefore
+            else {
+                continue
+            }
+            try? fileManager.removeItem(at: url)
+        }
+        return urls
+            .filter {
+                !$0.lastPathComponent.hasPrefix(".")
+                    && $0.pathExtension.lowercased() == "json"
+            }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    private func isManagedTemporaryFile(_ url: URL) -> Bool {
+        let filename = url.lastPathComponent
+        guard filename.hasPrefix("."), filename.hasSuffix(".tmp") else {
+            return false
+        }
+        var stem = filename.dropFirst().dropLast(4)
+        if stem.hasSuffix(".plan") {
+            stem = stem.dropLast(5)
+        }
+        guard let separator = stem.lastIndex(of: "_") else {
+            return false
+        }
+        let timestamp = stem[..<separator]
+        let identifier = stem[stem.index(after: separator)...]
+        return (timestamp.count == 24 || timestamp.count == 27)
+            && timestamp.hasSuffix("Z")
+            && UUID(uuidString: String(identifier)) != nil
     }
 
     public func markProcessed(_ pendingEvent: PendingCodexEvent) throws {

@@ -56,7 +56,7 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
             )
 
             try expect(detailFrame.origin.x == 572, "hover detail was not placed to the left")
-            try expect(detailFrame.origin.y == 668, "hover detail was not aligned with its row")
+            try expect(detailFrame.origin.y == 640, "hover detail did not clamp beside its row")
             try expect(detailFrame.size.width == 320, "hover detail width changed")
             try expect(detailFrame.size.height == 260, "hover detail height changed")
         },
