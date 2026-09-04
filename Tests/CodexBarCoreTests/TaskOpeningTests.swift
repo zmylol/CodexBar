@@ -110,6 +110,65 @@ func taskOpeningTestCases() -> [CodexBarTestCase] {
                 "migration changed applied event IDs"
             )
         },
+        CodexBarTestCase(name: "quarantines an explicit null schema version") {
+            let root = temporaryVSCodeBoundaryDirectory("NullSchemaVersion")
+            let persistenceURL = root.appendingPathComponent("tasks.json")
+            defer { try? FileManager.default.removeItem(at: root) }
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            var snapshot = try require(
+                try JSONSerialization.jsonObject(with: legacyTaskSnapshot()) as? [String: Any],
+                "legacy snapshot is not an object"
+            )
+            snapshot["schemaVersion"] = NSNull()
+            try JSONSerialization.data(withJSONObject: snapshot).write(to: persistenceURL)
+
+            let store = TaskStore(persistenceURL: persistenceURL)
+            await store.load()
+
+            try expect(store.tasks.isEmpty, "invalid versioned tasks were loaded")
+            let recoveryURL = try require(
+                store.recoverySnapshotURL,
+                "an explicit null schema version was silently migrated"
+            )
+            try expect(
+                FileManager.default.fileExists(atPath: recoveryURL.path),
+                "quarantined snapshot is missing"
+            )
+        },
+        CodexBarTestCase(name: "keeps valid legacy tasks when migration cannot persist") {
+            let root = temporaryVSCodeBoundaryDirectory("MigrationWriteFailure")
+            let persistenceURL = root.appendingPathComponent("tasks.json")
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let originalSnapshot = try legacyTaskSnapshot()
+            try originalSnapshot.write(to: persistenceURL)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: 0o500)],
+                ofItemAtPath: root.path
+            )
+            defer {
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: NSNumber(value: 0o700)],
+                    ofItemAtPath: root.path
+                )
+                try? FileManager.default.removeItem(at: root)
+            }
+
+            let store = TaskStore(persistenceURL: persistenceURL)
+            await store.load()
+
+            try expect(
+                store.tasks.map(\.sessionID) == ["vscode-session"],
+                "a migration write failure discarded valid VS Code tasks"
+            )
+            try expect(
+                store.recoverySnapshotURL == nil,
+                "a migration write failure was reported as snapshot corruption"
+            )
+            try expect(
+                try Data(contentsOf: persistenceURL) == originalSnapshot,
+                "a failed migration changed the legacy snapshot"
+            )
+        },
         CodexBarTestCase(name: "production sources contain no Codex desktop integration") {
             let repositoryRoot = URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()

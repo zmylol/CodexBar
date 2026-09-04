@@ -235,6 +235,14 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                 contentsOf: coreRoot.appendingPathComponent("CodexThreadSnapshot.swift"),
                 encoding: .utf8
             )
+            let taskStore = try String(
+                contentsOf: coreRoot.appendingPathComponent("TaskStore.swift"),
+                encoding: .utf8
+            )
+            let startupReconciler = try String(
+                contentsOf: coreRoot.appendingPathComponent("StartupTaskReconciler.swift"),
+                encoding: .utf8
+            )
 
             try expect(
                 snapshotSource.contains(#""sourceKinds": ["vscode"]"#)
@@ -245,7 +253,11 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                 !snapshotSource.contains("matchingActiveTasks")
                     && !snapshotSource.contains(#"method: "thread/read""#)
                     && !snapshotContract.contains("matchingActiveTasks")
-                    && !snapshotContract.contains("CodexThreadSource"),
+                    && !snapshotContract.contains("CodexThreadSource")
+                    && !taskStore.contains("matchingExistingTaskIDs")
+                    && !taskStore.contains("markTerminalChangesUnread")
+                    && !taskStore.contains("mergeSameRecoveredTurn")
+                    && !startupReconciler.contains("matchingExistingTaskIDs"),
                 "startup recovery still exposes a CLI or active-task query path"
             )
             try expect(
