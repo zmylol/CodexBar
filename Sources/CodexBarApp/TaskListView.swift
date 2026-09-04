@@ -230,6 +230,10 @@ private struct PanelDragHandle: NSViewRepresentable {
 }
 
 private final class PanelDragHandleView: NSView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
     override func mouseDown(with event: NSEvent) {
         window?.performDrag(with: event)
     }
