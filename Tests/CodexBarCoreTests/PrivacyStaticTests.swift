@@ -404,7 +404,12 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                 .appendingPathComponent("Sources", isDirectory: true)
                 .appendingPathComponent("CodexBarApp", isDirectory: true)
                 .appendingPathComponent("TaskListView.swift")
+            let controllerURL = repositoryRoot
+                .appendingPathComponent("Sources", isDirectory: true)
+                .appendingPathComponent("CodexBarApp", isDirectory: true)
+                .appendingPathComponent("FloatingPanelController.swift")
             let source = try String(contentsOf: sourceURL, encoding: .utf8)
+            let controllerSource = try String(contentsOf: controllerURL, encoding: .utf8)
 
             try expect(
                 source.contains("activityStore.plan(for: task)")
@@ -428,6 +433,22 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                     ".foregroundStyle(step.status == .inProgress ? .primary : .secondary)"
                 ),
                 "completed or pending plan text uses a low-contrast secondary color"
+            )
+            try expect(
+                source.contains("CodexBarPanelLayout.detailHeight(visibleItemCount:")
+                    && source.contains(".onChange(of: preferredHeight")
+                    && source.contains("onPreferredHeightChanged")
+                    && !source.contains("height: CodexBarPanelLayout.detailHeight,")
+                    && !source.contains(
+                        ".frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)"
+                    ),
+                "hover detail content still reserves the fixed maximum height"
+            )
+            try expect(
+                controllerSource.contains("onPreferredHeightChanged:")
+                    && controllerSource.contains("detailHeight: preferredHeight")
+                    && !controllerSource.contains("height: CodexBarPanelLayout.detailHeight"),
+                "the detail panel does not resize when its visible content count changes"
             )
         },
         CodexBarTestCase(name: "Accessibility grant recovery is armed after a denied startup") {

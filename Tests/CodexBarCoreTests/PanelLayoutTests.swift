@@ -7,7 +7,6 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
         CodexBarTestCase(name: "uses the approved compact desktop footprint") {
             try expect(CodexBarPanelLayout.compactWidth == 168, "compact width changed")
             try expect(CodexBarPanelLayout.detailWidth == 320, "hover detail width changed")
-            try expect(CodexBarPanelLayout.detailHeight == 260, "hover detail height changed")
             try expect(
                 CodexBarPanelLayout.maximumVisiblePlanSteps == 5,
                 "hover detail no longer fits the approved five plan steps"
@@ -45,28 +44,58 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
                 "a notice widened the persistent panel contract"
             )
         },
+        CodexBarTestCase(name: "sizes hover details from visible content") {
+            try expect(
+                CodexBarPanelLayout.detailHeight(visibleItemCount: 0) == 136,
+                "an empty hover detail did not use the compact one-line height"
+            )
+            try expect(
+                CodexBarPanelLayout.detailHeight(visibleItemCount: 1) == 136,
+                "one visible item changed the compact hover detail height"
+            )
+            try expect(
+                CodexBarPanelLayout.detailHeight(visibleItemCount: 3) == 176,
+                "three activity items did not grow the hover detail"
+            )
+            try expect(
+                CodexBarPanelLayout.detailHeight(visibleItemCount: 5) == 216,
+                "five plan steps did not fit the expanded hover detail"
+            )
+            try expect(
+                CodexBarPanelLayout.detailHeight(visibleItemCount: 99) == 216,
+                "hover detail height was not capped at five visible items"
+            )
+            try expect(
+                CodexBarPanelLayout.detailHeight(visibleItemCount: -1) == 136,
+                "an invalid item count produced an invalid hover detail height"
+            )
+        },
         CodexBarTestCase(name: "places hover details beside the matching compact row") {
             let panelFrame = CGRect(x: 900, y: 700, width: 168, height: 140)
             let visibleFrame = CGRect(x: 0, y: 0, width: 1200, height: 900)
+            let detailHeight = CodexBarPanelLayout.detailHeight(visibleItemCount: 1)
 
             let detailFrame = CodexBarPanelLayout.detailFrame(
                 panelFrame: panelFrame,
                 rowMidYFromTop: 42,
-                visibleFrame: visibleFrame
+                visibleFrame: visibleFrame,
+                detailHeight: detailHeight
             )
 
             try expect(detailFrame.origin.x == 572, "hover detail was not placed to the left")
-            try expect(detailFrame.origin.y == 640, "hover detail did not clamp beside its row")
+            try expect(detailFrame.origin.y == 730, "hover detail was not centered beside its row")
             try expect(detailFrame.size.width == 320, "hover detail width changed")
-            try expect(detailFrame.size.height == 260, "hover detail height changed")
+            try expect(detailFrame.size.height == 136, "hover detail ignored its content height")
         },
         CodexBarTestCase(name: "keeps hover details within the visible screen") {
             let visibleFrame = CGRect(x: 0, y: 24, width: 1200, height: 876)
+            let detailHeight = CodexBarPanelLayout.detailHeight(visibleItemCount: 5)
 
             let rightFrame = CodexBarPanelLayout.detailFrame(
                 panelFrame: CGRect(x: 18, y: 760, width: 168, height: 140),
                 rowMidYFromTop: 14,
-                visibleFrame: visibleFrame
+                visibleFrame: visibleFrame,
+                detailHeight: detailHeight
             )
             try expect(rightFrame.origin.x == 194, "hover detail did not fall back to the right")
             try expect(rightFrame.maxY == visibleFrame.maxY, "top edge was not clamped")
@@ -74,9 +103,27 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
             let bottomFrame = CodexBarPanelLayout.detailFrame(
                 panelFrame: CGRect(x: 900, y: 20, width: 168, height: 140),
                 rowMidYFromTop: 126,
-                visibleFrame: visibleFrame
+                visibleFrame: visibleFrame,
+                detailHeight: detailHeight
             )
             try expect(bottomFrame.minY == visibleFrame.minY, "bottom edge was not clamped")
+
+            let shortVisibleFrame = CGRect(x: 0, y: 24, width: 1200, height: 150)
+            let shortScreenFrame = CodexBarPanelLayout.detailFrame(
+                panelFrame: CGRect(x: 900, y: 20, width: 168, height: 140),
+                rowMidYFromTop: 70,
+                visibleFrame: shortVisibleFrame,
+                detailHeight: detailHeight
+            )
+            try expect(
+                shortScreenFrame.height == shortVisibleFrame.height,
+                "hover detail exceeded a short visible screen"
+            )
+            try expect(
+                shortScreenFrame.minY == shortVisibleFrame.minY
+                    && shortScreenFrame.maxY == shortVisibleFrame.maxY,
+                "screen-height clamping moved the hover detail out of bounds"
+            )
         }
     ]
 }
