@@ -433,17 +433,18 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
             try expect(
-                source.contains("accessibilityRecoveryTrigger.waitForGrant()"),
+                source.contains("accessibilityRecoveryTrigger.waitForGrant("),
                 "Accessibility denial does not arm a one-shot recovery"
             )
             let recoverySource = source.components(
-                separatedBy: "private func recoverStartupTasks()"
+                separatedBy: "private func recoverStartupTasks("
             ).last?.components(
                 separatedBy: "private func logRecoveryFailureIfNeeded"
             ).first ?? ""
             try expect(
                 recoverySource.contains("guard AccessibilityAuthorization.isTrusted else")
-                    && recoverySource.contains("accessibilityRecoveryTrigger.waitForGrant()"),
+                    && recoverySource.contains("accessibilityRecoveryTrigger.waitForGrant(")
+                    && recoverySource.contains("reportCompletion: reportCompletion"),
                 "startup recovery does not wait for a grant when Accessibility is denied"
             )
             try expect(

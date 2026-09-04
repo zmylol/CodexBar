@@ -149,7 +149,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
 
     func refreshOpenTasks() {
         guard AccessibilityAuthorization.isTrusted else {
-            accessibilityRecoveryTrigger.waitForGrant()
+            accessibilityRecoveryTrigger.waitForGrant(reportCompletion: true)
             showNotice(
                 message: "需要辅助功能权限才能刷新 VS Code 任务。",
                 showsAccessibilityAction: true,
@@ -172,7 +172,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
             return
         }
         if !AccessibilityAuthorization.isTrusted {
-            accessibilityRecoveryTrigger.waitForGrant()
+            accessibilityRecoveryTrigger.waitForGrant(reportCompletion: false)
         }
         NSWorkspace.shared.open(url)
     }
@@ -288,10 +288,12 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     private func pollInbox() {
         if startupRecoveryTask == nil,
            accessibilityRecoveryTrigger.isWaitingForGrant,
-           accessibilityRecoveryTrigger.consumeGrant(
+           let recoveryRequest = accessibilityRecoveryTrigger.consumeGrant(
                isTrusted: AccessibilityAuthorization.isTrusted
            ) {
-            recoverStartupTasks(reportCompletion: false)
+            recoverStartupTasks(
+                reportCompletion: recoveryRequest.reportCompletion
+            )
         }
         processInbox()
     }
@@ -357,7 +359,9 @@ final class CodexBarAppModel: NSObject, ObservableObject {
 
     private func recoverStartupTasks(reportCompletion: Bool) {
         guard AccessibilityAuthorization.isTrusted else {
-            accessibilityRecoveryTrigger.waitForGrant()
+            accessibilityRecoveryTrigger.waitForGrant(
+                reportCompletion: reportCompletion
+            )
             return
         }
         accessibilityRecoveryTrigger.prepareForAuthorizedRecovery()

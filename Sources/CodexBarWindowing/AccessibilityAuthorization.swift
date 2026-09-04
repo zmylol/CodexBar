@@ -17,24 +17,37 @@ public enum AccessibilityAuthorization {
     }
 }
 
+package struct AccessibilityRecoveryRequest: Equatable, Sendable {
+    package let reportCompletion: Bool
+}
+
 package struct AccessibilityRecoveryTrigger: Sendable {
     package private(set) var isWaitingForGrant = false
+    private var reportCompletionAfterGrant = false
 
     package init() {}
 
-    package mutating func waitForGrant() {
+    package mutating func waitForGrant(reportCompletion: Bool) {
         isWaitingForGrant = true
+        reportCompletionAfterGrant = reportCompletionAfterGrant || reportCompletion
     }
 
     package mutating func prepareForAuthorizedRecovery() {
         isWaitingForGrant = false
+        reportCompletionAfterGrant = false
     }
 
-    package mutating func consumeGrant(isTrusted: Bool) -> Bool {
+    package mutating func consumeGrant(
+        isTrusted: Bool
+    ) -> AccessibilityRecoveryRequest? {
         guard isWaitingForGrant, isTrusted else {
-            return false
+            return nil
         }
+        let request = AccessibilityRecoveryRequest(
+            reportCompletion: reportCompletionAfterGrant
+        )
         isWaitingForGrant = false
-        return true
+        reportCompletionAfterGrant = false
+        return request
     }
 }
