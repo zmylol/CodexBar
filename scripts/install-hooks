@@ -36,4 +36,8 @@ codexbar_record_managed_executable
 codexbar_warn_inline_hooks
 
 print "Installed CodexBar $capture_mode hooks in $codexbar_hooks_file"
+if [[ "$capture_mode" == "probe" ]]; then
+    print "Probe mode is diagnostic only and does not update the live task list."
+    print "After validation, run scripts/install-hooks without --probe to enable live updates."
+fi
 print "The IDE chat has no /hooks command. Reload VS Code, then use Codex Settings > Hooks to review and trust the definitions."

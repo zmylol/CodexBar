@@ -141,4 +141,8 @@ trap - EXIT INT TERM
 
 print "Installed app: $installed_bundle"
 print "Installed hook executable: $installed_hook"
-print "Next: run scripts/install-hooks --probe, reload VS Code, then review it in Codex Settings > Hooks."
+print "Probe mode is diagnostic only and does not update the live task list: scripts/install-hooks --probe"
+print "Enable live task updates: scripts/install-hooks"
+print "After changing hooks, reload VS Code and review them in Codex Settings > Hooks."
+print "Quit and reopen CodexBar after an update so the new binary is running."
+print "Because source builds are ad-hoc signed, if VS Code tasks stop opening, remove and re-add CodexBar in System Settings > Privacy & Security > Accessibility."
