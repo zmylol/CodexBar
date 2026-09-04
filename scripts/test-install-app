@@ -26,8 +26,14 @@ install_output=$("$script_dir/install-app")
 [[ "$install_output" == *"Quit and reopen CodexBar after an update"* ]]
 [[ "$install_output" == *"remove and re-add CodexBar in System Settings"* ]]
 installed_executable="$CODEXBAR_APPLICATIONS_ROOT/CodexBar.app/Contents/MacOS/CodexBar"
-/bin/cp /bin/sleep "$installed_executable"
-"$installed_executable" 60 &
+/usr/bin/clang -x c -o "$installed_executable" - <<'C_SOURCE'
+#include <unistd.h>
+int main(void) {
+    sleep(60);
+    return 0;
+}
+C_SOURCE
+"$installed_executable" &
 running_app_pid=$!
 for _ in {1..20}; do
     if /usr/sbin/lsof -t -a -d txt -- "$installed_executable" >/dev/null 2>&1; then
@@ -44,6 +50,7 @@ set -e
 /bin/kill -TERM "$running_app_pid"
 wait "$running_app_pid" 2>/dev/null || true
 running_app_pid=""
+"$script_dir/install-app" >/dev/null
 /usr/bin/touch "$CODEXBAR_APPLICATIONS_ROOT/CodexBar.app/Contents/Resources/stale-install-artifact"
 for backup_index in {1..7}; do
     /bin/mkdir -p "$CODEXBAR_SUPPORT_ROOT/AppBackups/CodexBar-20000101T00000${backup_index}Z-1-${backup_index}.app"
