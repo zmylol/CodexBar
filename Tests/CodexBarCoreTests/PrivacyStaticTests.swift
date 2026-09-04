@@ -245,6 +245,59 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                 "the compact header does not expose recovery progress and the final task count"
             )
         },
+        CodexBarTestCase(name: "header exposes a rightmost on-demand task refresh") {
+            let repositoryRoot = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            let appRoot = repositoryRoot
+                .appendingPathComponent("Sources", isDirectory: true)
+                .appendingPathComponent("CodexBarApp", isDirectory: true)
+            let modelSource = try String(
+                contentsOf: appRoot.appendingPathComponent("CodexBarAppModel.swift"),
+                encoding: .utf8
+            )
+            let viewSource = try String(
+                contentsOf: appRoot.appendingPathComponent("TaskListView.swift"),
+                encoding: .utf8
+            )
+            let headerSource = viewSource.components(
+                separatedBy: "private var header: some View"
+            ).last?.components(separatedBy: "@ViewBuilder").first ?? ""
+            let refreshSource = modelSource.components(
+                separatedBy: "func refreshOpenTasks()"
+            ).last?.components(
+                separatedBy: "func requestAccessibilityPermission()"
+            ).first ?? ""
+
+            try expect(
+                headerSource.contains("Button(action: model.refreshOpenTasks)")
+                    && headerSource.contains("Image(systemName: \"arrow.clockwise\")")
+                    && headerSource.contains(".disabled(model.isRecoveringOpenTasks)"),
+                "the header has no disabled-while-syncing refresh control"
+            )
+            try expect(
+                headerSource.contains("刷新已打开的 VS Code Codex 任务"),
+                "the refresh control has no accessible description"
+            )
+            if let menuPosition = headerSource.range(of: "Menu {")?.lowerBound,
+               let refreshPosition = headerSource.range(
+                   of: "Button(action: model.refreshOpenTasks)"
+               )?.lowerBound {
+                try expect(
+                    menuPosition < refreshPosition,
+                    "the refresh control is not the rightmost header action"
+                )
+            } else {
+                throw TestFailure(description: "header action positions were not found")
+            }
+            try expect(
+                refreshSource.contains("guard AccessibilityAuthorization.isTrusted else")
+                    && refreshSource.contains("showsAccessibilityAction: true")
+                    && refreshSource.contains("recoverStartupTasks()"),
+                "manual refresh does not start recovery or explain missing Accessibility access"
+            )
+        },
         CodexBarTestCase(name: "Accessibility grant recovery is armed after a denied startup") {
             let repositoryRoot = URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
