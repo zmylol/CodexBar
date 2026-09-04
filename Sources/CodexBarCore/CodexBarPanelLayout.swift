@@ -1,7 +1,7 @@
 import CoreGraphics
 
 public enum CodexBarPanelLayout {
-    public static let compactWidth: CGFloat = 112
+    public static let compactWidth: CGFloat = 126
     public static let detailWidth: CGFloat = 320
     public static let detailGap: CGFloat = 8
     public static let headerHeight: CGFloat = 28
