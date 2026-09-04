@@ -364,6 +364,11 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             ).last?.components(
                 separatedBy: "@ViewBuilder"
             ).first ?? ""
+            let dragHandleSource = headerSource.components(
+                separatedBy: "PanelDragHandle()"
+            ).last?.components(
+                separatedBy: "HStack(spacing: 5)"
+            ).first ?? ""
 
             try expect(
                 panelConstruction.contains("styleMask: [.borderless, .nonactivatingPanel]")
@@ -374,10 +379,10 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             try expect(
                 controllerSource.contains("panel.isMovableByWindowBackground = false")
                     && !controllerSource.contains("panel.isMovableByWindowBackground = true")
-                    && headerSource.contains("""
-                    PanelDragHandle()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    """)
+                    && headerSource.contains("PanelDragHandle()")
+                    && dragHandleSource.contains(
+                        ".frame(maxWidth: .infinity, maxHeight: .infinity)"
+                    )
                     && viewSource.contains("override func acceptsFirstMouse(")
                     && viewSource.contains("window?.performDrag(with: event)"),
                 "the dedicated drag handle can be empty, steal controls, or ignore the first mouse press"

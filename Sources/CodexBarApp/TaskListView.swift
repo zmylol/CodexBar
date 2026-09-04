@@ -72,6 +72,7 @@ struct TaskListView: View {
         HStack(spacing: 5) {
             ZStack(alignment: .leading) {
                 PanelDragHandle()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 HStack(spacing: 5) {
                     Text("CodexBar")
                         .font(.system(size: 11, weight: .semibold, design: .rounded))
