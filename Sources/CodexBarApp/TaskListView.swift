@@ -66,24 +66,19 @@ struct TaskListView: View {
         .onDisappear(perform: onDismissTaskDetail)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("CodexBar VS Code Codex 任务")
+        .accessibilityValue("共 \(store.tasks.count) 个任务")
     }
 
     private var header: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 3) {
             ZStack(alignment: .leading) {
                 PanelDragHandle()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 HStack(spacing: 5) {
                     Text("CodexBar")
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    if !store.tasks.isEmpty {
-                        Text("· \(store.tasks.count)")
-                            .font(.system(size: 10, weight: .medium, design: .rounded))
-                            .foregroundStyle(.tertiary)
-                            .accessibilityLabel("共 \(store.tasks.count) 个任务")
-                    }
                     Spacer(minLength: 2)
                     if store.tasks.contains(where: { $0.status == .needsAttention }) {
                         Image(systemName: "exclamationmark.triangle.fill")
@@ -116,6 +111,7 @@ struct TaskListView: View {
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
             .fixedSize()
             .accessibilityLabel("CodexBar 菜单")
             Button(action: model.refreshOpenTasks) {
@@ -146,7 +142,7 @@ struct TaskListView: View {
             .accessibilityInputLabels(["刷新任务", "刷新"])
             .help("刷新已打开的 VS Code Codex 任务")
         }
-        .padding(.leading, 10)
+        .padding(.leading, 6)
         .padding(.trailing, 4)
         .frame(height: CodexBarPanelLayout.headerHeight)
     }
@@ -324,6 +320,7 @@ private struct CompactTaskRow: View {
                             }
                     }
                     .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
                     .fixedSize()
                     .focused($focusedControl, equals: .menu)
                     .opacity(showsTaskMenu ? 1 : 0)
