@@ -269,6 +269,11 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             ).last?.components(
                 separatedBy: "func requestAccessibilityPermission()"
             ).first ?? ""
+            let recoverySource = modelSource.components(
+                separatedBy: "private func recoverStartupTasks("
+            ).last?.components(
+                separatedBy: "private func logRecoveryFailureIfNeeded"
+            ).first ?? ""
 
             try expect(
                 headerSource.contains("Button(action: model.refreshOpenTasks)")
@@ -294,8 +299,60 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             try expect(
                 refreshSource.contains("guard AccessibilityAuthorization.isTrusted else")
                     && refreshSource.contains("showsAccessibilityAction: true")
-                    && refreshSource.contains("recoverStartupTasks()"),
+                    && refreshSource.contains("recoverStartupTasks(reportCompletion: true)"),
                 "manual refresh does not start recovery or explain missing Accessibility access"
+            )
+            try expect(
+                recoverySource.contains("reportCompletion")
+                    && recoverySource.contains("刷新完成")
+                    && recoverySource.contains("刷新失败"),
+                "manual refresh can finish or fail without visible feedback"
+            )
+        },
+        CodexBarTestCase(name: "header actions avoid native titlebar hit interception") {
+            let repositoryRoot = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            let appRoot = repositoryRoot
+                .appendingPathComponent("Sources", isDirectory: true)
+                .appendingPathComponent("CodexBarApp", isDirectory: true)
+            let controllerSource = try String(
+                contentsOf: appRoot.appendingPathComponent("FloatingPanelController.swift"),
+                encoding: .utf8
+            )
+            let viewSource = try String(
+                contentsOf: appRoot.appendingPathComponent("TaskListView.swift"),
+                encoding: .utf8
+            )
+            let panelConstruction = controllerSource.components(
+                separatedBy: "self.panel = CodexBarPanel("
+            ).last?.components(
+                separatedBy: "self.detailPanel = CodexBarDetailPanel("
+            ).first ?? ""
+            let rootDecoration = viewSource.components(
+                separatedBy: ".clipShape("
+            ).last?.components(
+                separatedBy: ".ignoresSafeArea()"
+            ).first ?? ""
+
+            try expect(
+                panelConstruction.contains("styleMask: [.borderless, .nonactivatingPanel]")
+                    && !panelConstruction.contains(".fullSizeContentView")
+                    && !panelConstruction.contains(".titled"),
+                "header actions are still rendered behind the native titlebar"
+            )
+            try expect(
+                controllerSource.contains("panel.isMovableByWindowBackground = false")
+                    && viewSource.contains("PanelDragHandle()"),
+                "the whole panel background can still steal clicks instead of a dedicated drag handle"
+            )
+            let nonInteractiveDecorationCount = rootDecoration.components(
+                separatedBy: ".allowsHitTesting(false)"
+            ).count - 1
+            try expect(
+                nonInteractiveDecorationCount >= 2,
+                "decorative root overlays can still intercept pointer events"
             )
         },
         CodexBarTestCase(name: "hover detail renders bounded live plan progress") {
