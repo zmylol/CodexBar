@@ -23,7 +23,6 @@ final class CodexBarAppModel: NSObject, ObservableObject {
 
     private let processor: EventProcessor
     private let activator: AccessibilityWindowActivator
-    private let taskOpener: CodexTaskOpener
     private let threadSnapshotLoader: (any CodexThreadSnapshotLoading)?
     private let oldTaskCleanupWorker = OldTaskCleanupWorker()
     private var pollTimer: Timer?
@@ -51,10 +50,6 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         self.activityStore = activityStore
         self.processor = processor
         self.activator = activator
-        self.taskOpener = CodexTaskOpener(
-            visualStudioCodeActivator: activator,
-            codexDesktopActivator: CodexDesktopTaskActivator()
-        )
         self.threadSnapshotLoader = threadSnapshotLoader
     }
 
@@ -97,28 +92,14 @@ final class CodexBarAppModel: NSObject, ObservableObject {
             guard let self else {
                 return
             }
-            let result = await taskOpener.open(task)
+            let result = await activator.activateWindow(
+                forCWD: task.cwd,
+                promptForAccessibility: false
+            )
             guard !Task.isCancelled else {
                 return
             }
-            await handleOpeningResult(result, for: task)
-        }
-    }
-
-    private func handleOpeningResult(
-        _ result: CodexTaskOpeningResult,
-        for task: CodexTask
-    ) async {
-        switch result {
-        case let .visualStudioCode(activationResult):
-            await handleVSCodeActivationResult(activationResult, for: task)
-        case let .codexDesktop(activationResult):
-            await handleCodexDesktopActivationResult(activationResult, for: task)
-        case let .fallbackFailed(_, desktopResult):
-            handleCodexDesktopFailure(
-                desktopResult,
-                prefix: "VS Code 中未找到对应任务；"
-            )
+            await handleVSCodeActivationResult(result, for: task)
         }
     }
 
@@ -162,46 +143,6 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         case .activationFailed:
             showNotice(message: "找到了窗口，但无法将它置于前台。")
         }
-    }
-
-    private func handleCodexDesktopActivationResult(
-        _ result: CodexDesktopTaskActivationResult,
-        for task: CodexTask
-    ) async {
-        guard result == .opened else {
-            handleCodexDesktopFailure(result)
-            return
-        }
-
-        do {
-            _ = try await store.markRead(taskID: task.id)
-            guard !Task.isCancelled else {
-                return
-            }
-            notice = nil
-        } catch {
-            showNotice(message: "已打开 Codex 桌面端，但无法保存已读状态。")
-        }
-    }
-
-    private func handleCodexDesktopFailure(
-        _ result: CodexDesktopTaskActivationResult,
-        prefix: String = ""
-    ) {
-        let message: String
-        switch result {
-        case .opened:
-            return
-        case .invalidSessionID:
-            message = "任务 ID 无效，无法在 Codex 桌面端中定位。"
-        case .applicationNotInstalled:
-            message = "未找到 Codex 桌面端。"
-        case .untrustedApplication:
-            message = "Codex 桌面端签名无法验证，已取消打开。"
-        case .openingFailed:
-            message = "无法在 Codex 桌面端中打开对应任务。"
-        }
-        showNotice(message: prefix + message)
     }
 
     func requestAccessibilityPermission() {

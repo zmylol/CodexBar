@@ -63,7 +63,7 @@ struct TaskListView: View {
         .onExitCommand(perform: onDismissTaskDetail)
         .onDisappear(perform: onDismissTaskDetail)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("CodexBar Codex 任务")
+        .accessibilityLabel("CodexBar VS Code Codex 任务")
     }
 
     private var header: some View {
@@ -120,7 +120,7 @@ struct TaskListView: View {
             }
 
             if sortedTasks.isEmpty {
-                Text("等待 Codex 事件")
+                Text("等待 VS Code Codex 事件")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -238,7 +238,7 @@ private struct CompactTaskRow: View {
                         "\(task.isUnread ? "未读，" : "")\(accessibilityTimeText)"
                             + accessibilityActivityText
                     )
-                    .accessibilityHint("打开对应的 Codex 任务")
+                    .accessibilityHint("切换到对应的 VS Code 窗口")
                     .accessibilityInputLabels([task.workspaceName, task.title])
 
                     Menu {
@@ -404,7 +404,7 @@ struct TaskHoverDetailView: View {
                     .lineLimit(1)
                 Spacer(minLength: 4)
                 Button(action: onOpen) {
-                    Label("打开", systemImage: "arrow.up.forward.app")
+                    Label("切换到 VS Code", systemImage: "arrow.up.forward.app")
                         .font(.system(size: 11, weight: .medium))
                         .frame(minHeight: 24)
                         .contentShape(Rectangle())
@@ -423,7 +423,7 @@ struct TaskHoverDetailView: View {
     ) -> some View {
         if nodes.isEmpty {
             Label(
-                status == .ready ? "暂无实时动作" : "等待 Codex 执行动作…",
+                status == .ready ? "暂无实时动作" : "等待 VS Code Codex 执行动作…",
                 systemImage: status == .ready ? "minus" : "ellipsis"
             )
                 .font(.system(size: 10))

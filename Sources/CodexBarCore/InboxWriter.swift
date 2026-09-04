@@ -130,6 +130,7 @@ public struct CodexHookProbeRecord: Codable, Equatable, Sendable {
     public let activityKind: CodexTaskActivityKind?
     public let activitySubject: String?
     public let timestamp: Date
+    public let source: CodexHookSource
 
     public init(event: CodexHookEvent) {
         self.sessionID = event.sessionID
@@ -142,6 +143,7 @@ public struct CodexHookProbeRecord: Codable, Equatable, Sendable {
         self.activityKind = event.activity?.kind
         self.activitySubject = event.activity?.safeSubject
         self.timestamp = event.timestamp
+        self.source = event.source
     }
 }
 
@@ -201,7 +203,7 @@ public struct HookCaptureService: Sendable {
 
     public init(
         paths: CodexBarPaths = CodexBarPaths(),
-        parser: CodexHookEventParser = CodexHookEventParser()
+        parser: CodexHookEventParser = CodexHookEventParser(source: .visualStudioCode)
     ) {
         self.paths = paths
         self.parser = parser

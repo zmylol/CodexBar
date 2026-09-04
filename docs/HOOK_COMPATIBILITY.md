@@ -10,7 +10,7 @@
 - 用户亲自在 Codex 设置中审核并信任 Hook；
 - 不修改 `chatgpt.cliExecutable`，不使用跳过 Hook 信任的参数。
 
-用户级 Hook 配置位于 `~/.codex/hooks.json`。CLI 与 IDE Extension 共用配置层，而当前 Hook 输入没有稳定的来源字段，因此本测试期间不要同时运行 Codex CLI 任务。
+用户级 Hook 配置位于 `~/.codex/hooks.json`，会被多个 Codex 客户端看到。CodexBar 只接受 VS Code Extension 提供的精确 `codex_vscode` originator；CLI、其他客户端、缺失值和任何变体都会静默忽略。因此在其他客户端运行任务不应生成 CodexBar 事件。
 
 ## 1. 安装 Probe
 

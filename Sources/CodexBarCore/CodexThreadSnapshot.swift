@@ -1,10 +1,5 @@
 import Foundation
 
-public enum CodexThreadSource: String, Equatable, Sendable {
-    case vscode
-    case cli
-}
-
 public enum CodexThreadTurnStatus: String, Equatable, Sendable {
     case inProgress
     case completed
@@ -21,7 +16,6 @@ public struct CodexThreadSnapshot: Equatable, Sendable {
     public let turnID: String
     public let cwd: String
     public let title: String
-    public let source: CodexThreadSource
     public let status: CodexThreadTurnStatus
     public let startedAt: Date
     public let updatedAt: Date
@@ -31,7 +25,6 @@ public struct CodexThreadSnapshot: Equatable, Sendable {
         turnID: String,
         cwd: String,
         title: String,
-        source: CodexThreadSource,
         status: CodexThreadTurnStatus,
         startedAt: Date,
         updatedAt: Date
@@ -40,7 +33,6 @@ public struct CodexThreadSnapshot: Equatable, Sendable {
         self.turnID = turnID
         self.cwd = cwd
         self.title = title
-        self.source = source
         self.status = status
         self.startedAt = startedAt
         self.updatedAt = updatedAt
@@ -50,9 +42,5 @@ public struct CodexThreadSnapshot: Equatable, Sendable {
 public protocol CodexThreadSnapshotLoading: Sendable {
     func loadSnapshots(
         matching windows: [VSCodeWindowDescriptor]
-    ) async throws -> [CodexThreadSnapshot]
-
-    func loadSnapshots(
-        matchingActiveTasks tasks: [CodexTask]
     ) async throws -> [CodexThreadSnapshot]
 }

@@ -56,83 +56,15 @@ func appServerSnapshotSourceTestCases() -> [CodexBarTestCase] {
                 "source did not return a failed turn without completedAt"
             )
         },
-        CodexBarTestCase(name: "loads exact CLI and VS Code turns for active Hook tasks") {
-            let root = FileManager.default.temporaryDirectory
-                .appendingPathComponent(
-                    "CodexBarActiveAppServerTests-\(UUID().uuidString)",
-                    isDirectory: true
-                )
-            let executable = root.appendingPathComponent("fake-codex")
-            defer { try? FileManager.default.removeItem(at: root) }
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-            try activeTaskAppServerScript.write(to: executable, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes(
-                [.posixPermissions: NSNumber(value: 0o700)],
-                ofItemAtPath: executable.path
-            )
-
-            let snapshots = try await CodexAppServerThreadSnapshotSource(
-                executableURL: executable,
-                executableValidator: { _ in true }
-            ).loadSnapshots(matchingActiveTasks: [
-                activeTask(
-                    session: "cli-session",
-                    turn: "cli-turn",
-                    cwd: "/work/terminal"
-                ),
-                activeTask(
-                    session: "missing-session",
-                    turn: "missing-turn",
-                    cwd: "/work/missing"
-                ),
-                activeTask(
-                    session: "vscode-session",
-                    turn: "vscode-turn",
-                    cwd: "/work/editor"
-                ),
-                activeTask(
-                    session: "stale-session",
-                    turn: "requested-turn",
-                    cwd: "/work/stale"
-                ),
-                activeTask(
-                    session: "cwd-session",
-                    turn: "cwd-turn",
-                    cwd: "/work/expected"
-                )
-            ])
-
-            try expect(
-                snapshots.count == 2,
-                "active recovery accepted a stale turn or a mismatched cwd"
-            )
-            let cli = try require(
-                snapshots.first(where: { $0.sessionID == "cli-session" }),
-                "terminal CLI snapshot is missing"
-            )
-            try expect(cli.turnID == "cli-turn", "CLI recovery returned the wrong turn")
-            try expect(cli.source == .cli, "CLI recovery lost the thread source")
-            try expect(cli.status == .interrupted, "CLI interruption was not reported")
-            try expect(
-                cli.startedAt == Date(timeIntervalSince1970: 100),
-                "CLI recovery did not safely reuse the Hook start time"
-            )
-            let vscode = try require(
-                snapshots.first(where: { $0.sessionID == "vscode-session" }),
-                "VS Code active snapshot is missing"
-            )
-            try expect(vscode.source == .vscode, "VS Code recovery lost the thread source")
-            try expect(vscode.status == .failed, "VS Code failure was not reported")
-        },
-        CodexBarTestCase(name: "surfaces unsupported active-task RPC methods") {
+        CodexBarTestCase(name: "rejects a non-VS-Code thread returned by app-server") {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent(
-                "CodexBarUnsupportedRPC-(UUID().uuidString)",
+                "CodexBarNonVSCodeThreadTests-\(UUID().uuidString)",
                 isDirectory: true
             )
             let executable = root.appendingPathComponent("fake-codex")
             defer { try? FileManager.default.removeItem(at: root) }
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-            try unsupportedActiveTaskAppServerScript.write(
+            try nonVSCodeThreadAppServerScript.write(
                 to: executable,
                 atomically: true,
                 encoding: .utf8
@@ -147,21 +79,18 @@ func appServerSnapshotSourceTestCases() -> [CodexBarTestCase] {
                 _ = try await CodexAppServerThreadSnapshotSource(
                     executableURL: executable,
                     executableValidator: { _ in true }
-                ).loadSnapshots(matchingActiveTasks: [
-                    activeTask(
-                        session: "cli-session",
-                        turn: "cli-turn",
-                        cwd: "/work/terminal"
+                ).loadSnapshots(matching: [
+                    VSCodeWindowDescriptor(
+                        id: 1,
+                        title: "project-alpha — Visual Studio Code"
                     )
                 ])
                 didFail = false
             } catch {
                 didFail = true
             }
-            try expect(
-                didFail,
-                "unsupported thread/read was silently treated as a missing task"
-            )
+
+            try expect(didFail, "App Server response crossed the VS Code-only boundary")
         },
         CodexBarTestCase(name: "rejects thread metadata that unexpectedly includes turns") {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -409,139 +338,32 @@ func appServerSnapshotSourceTestCases() -> [CodexBarTestCase] {
     ]
 }
 
-private func activeTask(
-    session: String,
-    turn: String,
-    cwd: String
-) -> CodexTask {
-    CodexTask(
-        id: "\(session):\(turn)",
-        sessionID: session,
-        turnID: turn,
-        cwd: cwd,
-        workspaceName: URL(fileURLWithPath: cwd).lastPathComponent,
-        title: "Active task",
-        status: .running,
-        startedAt: Date(timeIntervalSince1970: 100),
-        updatedAt: Date(timeIntervalSince1970: 100),
-        isUnread: false
-    )
-}
-
-private let activeTaskAppServerScript = #"""
+private let nonVSCodeThreadAppServerScript = #"""
 #!/usr/bin/ruby
 require "json"
 $stdout.sync = true
-initialized = false
-
-threads = [
-  {
-    "id" => "cli-session",
-    "sessionId" => "cli-session",
-    "cwd" => "/work/terminal",
-    "preview" => "Terminal task",
-    "name" => nil,
-    "source" => "cli",
-    "createdAt" => 100,
-    "updatedAt" => 120
-  },
-  {
-    "id" => "vscode-session",
-    "sessionId" => "vscode-session",
-    "cwd" => "/work/editor",
-    "preview" => "Editor task",
-    "name" => nil,
-    "source" => "vscode",
-    "createdAt" => 100,
-    "updatedAt" => 121
-  },
-  {
-    "id" => "stale-session",
-    "sessionId" => "stale-session",
-    "cwd" => "/work/stale",
-    "preview" => "Newer turn",
-    "name" => nil,
-    "source" => "cli",
-    "createdAt" => 100,
-    "updatedAt" => 122
-  },
-  {
-    "id" => "cwd-session",
-    "sessionId" => "cwd-session",
-    "cwd" => "/work/actual",
-    "preview" => "Wrong cwd",
-    "name" => nil,
-    "source" => "cli",
-    "createdAt" => 100,
-    "updatedAt" => 123
-  }
-]
 
 STDIN.each_line do |line|
   request = JSON.parse(line)
   case request["method"]
   when "initialize"
     puts JSON.generate("id" => request["id"], "result" => {})
-  when "initialized"
-    initialized = true
-  when "thread/read"
-    params = request["params"]
-    thread = threads.find { |candidate| candidate["id"] == params["threadId"] }
-    unless initialized && params["includeTurns"] == false && thread
-      puts JSON.generate(
-        "id" => request["id"],
-        "error" => { "code" => -32600, "message" => "not found" }
-      )
-      next
-    end
-    puts JSON.generate(
-      "id" => request["id"],
-      "result" => { "thread" => thread.merge("turns" => []) }
-    )
   when "thread/list"
-    puts JSON.generate(
-      "id" => request["id"],
-      "error" => { "code" => -32601, "message" => "unexpected global scan" }
-    )
-  when "thread/turns/list"
-    thread_id = request.dig("params", "threadId")
-    turn_id = case thread_id
-              when "cli-session" then "cli-turn"
-              when "vscode-session" then "vscode-turn"
-              when "stale-session" then "newer-turn"
-              else "cwd-turn"
-              end
-    status = thread_id == "vscode-session" ? "failed" : "interrupted"
     puts JSON.generate(
       "id" => request["id"],
       "result" => {
         "data" => [{
-          "id" => turn_id,
-          "items" => [],
-          "itemsView" => "notLoaded",
-          "status" => status,
-          "startedAt" => (thread_id == "cli-session" ? nil : 110)
-        }]
+          "id" => "terminal-session",
+          "sessionId" => "terminal-session",
+          "cwd" => "/work/project-alpha",
+          "preview" => "Terminal task",
+          "name" => nil,
+          "source" => "cli",
+          "createdAt" => 100,
+          "updatedAt" => 110
+        }],
+        "nextCursor" => nil
       }
-    )
-  end
-end
-"""#
-
-private let unsupportedActiveTaskAppServerScript = #"""
-#!/usr/bin/ruby
-require "json"
-$stdout.sync = true
-
-STDIN.each_line do |line|
-  request = JSON.parse(line)
-  case request["method"]
-  when "initialize"
-    puts JSON.generate("id" => request["id"], "result" => {})
-  when "thread/read"
-    puts JSON.generate(
-      "id" => request["id"],
-      "error" => { "code" => -32601, "message" => "method not found" }
     )
   end
 end

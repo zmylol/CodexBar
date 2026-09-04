@@ -104,6 +104,15 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
                     sourceURL: url,
                     normalizedCWD: event.cwd.flatMap(PathNormalizer.normalize)
                 ))
+            } catch CodexHookEventCodingError.unsupportedOrMissingSource {
+                do {
+                    try fileManager.removeItem(at: url)
+                } catch {
+                    if isMissingFileError(error) {
+                        continue
+                    }
+                    throw error
+                }
             } catch {
                 if isMissingFileError(error) || !fileManager.fileExists(atPath: url.path) {
                     continue

@@ -219,9 +219,6 @@ private actor TaskStoreStorage {
                 task.status = eventStatus
                 task.updatedAt = event.timestamp
                 task.isUnread = eventName != .userPromptSubmit
-                if let destination = event.destination {
-                    task.destination = destination
-                }
 
                 if eventName == .userPromptSubmit,
                    let title = normalizedTitle(event.promptSummary) {
@@ -235,8 +232,7 @@ private actor TaskStoreStorage {
                         status: task.status,
                         startedAt: task.startedAt,
                         updatedAt: task.updatedAt,
-                        isUnread: task.isUnread,
-                        destination: task.destination
+                        isUnread: task.isUnread
                     )
                 }
             } else {
@@ -262,8 +258,7 @@ private actor TaskStoreStorage {
                     status: task.status,
                     startedAt: startedAt,
                     updatedAt: task.updatedAt,
-                    isUnread: task.isUnread,
-                    destination: task.destination
+                    isUnread: task.isUnread
                 )
             }
 
@@ -291,8 +286,7 @@ private actor TaskStoreStorage {
                     status: .ready,
                     startedAt: currentTask.startedAt,
                     updatedAt: event.timestamp,
-                    isUnread: true,
-                    destination: event.destination ?? currentTask.destination
+                    isUnread: true
                 )
             } else {
                 if let currentCWDIndex {
@@ -316,8 +310,7 @@ private actor TaskStoreStorage {
                     status: eventStatus,
                     startedAt: event.timestamp,
                     updatedAt: event.timestamp,
-                    isUnread: eventName != .userPromptSubmit,
-                    destination: event.destination
+                    isUnread: eventName != .userPromptSubmit
                 )
             }
 
@@ -444,8 +437,7 @@ private actor TaskStoreStorage {
                     status: task.status,
                     startedAt: task.startedAt,
                     updatedAt: task.updatedAt,
-                    isUnread: task.isUnread,
-                    destination: task.destination
+                    isUnread: task.isUnread
                 )
             }
             changedCount += 1
@@ -501,8 +493,7 @@ private actor TaskStoreStorage {
                 && recovered.status == .ready
                 && current.status != .ready
                 ? true
-                : current.isUnread,
-            destination: recovered.destination ?? current.destination
+                : current.isUnread
         )
     }
 
@@ -646,8 +637,17 @@ private actor TaskStoreStorage {
             persistenceIsAvailable = false
         case .regularFile:
             do {
-                let snapshot = try Self.loadSnapshot(from: persistenceURL)
-                tasks = Self.collapsingOlderTurns(snapshot.tasks)
+                let loaded = try Self.loadSnapshot(from: persistenceURL)
+                let snapshot = loaded.snapshot
+                let loadedTasks = Self.collapsingOlderTurns(snapshot.tasks)
+                if loaded.requiresMigration {
+                    try persist(
+                        tasks: loadedTasks,
+                        appliedEventIDs: Set(snapshot.appliedEventIDs),
+                        deletedTaskTombstones: snapshot.deletedTaskTombstones
+                    )
+                }
+                tasks = loadedTasks
                 appliedEventIDs = Set(snapshot.appliedEventIDs)
                 deletedTaskTombstones = snapshot.deletedTaskTombstones
             } catch {
@@ -842,7 +842,7 @@ private actor TaskStoreStorage {
         }
     }
 
-    private static func loadSnapshot(from url: URL) throws -> TaskStoreSnapshot {
+    private static func loadSnapshot(from url: URL) throws -> LoadedTaskStoreSnapshot {
         let resourceValues = try url.resourceValues(forKeys: [
             .fileSizeKey,
             .isRegularFileKey,
@@ -855,16 +855,41 @@ private actor TaskStoreStorage {
             throw TaskStorePersistenceError.invalidSnapshot
         }
 
-        let snapshot = try JSONDecoder.codexBar.decode(
-            TaskStoreSnapshot.self,
-            from: Data(contentsOf: url)
-        )
+        let data = try Data(contentsOf: url)
+        let version = try JSONDecoder.codexBar.decode(
+            TaskStoreSnapshotVersion.self,
+            from: data
+        ).schemaVersion
+        let snapshot: TaskStoreSnapshot
+        let requiresMigration: Bool
+        if let version {
+            guard version == TaskStoreSnapshot.currentSchemaVersion else {
+                throw TaskStorePersistenceError.invalidSnapshot
+            }
+            snapshot = try JSONDecoder.codexBar.decode(TaskStoreSnapshot.self, from: data)
+            requiresMigration = false
+        } else {
+            let legacy = try JSONDecoder.codexBar.decode(
+                LegacyTaskStoreSnapshot.self,
+                from: data
+            )
+            snapshot = TaskStoreSnapshot(
+                tasks: legacy.tasks.compactMap(\.visualStudioCodeTask),
+                appliedEventIDs: legacy.appliedEventIDs,
+                deletedTaskTombstones: legacy.deletedTaskTombstones
+            )
+            requiresMigration = true
+        }
         try validate(snapshot)
-        return snapshot
+        return LoadedTaskStoreSnapshot(
+            snapshot: snapshot,
+            requiresMigration: requiresMigration
+        )
     }
 
     private static func validate(_ snapshot: TaskStoreSnapshot) throws {
-        guard snapshot.tasks.count <= 10_000,
+        guard snapshot.schemaVersion == TaskStoreSnapshot.currentSchemaVersion,
+              snapshot.tasks.count <= 10_000,
               snapshot.appliedEventIDs.count <= 100_000,
               snapshot.deletedTaskTombstones.count <= maximumDeletedTaskTombstones,
               Set(snapshot.appliedEventIDs).count == snapshot.appliedEventIDs.count,
@@ -996,11 +1021,15 @@ private struct DeletedTaskTombstone: Codable, Equatable {
 }
 
 private struct TaskStoreSnapshot: Codable {
+    static let currentSchemaVersion = 2
+
+    let schemaVersion: Int
     let tasks: [CodexTask]
     let appliedEventIDs: [String]
     let deletedTaskTombstones: [DeletedTaskTombstone]
 
     private enum CodingKeys: String, CodingKey {
+        case schemaVersion
         case tasks
         case appliedEventIDs
         case deletedTaskTombstones
@@ -1011,6 +1040,7 @@ private struct TaskStoreSnapshot: Codable {
         appliedEventIDs: [String],
         deletedTaskTombstones: [DeletedTaskTombstone]
     ) {
+        self.schemaVersion = Self.currentSchemaVersion
         self.tasks = tasks
         self.appliedEventIDs = appliedEventIDs
         self.deletedTaskTombstones = deletedTaskTombstones
@@ -1018,6 +1048,7 @@ private struct TaskStoreSnapshot: Codable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
         tasks = try container.decode([CodexTask].self, forKey: .tasks)
         appliedEventIDs = try container.decode([String].self, forKey: .appliedEventIDs)
         if container.contains(.deletedTaskTombstones) {
@@ -1028,5 +1059,68 @@ private struct TaskStoreSnapshot: Codable {
         } else {
             deletedTaskTombstones = []
         }
+    }
+}
+
+private struct LoadedTaskStoreSnapshot {
+    let snapshot: TaskStoreSnapshot
+    let requiresMigration: Bool
+}
+
+private struct TaskStoreSnapshotVersion: Decodable {
+    let schemaVersion: Int?
+}
+
+private struct LegacyTaskStoreSnapshot: Decodable {
+    let tasks: [LegacyCodexTask]
+    let appliedEventIDs: [String]
+    let deletedTaskTombstones: [DeletedTaskTombstone]
+
+    private enum CodingKeys: String, CodingKey {
+        case tasks
+        case appliedEventIDs
+        case deletedTaskTombstones
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        tasks = try container.decode([LegacyCodexTask].self, forKey: .tasks)
+        appliedEventIDs = try container.decode([String].self, forKey: .appliedEventIDs)
+        deletedTaskTombstones = try container.decodeIfPresent(
+            [DeletedTaskTombstone].self,
+            forKey: .deletedTaskTombstones
+        ) ?? []
+    }
+}
+
+private struct LegacyCodexTask: Decodable {
+    let id: String
+    let sessionID: String
+    let turnID: String
+    let cwd: String
+    let workspaceName: String
+    let title: String
+    let status: CodexTaskStatus
+    let startedAt: Date
+    let updatedAt: Date
+    let isUnread: Bool
+    let destination: String?
+
+    var visualStudioCodeTask: CodexTask? {
+        guard destination == CodexHookSource.visualStudioCode.rawValue else {
+            return nil
+        }
+        return CodexTask(
+            id: id,
+            sessionID: sessionID,
+            turnID: turnID,
+            cwd: cwd,
+            workspaceName: workspaceName,
+            title: title,
+            status: status,
+            startedAt: startedAt,
+            updatedAt: updatedAt,
+            isUnread: isUnread
+        )
     }
 }

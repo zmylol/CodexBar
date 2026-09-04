@@ -91,6 +91,32 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                 "old-task cleanup does not use asynchronous window discovery"
             )
         },
+        CodexBarTestCase(name: "task selection only activates an existing VS Code window") {
+            let repositoryRoot = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            let appModelURL = repositoryRoot
+                .appendingPathComponent("Sources", isDirectory: true)
+                .appendingPathComponent("CodexBarApp", isDirectory: true)
+                .appendingPathComponent("CodexBarAppModel.swift")
+            let legacyOpenerURL = repositoryRoot
+                .appendingPathComponent("Sources", isDirectory: true)
+                .appendingPathComponent("CodexBarWindowing", isDirectory: true)
+                .appendingPathComponent("CodexTaskOpener.swift")
+            let source = try String(contentsOf: appModelURL, encoding: .utf8)
+
+            try expect(
+                source.contains("await activator.activateWindow(")
+                    && source.contains("promptForAccessibility: false"),
+                "task selection does not directly use VS Code window activation"
+            )
+            try expect(
+                !source.contains("taskOpener")
+                    && !FileManager.default.fileExists(atPath: legacyOpenerURL.path),
+                "task selection still includes a cross-client opener or fallback"
+            )
+        },
         CodexBarTestCase(name: "task persistence stays off the main actor") {
             let repositoryRoot = URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
@@ -189,6 +215,44 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             try expect(
                 cancellationGuardCount >= 3,
                 "cancelled or superseded startup recovery can report stale failures"
+            )
+        },
+        CodexBarTestCase(name: "startup recovery requests only VS Code thread metadata") {
+            let repositoryRoot = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            let coreRoot = repositoryRoot
+                .appendingPathComponent("Sources", isDirectory: true)
+                .appendingPathComponent("CodexBarCore", isDirectory: true)
+            let snapshotSource = try String(
+                contentsOf: coreRoot.appendingPathComponent(
+                    "CodexAppServerThreadSnapshotSource.swift"
+                ),
+                encoding: .utf8
+            )
+            let snapshotContract = try String(
+                contentsOf: coreRoot.appendingPathComponent("CodexThreadSnapshot.swift"),
+                encoding: .utf8
+            )
+
+            try expect(
+                snapshotSource.contains(#""sourceKinds": ["vscode"]"#)
+                    && snapshotSource.contains(#"value["source"] as? String == "vscode""#),
+                "App Server recovery does not fix and verify the VS Code source"
+            )
+            try expect(
+                !snapshotSource.contains("matchingActiveTasks")
+                    && !snapshotSource.contains(#"method: "thread/read""#)
+                    && !snapshotContract.contains("matchingActiveTasks")
+                    && !snapshotContract.contains("CodexThreadSource"),
+                "startup recovery still exposes a CLI or active-task query path"
+            )
+            try expect(
+                !FileManager.default.fileExists(
+                    atPath: coreRoot.appendingPathComponent("TaskRecoveryThrottle.swift").path
+                ),
+                "the obsolete periodic recovery throttle still exists"
             )
         },
         CodexBarTestCase(name: "App Server failures use privacy-safe rate-limited diagnostics") {

@@ -116,20 +116,16 @@ func taskOpeningTestCases() -> [CodexBarTestCase] {
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
             let sourcesRoot = repositoryRoot.appendingPathComponent("Sources", isDirectory: true)
-            let enumerator = try require(
-                FileManager.default.enumerator(
-                    at: sourcesRoot,
-                    includingPropertiesForKeys: [.isRegularFileKey],
-                    options: [.skipsHiddenFiles]
-                ),
-                "could not enumerate production sources"
-            )
+            let sourcePaths = try FileManager.default.subpathsOfDirectory(
+                atPath: sourcesRoot.path
+            ).filter { $0.hasSuffix(".swift") }
             let forbiddenMarkers = ["CodexDesktop", "com.openai.codex", "codex://threads"]
             var offenders: [String] = []
-            for case let url as URL in enumerator where url.pathExtension == "swift" {
+            for path in sourcePaths {
+                let url = sourcesRoot.appendingPathComponent(path)
                 let source = try String(contentsOf: url, encoding: .utf8)
                 if forbiddenMarkers.contains(where: source.contains) {
-                    offenders.append(url.lastPathComponent)
+                    offenders.append(path)
                 }
             }
 

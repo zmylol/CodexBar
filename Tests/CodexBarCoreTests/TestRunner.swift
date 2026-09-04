@@ -16,7 +16,6 @@ struct CodexBarTestRunner {
         tests += windowActivationSequencingTestCases()
         tests += taskOpeningTestCases()
         tests += startupReconciliationTestCases()
-        tests += taskRecoveryThrottleTestCases()
         tests += appServerSnapshotSourceTestCases()
         var failures = 0
 

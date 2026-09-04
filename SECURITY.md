@@ -25,11 +25,11 @@ CodexBar 是当前用户权限下运行的本地工具，不提供权限隔离�
 - 用户级 `~/.codex/hooks.json`；
 - `~/Library/Application Support/CodexBar/` 中的私有事件数据；
 - macOS Accessibility 权限；
-- 官方 VS Code 与 OpenAI Codex 可执行文件的进程身份；
+- 官方 VS Code 进程与 VS Code Extension 内 Codex 可执行文件的身份；
 - CodexBar 启动的本地 `codex app-server` 子进程。
 
 CodexBar 不应被用于运行来源不明的 Hook 可执行文件，也不应通过跳过信任检查的参数启用 Hook。
 
-窗口操作只接受 `com.microsoft.VSCode` 且代码签名满足 Microsoft Team ID `UBF8T346G9` 的实时进程；发现和执行前均采用 fail-closed 验证。Codex App Server 只从官方 Extension 路径选择 OpenAI Team ID `2DC432GLL2` 的可执行文件，并在启动前二次验证。
+Hook 入口只接受 VS Code Extension 提供的精确 originator 值；缺失、变体或其他客户端来源全部 fail-closed 且不读取 stdin。窗口操作只接受 `com.microsoft.VSCode` 且代码签名满足 Microsoft Team ID `UBF8T346G9` 的实时进程；发现和执行前均采用 fail-closed 验证。Codex App Server 只从官方 Extension 路径选择 OpenAI Team ID `2DC432GLL2` 的可执行文件，并在启动前二次验证，查询和响应来源都必须为 `vscode`。
 
 安装、卸载和运行时存储会拒绝 CodexBar 管理路径中的符号链接；任务状态持久化失败时，Inbox 事件不会被提前归档。

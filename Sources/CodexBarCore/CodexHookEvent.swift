@@ -18,7 +18,7 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
     public let activity: CodexHookActivitySummary?
     public let timestamp: Date
     public let lastAssistantMessagePresent: Bool
-    public let destination: CodexTaskDestination?
+    public let source: CodexHookSource
 
     public init(
         id: String,
@@ -31,7 +31,7 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
         timestamp: Date,
         lastAssistantMessagePresent: Bool,
         activity: CodexHookActivitySummary? = nil,
-        destination: CodexTaskDestination? = nil
+        source: CodexHookSource
     ) {
         self.id = id
         self.sessionID = sessionID
@@ -43,20 +43,84 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
         self.activity = activity
         self.timestamp = timestamp
         self.lastAssistantMessagePresent = lastAssistantMessagePresent
-        self.destination = destination
+        self.source = source
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case sessionID
+        case turnID
+        case cwd
+        case name
+        case promptSummary
+        case toolName
+        case activity
+        case timestamp
+        case lastAssistantMessagePresent
+        case source
+        case destination
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let rawSource: String?
+        if container.contains(.source) {
+            rawSource = try? container.decode(String.self, forKey: .source)
+        } else {
+            rawSource = try? container.decode(String.self, forKey: .destination)
+        }
+        guard let rawSource,
+              let decodedSource = CodexHookSource(rawValue: rawSource)
+        else {
+            throw CodexHookEventCodingError.unsupportedOrMissingSource
+        }
+        source = decodedSource
+
+        id = try container.decode(String.self, forKey: .id)
+        sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID)
+        turnID = try container.decodeIfPresent(String.self, forKey: .turnID)
+        cwd = try container.decodeIfPresent(String.self, forKey: .cwd)
+        name = try container.decodeIfPresent(CodexHookEventName.self, forKey: .name)
+        promptSummary = try container.decodeIfPresent(String.self, forKey: .promptSummary)
+        toolName = try container.decodeIfPresent(String.self, forKey: .toolName)
+        activity = try container.decodeIfPresent(CodexHookActivitySummary.self, forKey: .activity)
+        timestamp = try container.decode(Date.self, forKey: .timestamp)
+        lastAssistantMessagePresent = try container.decode(
+            Bool.self,
+            forKey: .lastAssistantMessagePresent
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(sessionID, forKey: .sessionID)
+        try container.encodeIfPresent(turnID, forKey: .turnID)
+        try container.encodeIfPresent(cwd, forKey: .cwd)
+        try container.encodeIfPresent(name, forKey: .name)
+        try container.encodeIfPresent(promptSummary, forKey: .promptSummary)
+        try container.encodeIfPresent(toolName, forKey: .toolName)
+        try container.encodeIfPresent(activity, forKey: .activity)
+        try container.encode(timestamp, forKey: .timestamp)
+        try container.encode(lastAssistantMessagePresent, forKey: .lastAssistantMessagePresent)
+        try container.encode(source, forKey: .source)
+    }
+}
+
+enum CodexHookEventCodingError: Error {
+    case unsupportedOrMissingSource
 }
 
 public struct CodexHookEventParser: Sendable {
     private let now: @Sendable () -> Date
-    private let destination: CodexTaskDestination?
+    private let source: CodexHookSource
 
     public init(
         now: @escaping @Sendable () -> Date = Date.init,
-        destination: CodexTaskDestination? = nil
+        source: CodexHookSource
     ) {
         self.now = now
-        self.destination = destination
+        self.source = source
     }
 
     public func parse(_ data: Data) throws -> CodexHookEvent {
@@ -100,7 +164,7 @@ public struct CodexHookEventParser: Sendable {
             timestamp: suppliedTimestamp ?? receivedAt,
             lastAssistantMessagePresent: payload.lastAssistantMessagePresent,
             activity: activity,
-            destination: destination
+            source: source
         )
     }
 

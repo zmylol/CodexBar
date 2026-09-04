@@ -853,7 +853,8 @@ private func inboxEvent(
         promptSummary: name == .userPromptSubmit ? "Test inbox" : nil,
         toolName: nil,
         timestamp: Date(timeIntervalSince1970: timestamp),
-        lastAssistantMessagePresent: false
+        lastAssistantMessagePresent: false,
+        source: .visualStudioCode
     )
 }
 
@@ -875,7 +876,10 @@ private func inboxActionEvent(
         "tool_input": ["command": "swift test --filter InboxTests"],
         "timestamp": timestamp
     ])
-    return try CodexHookEventParser(now: { date }).parse(payload)
+    return try CodexHookEventParser(
+        now: { date },
+        source: .visualStudioCode
+    ).parse(payload)
 }
 
 private func temporaryDirectory() -> URL {

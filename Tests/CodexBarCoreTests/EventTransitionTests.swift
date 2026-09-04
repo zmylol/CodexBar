@@ -150,7 +150,8 @@ func eventTransitionTestCases() -> [CodexBarTestCase] {
                 activity: CodexHookActivitySummary(
                     kind: .read,
                     safeSubject: "secret=example-private-value\u{202E}File.swift"
-                )
+                ),
+                source: .visualStudioCode
             )
 
             _ = activityStore.apply(
@@ -691,7 +692,8 @@ func eventTransitionTestCases() -> [CodexBarTestCase] {
                 promptSummary: nil,
                 toolName: nil,
                 timestamp: Date(timeIntervalSince1970: 100),
-                lastAssistantMessagePresent: false
+                lastAssistantMessagePresent: false,
+                source: .visualStudioCode
             )
 
             try expect(try await !store.apply(incomplete), "incomplete event was applied")
@@ -1010,7 +1012,8 @@ func eventTransitionTestCases() -> [CodexBarTestCase] {
                     promptSummary: "Invalid identifier",
                     toolName: nil,
                     timestamp: Date(timeIntervalSince1970: 800),
-                    lastAssistantMessagePresent: false
+                    lastAssistantMessagePresent: false,
+                    source: .visualStudioCode
                 )
                 try expect(try await !store.apply(invalid), "invalid event id was accepted")
             }
@@ -1022,6 +1025,50 @@ func eventTransitionTestCases() -> [CodexBarTestCase] {
 private struct LegacyTaskStoreSnapshot: Encodable {
     let tasks: [CodexTask]
     let appliedEventIDs: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case tasks
+        case appliedEventIDs
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(tasks.map(LegacyCodexTask.init), forKey: .tasks)
+        try container.encode(appliedEventIDs, forKey: .appliedEventIDs)
+    }
+}
+
+private struct LegacyCodexTask: Encodable {
+    let task: CodexTask
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case sessionID
+        case turnID
+        case cwd
+        case workspaceName
+        case title
+        case status
+        case startedAt
+        case updatedAt
+        case isUnread
+        case destination
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(task.id, forKey: .id)
+        try container.encode(task.sessionID, forKey: .sessionID)
+        try container.encode(task.turnID, forKey: .turnID)
+        try container.encode(task.cwd, forKey: .cwd)
+        try container.encode(task.workspaceName, forKey: .workspaceName)
+        try container.encode(task.title, forKey: .title)
+        try container.encode(task.status, forKey: .status)
+        try container.encode(task.startedAt, forKey: .startedAt)
+        try container.encode(task.updatedAt, forKey: .updatedAt)
+        try container.encode(task.isUnread, forKey: .isUnread)
+        try container.encode(CodexHookSource.visualStudioCode.rawValue, forKey: .destination)
+    }
 }
 
 private func parsedActivityEvent(
@@ -1044,7 +1091,8 @@ private func parsedActivityEvent(
         "timestamp": timestamp
     ])
     return try CodexHookEventParser(
-        now: { Date(timeIntervalSince1970: timestamp) }
+        now: { Date(timeIntervalSince1970: timestamp) },
+        source: .visualStudioCode
     ).parse(input)
 }
 
@@ -1065,6 +1113,7 @@ private func event(
         promptSummary: prompt,
         toolName: nil,
         timestamp: Date(timeIntervalSince1970: timestamp),
-        lastAssistantMessagePresent: false
+        lastAssistantMessagePresent: false,
+        source: .visualStudioCode
     )
 }

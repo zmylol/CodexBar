@@ -7,7 +7,7 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
 
     return [
         CodexBarTestCase(name: "parses official lifecycle fixtures") {
-            let parser = CodexHookEventParser(now: { fixedNow })
+            let parser = CodexHookEventParser(now: { fixedNow }, source: .visualStudioCode)
 
             let submitted = try parser.parse(fixture("user-prompt-submit"))
             try expect(submitted.sessionID == "session-A", "session_id was not parsed")
@@ -46,7 +46,10 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
                 "timestamp": fixedNow.timeIntervalSince1970
             ])
 
-            let event = try CodexHookEventParser(now: { fixedNow }).parse(input)
+            let event = try CodexHookEventParser(
+                now: { fixedNow },
+                source: .visualStudioCode
+            ).parse(input)
             let activity = try require(event.activity, "apply_patch activity is missing")
 
             try expect(event.name == .preToolUse, "PreToolUse was not parsed")
@@ -74,7 +77,7 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
                     "timestamp": fixedNow.timeIntervalSince1970
                 ])
             }
-            let parser = CodexHookEventParser(now: { fixedNow })
+            let parser = CodexHookEventParser(now: { fixedNow }, source: .visualStudioCode)
 
             let first = try parser.parse(payload(toolUseID: "tool-test-1"))
             let second = try parser.parse(payload(toolUseID: "tool-test-2"))
@@ -97,7 +100,7 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
                     "timestamp": fixedNow.timeIntervalSince1970
                 ])
             }
-            let parser = CodexHookEventParser(now: { fixedNow })
+            let parser = CodexHookEventParser(now: { fixedNow }, source: .visualStudioCode)
             let privateQuery = "PrivateNeedle"
             let search = try parser.parse(payload(
                 toolUseID: "tool-search",
@@ -127,12 +130,18 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
                 "tool_input": ["file_path": "'"]
             ])
 
-            let event = try CodexHookEventParser(now: { fixedNow }).parse(input)
+            let event = try CodexHookEventParser(
+                now: { fixedNow },
+                source: .visualStudioCode
+            ).parse(input)
 
             try expect(event.activity?.kind == .read, "single quote path lost its activity kind")
         },
         CodexBarTestCase(name: "tolerates missing hook fields") {
-            let event = try CodexHookEventParser(now: { fixedNow }).parse(Data("{}".utf8))
+            let event = try CodexHookEventParser(
+                now: { fixedNow },
+                source: .visualStudioCode
+            ).parse(Data("{}".utf8))
 
             try expect(event.sessionID == nil, "missing session_id should remain nil")
             try expect(event.turnID == nil, "missing turn_id should remain nil")
@@ -153,14 +162,20 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
             }
             """
 
-            let event = try CodexHookEventParser(now: { fixedNow }).parse(Data(input.utf8))
+            let event = try CodexHookEventParser(
+                now: { fixedNow },
+                source: .visualStudioCode
+            ).parse(Data(input.utf8))
             try expect(!(event.promptSummary?.contains(exampleCredential) ?? true), "secret leaked into summary")
             try expect(event.promptSummary?.contains("[REDACTED]") ?? false, "redaction marker is missing")
             try expect((event.promptSummary?.count ?? .max) <= 80, "summary exceeds 80 characters")
             try expect(!(event.promptSummary?.contains("second line") ?? true), "summary kept later lines")
         },
         CodexBarTestCase(name: "does not persist assistant message body") {
-            let event = try CodexHookEventParser(now: { fixedNow }).parse(fixture("stop"))
+            let event = try CodexHookEventParser(
+                now: { fixedNow },
+                source: .visualStudioCode
+            ).parse(fixture("stop"))
             let json = String(decoding: try JSONEncoder().encode(event), as: UTF8.self)
 
             try expect(event.lastAssistantMessagePresent, "message presence was not captured")
@@ -169,14 +184,17 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
         CodexBarTestCase(name: "detects assistant message presence without decoding its body") {
             let input = Data(#"{"hook_event_name":"Stop","last_assistant_message":{"secret":"body"}}"#.utf8)
 
-            let event = try CodexHookEventParser(now: { fixedNow }).parse(input)
+            let event = try CodexHookEventParser(
+                now: { fixedNow },
+                source: .visualStudioCode
+            ).parse(input)
 
             try expect(event.lastAssistantMessagePresent, "non-string assistant body presence was missed")
         },
         CodexBarTestCase(name: "event ID ignores the raw assistant message body") {
             let first = Data(#"{"session_id":"s","turn_id":"t","cwd":"/tmp/project","hook_event_name":"Stop","last_assistant_message":"first private body"}"#.utf8)
             let second = Data(#"{"session_id":"s","turn_id":"t","cwd":"/tmp/project","hook_event_name":"Stop","last_assistant_message":{"private":"second body"}}"#.utf8)
-            let parser = CodexHookEventParser(now: { fixedNow })
+            let parser = CodexHookEventParser(now: { fixedNow }, source: .visualStudioCode)
 
             let firstEvent = try parser.parse(first)
             let secondEvent = try parser.parse(second)
@@ -188,7 +206,7 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
         CodexBarTestCase(name: "event ID ignores credential values removed from the prompt") {
             let first = Data(#"{"session_id":"s","turn_id":"t","cwd":"/tmp/project","hook_event_name":"UserPromptSubmit","prompt":"Deploy api_key=first-private-value"}"#.utf8)
             let second = Data(#"{"session_id":"s","turn_id":"t","cwd":"/tmp/project","hook_event_name":"UserPromptSubmit","prompt":"Deploy api_key=second-private-value"}"#.utf8)
-            let parser = CodexHookEventParser(now: { fixedNow })
+            let parser = CodexHookEventParser(now: { fixedNow }, source: .visualStudioCode)
 
             let firstEvent = try parser.parse(first)
             let secondEvent = try parser.parse(second)
@@ -199,7 +217,7 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
         CodexBarTestCase(name: "event ID changes when a validated identity field changes") {
             let first = Data(#"{"session_id":"s","turn_id":"first-turn","cwd":"/tmp/project","hook_event_name":"Stop"}"#.utf8)
             let second = Data(#"{"session_id":"s","turn_id":"second-turn","cwd":"/tmp/project","hook_event_name":"Stop"}"#.utf8)
-            let parser = CodexHookEventParser(now: { fixedNow })
+            let parser = CodexHookEventParser(now: { fixedNow }, source: .visualStudioCode)
 
             let firstEvent = try parser.parse(first)
             let secondEvent = try parser.parse(second)
@@ -210,10 +228,12 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
             let input = Data(#"{"session_id":"s","turn_id":"t","cwd":"/tmp/project","hook_event_name":"Stop"}"#.utf8)
 
             let firstEvent = try CodexHookEventParser(
-                now: { Date(timeIntervalSince1970: 100) }
+                now: { Date(timeIntervalSince1970: 100) },
+                source: .visualStudioCode
             ).parse(input)
             let secondEvent = try CodexHookEventParser(
-                now: { Date(timeIntervalSince1970: 200) }
+                now: { Date(timeIntervalSince1970: 200) },
+                source: .visualStudioCode
             ).parse(input)
 
             try expect(firstEvent.timestamp != secondEvent.timestamp, "test did not exercise receive-time fallback")
@@ -231,7 +251,10 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
             }
             """.utf8)
 
-            let event = try CodexHookEventParser(now: { fixedNow }).parse(input)
+            let event = try CodexHookEventParser(
+                now: { fixedNow },
+                source: .visualStudioCode
+            ).parse(input)
 
             try expect(event.sessionID == nil, "oversized identifier was retained")
             try expect(event.timestamp == fixedNow, "unreasonable timestamp was trusted")
@@ -246,7 +269,10 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
                 + "Authorization: Basic \(basicValue) \(slackValue)"
             let input = try JSONSerialization.data(withJSONObject: ["prompt": prompt])
 
-            let event = try CodexHookEventParser(now: { fixedNow }).parse(input)
+            let event = try CodexHookEventParser(
+                now: { fixedNow },
+                source: .visualStudioCode
+            ).parse(input)
             let summary = try require(event.promptSummary, "sanitized prompt is missing")
 
             try expect(!summary.contains(apiValue), "spaced API key leaked")

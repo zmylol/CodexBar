@@ -34,25 +34,6 @@ public struct StartupTaskReconciler {
             matchingExistingTaskIDs: matchingExistingTaskIDs
         )
     }
-
-    /// Reconciles exact active Hook turns without relying on an editor window.
-    /// This path covers both terminal CLI and VS Code tasks when a terminal
-    /// App Server state exists but Codex did not emit a Stop Hook.
-    @discardableResult
-    public func reconcileActiveTasks(
-        snapshots: [CodexThreadSnapshot],
-        matchingExistingTaskIDs: Set<String>
-    ) async throws -> Int {
-        let recoveredTasks = await worker.recoveredActiveTasks(snapshots: snapshots)
-        guard !Task.isCancelled else {
-            return 0
-        }
-        return try await store.mergeRecoveredTasks(
-            recoveredTasks,
-            matchingExistingTaskIDs: matchingExistingTaskIDs,
-            markTerminalChangesUnread: true
-        )
-    }
 }
 
 private actor StartupTaskRecoveryWorker {
@@ -72,7 +53,7 @@ private actor StartupTaskRecoveryWorker {
         var latestByCWD: [String: CodexThreadSnapshot] = [:]
         let latestAllowedDate = Date().addingTimeInterval(7 * 24 * 60 * 60)
 
-        for snapshot in snapshots where snapshot.source == .vscode {
+        for snapshot in snapshots {
             guard !Task.isCancelled else {
                 return []
             }
@@ -115,36 +96,6 @@ private actor StartupTaskRecoveryWorker {
         }
     }
 
-    func recoveredActiveTasks(
-        snapshots: [CodexThreadSnapshot]
-    ) -> [CodexTask] {
-        guard !Task.isCancelled else {
-            return []
-        }
-        let latestAllowedDate = Date().addingTimeInterval(7 * 24 * 60 * 60)
-        var latestByTaskID: [String: CodexThreadSnapshot] = [:]
-
-        for snapshot in snapshots {
-            guard !Task.isCancelled else {
-                return []
-            }
-            guard let normalized = normalizedSnapshot(
-                snapshot,
-                latestAllowedDate: latestAllowedDate
-            ) else {
-                continue
-            }
-            let taskID = "\(normalized.sessionID):\(normalized.turnID)"
-            if let current = latestByTaskID[taskID],
-               !isNewer(normalized, than: current) {
-                continue
-            }
-            latestByTaskID[taskID] = normalized
-        }
-
-        return latestByTaskID.values.compactMap(task(from:))
-    }
-
     private func normalizedSnapshot(
         _ snapshot: CodexThreadSnapshot,
         latestAllowedDate: Date
@@ -166,7 +117,6 @@ private actor StartupTaskRecoveryWorker {
             turnID: snapshot.turnID,
             cwd: cwd,
             title: snapshot.title,
-            source: snapshot.source,
             status: snapshot.status,
             startedAt: snapshot.startedAt,
             updatedAt: snapshot.updatedAt

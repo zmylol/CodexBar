@@ -108,21 +108,6 @@ public actor InstalledVSCodeCodexThreadSnapshotSource: CodexThreadSnapshotLoadin
             executableURL: executableURL
         ).loadSnapshots(matching: windows)
     }
-
-    public func loadSnapshots(
-        matchingActiveTasks tasks: [CodexTask]
-    ) async throws -> [CodexThreadSnapshot] {
-        try Task.checkCancellation()
-        guard let executableURL = CodexExecutableLocator
-            .visualStudioCodeExtensionExecutable()
-        else {
-            throw CodexAppServerSnapshotError.executableUnavailable
-        }
-        try Task.checkCancellation()
-        return try await CodexAppServerThreadSnapshotSource(
-            executableURL: executableURL
-        ).loadSnapshots(matchingActiveTasks: tasks)
-    }
 }
 
 /// Reads only the small persisted metadata needed to reconstruct menu-bar rows.
@@ -162,12 +147,6 @@ public actor CodexAppServerThreadSnapshotSource: CodexThreadSnapshotLoading {
         try loadSnapshotsSynchronously(matching: windows)
     }
 
-    public func loadSnapshots(
-        matchingActiveTasks tasks: [CodexTask]
-    ) async throws -> [CodexThreadSnapshot] {
-        try loadSnapshotsSynchronously(matchingActiveTasks: tasks)
-    }
-
     private func loadSnapshotsSynchronously(
         matching windows: [VSCodeWindowDescriptor]
     ) throws -> [CodexThreadSnapshot] {
@@ -192,10 +171,7 @@ public actor CodexAppServerThreadSnapshotSource: CodexThreadSnapshotLoading {
         defer { session.abortIfNeeded() }
         try session.initialize()
 
-        let threads = try loadThreads(
-            session: session,
-            sourceKinds: [.vscode]
-        )
+        let threads = try loadThreads(session: session)
         let matcher = VSCodeWindowMatcher()
         var latestByCWD: [String: AppServerThread] = [:]
         for thread in threads {
@@ -238,89 +214,8 @@ public actor CodexAppServerThreadSnapshotSource: CodexThreadSnapshotLoading {
         return sortedSnapshots(snapshots)
     }
 
-    private func loadSnapshotsSynchronously(
-        matchingActiveTasks tasks: [CodexTask]
-    ) throws -> [CodexThreadSnapshot] {
-        guard !tasks.isEmpty else {
-            return []
-        }
-        guard sessionTimeout.isFinite,
-              sessionTimeout > 0,
-              sessionTimeout <= Self.maximumSessionTimeout,
-              tasks.count <= Self.maximumWindows,
-              Set(tasks.map(\.id)).count == tasks.count,
-              tasks.allSatisfy(Self.validActiveTask)
-        else {
-            throw CodexAppServerSnapshotError.invalidInput
-        }
-        try validateExecutable()
-
-        let session = try CodexAppServerRPCSession(
-            executableURL: executableURL,
-            timeout: sessionTimeout
-        )
-        defer { session.abortIfNeeded() }
-        try session.initialize()
-
-        var snapshots: [CodexThreadSnapshot] = []
-        snapshots.reserveCapacity(tasks.count)
-        for task in tasks {
-            let threadResult: [String: Any]
-            do {
-                threadResult = try session.request(
-                    method: "thread/read",
-                    params: [
-                        "threadId": task.sessionID,
-                        "includeTurns": false
-                    ]
-                )
-            } catch CodexAppServerSnapshotError.requestRejected(let code)
-                where code == -32_600 {
-                continue
-            }
-            let thread = try parseThreadRead(threadResult)
-            guard thread.id == task.sessionID,
-                  thread.cwd == task.cwd else {
-                continue
-            }
-            let snapshot: CodexThreadSnapshot?
-            do {
-                snapshot = try loadLatestSnapshot(
-                    for: thread,
-                    session: session,
-                    fallbackStartedAt: min(task.startedAt, thread.updatedAt)
-                )
-            } catch CodexAppServerSnapshotError.requestRejected(let code)
-                where code == -32_600 {
-                continue
-            }
-            guard let snapshot, snapshot.turnID == task.turnID else {
-                continue
-            }
-            snapshots.append(snapshot)
-        }
-
-        try session.finish()
-        return sortedSnapshots(snapshots)
-    }
-
-    private static func validActiveTask(_ task: CodexTask) -> Bool {
-        task.id == "\(task.sessionID):\(task.turnID)"
-            && !task.sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && task.sessionID.utf8.count <= 512
-            && !task.turnID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && task.turnID.utf8.count <= 512
-            && PathNormalizer.normalize(task.cwd) == task.cwd
-            && task.startedAt.timeIntervalSince1970.isFinite
-            && task.updatedAt.timeIntervalSince1970.isFinite
-            && task.startedAt.timeIntervalSince1970 >= 0
-            && task.startedAt <= task.updatedAt
-            && task.updatedAt <= Date().addingTimeInterval(7 * 24 * 60 * 60)
-    }
-
     private func loadThreads(
-        session: CodexAppServerRPCSession,
-        sourceKinds: [CodexThreadSource]
+        session: CodexAppServerRPCSession
     ) throws -> [AppServerThread] {
         var threads: [AppServerThread] = []
         var cursor: String?
@@ -328,7 +223,7 @@ public actor CodexAppServerThreadSnapshotSource: CodexThreadSnapshotLoading {
 
         repeat {
             var params: [String: Any] = [
-                "sourceKinds": sourceKinds.map(\.rawValue),
+                "sourceKinds": ["vscode"],
                 "useStateDbOnly": true,
                 "sortKey": "updated_at",
                 "sortDirection": "desc",
@@ -342,9 +237,6 @@ public actor CodexAppServerThreadSnapshotSource: CodexThreadSnapshotLoading {
             let page = try parseThreadPage(result)
             guard threads.count + page.threads.count <= Self.maximumThreads else {
                 throw CodexAppServerSnapshotError.responseLimitExceeded
-            }
-            guard page.threads.allSatisfy({ sourceKinds.contains($0.source) }) else {
-                throw CodexAppServerSnapshotError.protocolViolation
             }
             threads.append(contentsOf: page.threads)
 
@@ -379,8 +271,7 @@ public actor CodexAppServerThreadSnapshotSource: CodexThreadSnapshotLoading {
 
     private func loadLatestSnapshot(
         for thread: AppServerThread,
-        session: CodexAppServerRPCSession,
-        fallbackStartedAt: Date? = nil
+        session: CodexAppServerRPCSession
     ) throws -> CodexThreadSnapshot? {
         let result = try session.request(
             method: "thread/turns/list",
@@ -391,10 +282,7 @@ public actor CodexAppServerThreadSnapshotSource: CodexThreadSnapshotLoading {
                 "itemsView": "notLoaded"
             ]
         )
-        guard let turn = try parseLatestTurn(
-            result,
-            fallbackStartedAt: fallbackStartedAt
-        ),
+        guard let turn = try parseLatestTurn(result),
               turn.startedAt <= thread.updatedAt else {
             return nil
         }
@@ -403,7 +291,6 @@ public actor CodexAppServerThreadSnapshotSource: CodexThreadSnapshotLoading {
             turnID: turn.id,
             cwd: thread.cwd,
             title: thread.title,
-            source: thread.source,
             status: turn.status,
             startedAt: turn.startedAt,
             updatedAt: thread.updatedAt
@@ -462,16 +349,6 @@ public actor CodexAppServerThreadSnapshotSource: CodexThreadSnapshotLoading {
         return ThreadPage(threads: threads, nextCursor: nextCursor)
     }
 
-    private func parseThreadRead(_ result: [String: Any]) throws -> AppServerThread {
-        guard let rawThread = result["thread"] as? [String: Any],
-              let turns = rawThread["turns"] as? [Any],
-              turns.isEmpty
-        else {
-            throw CodexAppServerSnapshotError.protocolViolation
-        }
-        return try parseThread(rawThread)
-    }
-
     private func parseThread(_ value: [String: Any]) throws -> AppServerThread {
         let id = try validatedIdentifier(value["id"])
         _ = try validatedIdentifier(value["sessionId"])
@@ -480,8 +357,7 @@ public actor CodexAppServerThreadSnapshotSource: CodexThreadSnapshotLoading {
                 throw CodexAppServerSnapshotError.protocolViolation
             }
         }
-        guard let rawSource = value["source"] as? String,
-              let source = CodexThreadSource(rawValue: rawSource),
+        guard value["source"] as? String == "vscode",
               let rawCWD = value["cwd"] as? String,
               rawCWD.utf8.count <= 4_096,
               let cwd = PathNormalizer.normalize(rawCWD),
@@ -518,17 +394,13 @@ public actor CodexAppServerThreadSnapshotSource: CodexThreadSnapshotLoading {
             id: id,
             cwd: cwd,
             title: title,
-            source: source,
             createdAt: createdAt,
             updatedAt: updatedAt,
             windowID: nil
         )
     }
 
-    private func parseLatestTurn(
-        _ result: [String: Any],
-        fallbackStartedAt: Date? = nil
-    ) throws -> AppServerTurn? {
+    private func parseLatestTurn(_ result: [String: Any]) throws -> AppServerTurn? {
         guard let rawTurns = result["data"] as? [Any], rawTurns.count <= 1 else {
             throw CodexAppServerSnapshotError.protocolViolation
         }
@@ -550,16 +422,10 @@ public actor CodexAppServerThreadSnapshotSource: CodexThreadSnapshotLoading {
            itemsView as? String != "notLoaded" {
             throw CodexAppServerSnapshotError.protocolViolation
         }
-        let startedAt: Date
-        if let rawStartedAt = value["startedAt"], !(rawStartedAt is NSNull) {
-            startedAt = try date(from: rawStartedAt)
-        } else if let fallbackStartedAt,
-                  fallbackStartedAt.timeIntervalSince1970.isFinite,
-                  fallbackStartedAt.timeIntervalSince1970 >= 0 {
-            startedAt = fallbackStartedAt
-        } else {
+        guard let rawStartedAt = value["startedAt"], !(rawStartedAt is NSNull) else {
             return nil
         }
+        let startedAt = try date(from: rawStartedAt)
         if let completedAt = value["completedAt"], !(completedAt is NSNull) {
             _ = try date(from: completedAt)
         }
@@ -654,7 +520,6 @@ private struct AppServerThread {
     let id: String
     let cwd: String
     let title: String
-    let source: CodexThreadSource
     let createdAt: Date
     let updatedAt: Date
     let windowID: Int?
@@ -664,7 +529,6 @@ private struct AppServerThread {
             id: id,
             cwd: cwd,
             title: title,
-            source: source,
             createdAt: createdAt,
             updatedAt: updatedAt,
             windowID: windowID

@@ -31,13 +31,6 @@ func startupReconciliationTestCases() -> [CodexBarTestCase] {
                     title: "Closed task"
                 ),
                 startupSnapshot(
-                    session: "cli-session",
-                    turn: "cli-turn",
-                    source: .cli,
-                    updatedAt: 400,
-                    title: "CLI task"
-                ),
-                startupSnapshot(
                     session: "future-session",
                     turn: "future-turn",
                     cwd: "/work/notes",
@@ -53,7 +46,7 @@ func startupReconciliationTestCases() -> [CodexBarTestCase] {
             )
 
             let task = try require(store.tasks.first, "recovered task is missing")
-            try expect(store.tasks.count == 1, "closed or non-VS-Code threads were recovered")
+            try expect(store.tasks.count == 1, "closed VS Code threads were recovered")
             try expect(task.id == "latest-session:latest-turn", "latest VS Code turn was not selected")
             try expect(task.cwd == "/work/project-alpha", "recovered cwd is wrong")
             try expect(task.title == "Existing task", "recovered title is wrong")
@@ -270,36 +263,6 @@ func startupReconciliationTestCases() -> [CodexBarTestCase] {
                 store.tasks.first?.status == .needsAttention,
                 "permission turn changed without a Stop Hook"
             )
-        },
-        CodexBarTestCase(name: "marks a terminal CLI turn ready and unread without VS Code windows") {
-            let store = TaskStore()
-            _ = try await store.apply(startupEvent(
-                .userPromptSubmit,
-                session: "cli-session",
-                turn: "cli-turn",
-                timestamp: 100.8,
-                cwd: "/work/terminal",
-                prompt: "Terminal task"
-            ))
-            let taskID = try require(store.tasks.first?.id, "CLI task id is missing")
-
-            let changed = try await StartupTaskReconciler(store: store).reconcileActiveTasks(
-                snapshots: [startupSnapshot(
-                    session: "cli-session",
-                    turn: "cli-turn",
-                    cwd: "/work/terminal",
-                    source: .cli,
-                    status: .interrupted,
-                    updatedAt: 101,
-                    title: "Terminal task"
-                )],
-                matchingExistingTaskIDs: [taskID]
-            )
-
-            try expect(changed == 1, "terminal CLI interruption was ignored")
-            let task = try require(store.tasks.first, "CLI task disappeared")
-            try expect(task.status == .ready, "terminal CLI task remained running")
-            try expect(task.isUnread, "real-time recovered CLI completion was marked read")
         },
         CodexBarTestCase(name: "periodic recovery does not restore a deleted active row") {
             let store = TaskStore()
@@ -557,7 +520,6 @@ func startupReconciliationTestCases() -> [CodexBarTestCase] {
                 turnID: "new-turn",
                 cwd: "/work/project-alpha",
                 title: "Same-second new turn",
-                source: .vscode,
                 status: .inProgress,
                 startedAt: Date(timeIntervalSince1970: 100),
                 updatedAt: Date(timeIntervalSince1970: 100)
@@ -670,7 +632,6 @@ private func startupSnapshot(
     session: String = "snapshot-session",
     turn: String = "snapshot-turn",
     cwd: String = "/work/project-alpha",
-    source: CodexThreadSource = .vscode,
     status: CodexThreadTurnStatus = .completed,
     updatedAt: TimeInterval,
     title: String = "Existing task"
@@ -680,7 +641,6 @@ private func startupSnapshot(
         turnID: turn,
         cwd: cwd,
         title: title,
-        source: source,
         status: status,
         startedAt: Date(timeIntervalSince1970: updatedAt - 10),
         updatedAt: Date(timeIntervalSince1970: updatedAt)
@@ -704,6 +664,7 @@ private func startupEvent(
         promptSummary: prompt,
         toolName: nil,
         timestamp: Date(timeIntervalSince1970: timestamp),
-        lastAssistantMessagePresent: false
+        lastAssistantMessagePresent: false,
+        source: .visualStudioCode
     )
 }
