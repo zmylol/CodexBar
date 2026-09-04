@@ -324,6 +324,22 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                 "startup recovery does not wait for a grant when Accessibility is denied"
             )
             try expect(
+                recoverySource.contains(
+                    "accessibilityRecoveryTrigger.prepareForAuthorizedRecovery()"
+                ) && recoverySource.contains("dismissAccessibilityNotice()"),
+                "authorized recovery leaves stale grant state or a stale permission notice"
+            )
+            let noticeDismissalSource = source.components(
+                separatedBy: "private func dismissAccessibilityNotice()"
+            ).last?.components(
+                separatedBy: "private func showNotice("
+            ).first ?? ""
+            try expect(
+                noticeDismissalSource.contains("notice?.showsAccessibilityAction == true")
+                    && noticeDismissalSource.contains("notice = nil"),
+                "authorized recovery does not clear only the obsolete permission notice"
+            )
+            try expect(
                 source.contains("accessibilityRecoveryTrigger.isWaitingForGrant")
                     && source.contains("accessibilityRecoveryTrigger.consumeGrant("),
                 "the existing inbox timer does not consume the one-shot grant"

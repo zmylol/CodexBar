@@ -43,6 +43,21 @@ func accessibilityRecoveryTestCases() -> [CodexBarTestCase] {
                 trigger.consumeGrant(isTrusted: true),
                 "an external grant did not launch the pending recovery"
             )
+        },
+        CodexBarTestCase(name: "manual recovery consumes a pending Accessibility grant") {
+            var trigger = AccessibilityRecoveryTrigger()
+
+            trigger.waitForGrant()
+            trigger.prepareForAuthorizedRecovery()
+
+            try expect(
+                !trigger.isWaitingForGrant,
+                "manual recovery left the grant wait armed"
+            )
+            try expect(
+                !trigger.consumeGrant(isTrusted: true),
+                "the next poll launched a duplicate recovery"
+            )
         }
     ]
 }
