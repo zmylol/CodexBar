@@ -16,3 +16,21 @@ public enum AccessibilityAuthorization {
         return AXIsProcessTrustedWithOptions(options)
     }
 }
+
+package struct AccessibilityRecoveryTrigger: Sendable {
+    package private(set) var isWaitingForGrant = false
+
+    package init() {}
+
+    package mutating func waitForGrant() {
+        isWaitingForGrant = true
+    }
+
+    package mutating func consumeGrant(isTrusted: Bool) -> Bool {
+        guard isWaitingForGrant, isTrusted else {
+            return false
+        }
+        isWaitingForGrant = false
+        return true
+    }
+}

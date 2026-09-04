@@ -6,6 +6,7 @@ import os
 
 @MainActor
 final class CodexBarAppModel: NSObject, ObservableObject {
+    @Published private(set) var isRecoveringOpenTasks = false
     @Published private(set) var notice: PanelNotice? {
         didSet {
             guard notice != oldValue else {
@@ -32,6 +33,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     private var oldTaskCleanupID: UUID?
     private var startupRecoveryTask: Task<Void, Never>?
     private var startupRecoveryID: UUID?
+    private var accessibilityRecoveryTrigger = AccessibilityRecoveryTrigger()
     private let recoveryLogger = Logger(
         subsystem: "com.codexbar.CodexBar",
         category: "AppServerReconciliation"
@@ -156,6 +158,9 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         ) else {
             return
         }
+        if !AccessibilityAuthorization.isTrusted {
+            accessibilityRecoveryTrigger.waitForGrant()
+        }
         NSWorkspace.shared.open(url)
     }
 
@@ -268,6 +273,13 @@ final class CodexBarAppModel: NSObject, ObservableObject {
 
     @objc
     private func pollInbox() {
+        if startupRecoveryTask == nil,
+           accessibilityRecoveryTrigger.isWaitingForGrant,
+           accessibilityRecoveryTrigger.consumeGrant(
+               isTrusted: AccessibilityAuthorization.isTrusted
+           ) {
+            recoverStartupTasks()
+        }
         processInbox()
     }
 
@@ -334,6 +346,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         guard let threadSnapshotLoader, startupRecoveryTask == nil else {
             return
         }
+        isRecoveringOpenTasks = true
         let recoveryID = UUID()
         startupRecoveryID = recoveryID
         let activator = self.activator
@@ -346,6 +359,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 if startupRecoveryID == recoveryID {
                     startupRecoveryTask = nil
                     startupRecoveryID = nil
+                    isRecoveringOpenTasks = false
                 }
             }
 
@@ -413,6 +427,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         startupRecoveryTask?.cancel()
         startupRecoveryTask = nil
         startupRecoveryID = nil
+        isRecoveringOpenTasks = false
     }
 
     private func showNotice(

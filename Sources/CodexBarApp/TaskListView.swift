@@ -72,6 +72,17 @@ struct TaskListView: View {
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+            if model.isRecoveringOpenTasks {
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(width: 10, height: 10)
+                    .accessibilityLabel("正在同步已打开的 VS Code Codex 任务")
+            } else if !store.tasks.isEmpty {
+                Text("· \(store.tasks.count)")
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityLabel("共 \(store.tasks.count) 个任务")
+            }
             Spacer(minLength: 2)
             if store.tasks.contains(where: { $0.status == .needsAttention }) {
                 Image(systemName: "exclamationmark.triangle.fill")
