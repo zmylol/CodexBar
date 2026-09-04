@@ -16,7 +16,9 @@ trap '/bin/rm -rf -- "$test_root"' EXIT
 export CODEXBAR_SUPPORT_ROOT="$test_root/CodexBar"
 
 started_at=$EPOCHREALTIME
-probe_output=$("$hook_binary" --codexbar-managed --probe < "$repo_root/Tests/CodexBarCoreTests/Fixtures/stop.json" 2>&1)
+probe_output=$(CODEX_INTERNAL_ORIGINATOR_OVERRIDE=codex_vscode \
+    "$hook_binary" --codexbar-managed --probe \
+    < "$repo_root/Tests/CodexBarCoreTests/Fixtures/stop.json" 2>&1)
 elapsed=$(( EPOCHREALTIME - started_at ))
 [[ -z "$probe_output" ]]
 (( elapsed < 1.0 ))
@@ -28,18 +30,33 @@ if /usr/bin/grep -q 'secret assistant detail' "$probe_files[1]"; then
     exit 1
 fi
 
-inbox_output=$(CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex \
+desktop_output=$(CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex \
+    "$hook_binary" --codexbar-managed \
+    < "$repo_root/Tests/CodexBarCoreTests/Fixtures/user-prompt-submit.json" 2>&1)
+[[ -z "$desktop_output" ]]
+unknown_output=$(CODEX_INTERNAL_ORIGINATOR_OVERRIDE=future-client \
+    "$hook_binary" --codexbar-managed \
+    < "$repo_root/Tests/CodexBarCoreTests/Fixtures/user-prompt-submit.json" 2>&1)
+[[ -z "$unknown_output" ]]
+missing_output=$("$hook_binary" --codexbar-managed \
+    < "$repo_root/Tests/CodexBarCoreTests/Fixtures/user-prompt-submit.json" 2>&1)
+[[ -z "$missing_output" ]]
+unsupported_files=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
+[[ ${#unsupported_files} == 0 ]]
+
+inbox_output=$(CODEX_INTERNAL_ORIGINATOR_OVERRIDE=codex_vscode \
     "$hook_binary" --codexbar-managed \
     < "$repo_root/Tests/CodexBarCoreTests/Fixtures/user-prompt-submit.json" 2>&1)
 [[ -z "$inbox_output" ]]
 inbox_files=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
 [[ ${#inbox_files} == 1 ]]
-if ! /usr/bin/grep -q '"destination":"codexDesktop"' "$inbox_files[1]"; then
-    print -u2 "Hook did not preserve the Codex desktop destination"
+if ! /usr/bin/grep -q '"source":"vscode"' "$inbox_files[1]"; then
+    print -u2 "Hook did not preserve the VS Code source marker"
     exit 1
 fi
 
-invalid_output=$(print -rn -- '{not-json' | "$hook_binary" 2>&1)
+invalid_output=$(print -rn -- '{not-json' \
+    | CODEX_INTERNAL_ORIGINATOR_OVERRIDE=codex_vscode "$hook_binary" 2>&1)
 [[ -z "$invalid_output" ]]
 inbox_files_after_invalid=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
 [[ ${#inbox_files_after_invalid} == 1 ]]
@@ -49,16 +66,18 @@ print -rn -- '{"prompt":"' > "$oversized_input"
 /bin/dd if=/dev/zero bs=1048576 count=5 2>/dev/null \
     | /usr/bin/tr '\0' 'a' >> "$oversized_input"
 print -rn -- '"}' >> "$oversized_input"
-oversized_output=$("$hook_binary" < "$oversized_input" 2>&1)
+oversized_output=$(CODEX_INTERNAL_ORIGINATOR_OVERRIDE=codex_vscode \
+    "$hook_binary" < "$oversized_input" 2>&1)
 [[ -z "$oversized_output" ]]
 inbox_files_after_oversized=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
 [[ ${#inbox_files_after_oversized} == 1 ]]
 
 for _ in {1..12}; do
-    "$hook_binary" < "$repo_root/Tests/CodexBarCoreTests/Fixtures/user-prompt-submit.json" &
+    CODEX_INTERNAL_ORIGINATOR_OVERRIDE=codex_vscode \
+        "$hook_binary" < "$repo_root/Tests/CodexBarCoreTests/Fixtures/user-prompt-submit.json" &
 done
 wait
 inbox_files_after_concurrency=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
 [[ ${#inbox_files_after_concurrency} == 13 ]]
 
-print "PASS hook CLI is silent, fast, app-independent, concurrent-safe, and fail-open"
+print "PASS hook CLI is VS Code-only, silent, fast, app-independent, concurrent-safe, and fail-open"

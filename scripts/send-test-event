@@ -37,5 +37,6 @@ fi
 
 payload=$(/usr/bin/osascript -l JavaScript "$script_dir/make-test-event.js" \
     "$state" "$workspace_path" "$title")
-print -rn -- "$payload" | "$hook_executable"
+print -rn -- "$payload" \
+    | CODEX_INTERNAL_ORIGINATOR_OVERRIDE=codex_vscode "$hook_executable"
 print "Sent $state event for $workspace_path"
