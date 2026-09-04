@@ -20,22 +20,28 @@ func accessibilityRecoveryTestCases() -> [CodexBarTestCase] {
                 "the same grant launched recovery more than once"
             )
         },
-        CodexBarTestCase(name: "does not monitor Accessibility until the user opens settings") {
+        CodexBarTestCase(name: "waits for an external grant after startup is denied") {
             var trigger = AccessibilityRecoveryTrigger()
 
             try expect(
                 !trigger.isWaitingForGrant,
-                "Accessibility monitoring was enabled before the user requested it"
+                "a fresh trigger should not monitor Accessibility"
             )
             try expect(
                 !trigger.consumeGrant(isTrusted: true),
                 "an unsolicited trust state launched recovery"
             )
 
+            // A denied startup recovery arms this even if the user opens
+            // System Settings without going through CodexBar.
             trigger.waitForGrant()
             try expect(
                 trigger.isWaitingForGrant,
-                "opening Accessibility settings did not arm recovery"
+                "a denied startup did not arm recovery"
+            )
+            try expect(
+                trigger.consumeGrant(isTrusted: true),
+                "an external grant did not launch the pending recovery"
             )
         }
     ]

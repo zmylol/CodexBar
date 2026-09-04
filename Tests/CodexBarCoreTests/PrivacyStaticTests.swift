@@ -245,7 +245,7 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                 "the compact header does not expose recovery progress and the final task count"
             )
         },
-        CodexBarTestCase(name: "Accessibility grant recovery is armed only from settings") {
+        CodexBarTestCase(name: "Accessibility grant recovery is armed after a denied startup") {
             let repositoryRoot = URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
@@ -258,7 +258,17 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
 
             try expect(
                 source.contains("accessibilityRecoveryTrigger.waitForGrant()"),
-                "opening Accessibility settings does not arm a one-shot recovery"
+                "Accessibility denial does not arm a one-shot recovery"
+            )
+            let recoverySource = source.components(
+                separatedBy: "private func recoverStartupTasks()"
+            ).last?.components(
+                separatedBy: "private func logRecoveryFailureIfNeeded"
+            ).first ?? ""
+            try expect(
+                recoverySource.contains("guard AccessibilityAuthorization.isTrusted else")
+                    && recoverySource.contains("accessibilityRecoveryTrigger.waitForGrant()"),
+                "startup recovery does not wait for a grant when Accessibility is denied"
             )
             try expect(
                 source.contains("accessibilityRecoveryTrigger.isWaitingForGrant")
