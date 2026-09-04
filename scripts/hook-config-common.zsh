@@ -238,7 +238,16 @@ codexbar_validate_hooks_file() {
 
 codexbar_warn_inline_hooks() {
     local config_file="${codexbar_hooks_file:h}/config.toml"
-    if [[ -f "$config_file" ]] && /usr/bin/grep -Eq '^[[:space:]]*\[+hooks([].]|$)' "$config_file"; then
+    if [[ -f "$config_file" ]] && /usr/bin/awk '
+        /^[[:space:]]*\[+hooks(\]|[.])/ {
+            line = $0
+            sub(/^[[:space:]]*\[+/, "", line)
+            if (line !~ /^hooks[.]state(\]|[.])/) {
+                found = 1
+            }
+        }
+        END { exit found ? 0 : 1 }
+    ' "$config_file"; then
         print -u2 "Warning: config.toml also contains inline hooks; Codex merges both sources and may show a startup warning."
     fi
 }
