@@ -6,8 +6,12 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
     [
         CodexBarTestCase(name: "uses the approved compact desktop footprint") {
             try expect(CodexBarPanelLayout.compactWidth == 168, "compact width changed")
-            try expect(CodexBarPanelLayout.detailWidth == 240, "hover detail width changed")
-            try expect(CodexBarPanelLayout.detailHeight == 176, "hover detail height changed")
+            try expect(CodexBarPanelLayout.detailWidth == 320, "hover detail width changed")
+            try expect(CodexBarPanelLayout.detailHeight == 260, "hover detail height changed")
+            try expect(
+                CodexBarPanelLayout.maximumVisiblePlanSteps == 5,
+                "hover detail no longer fits the approved five plan steps"
+            )
             try expect(CodexBarPanelLayout.detailGap == 8, "hover detail gap changed")
             try expect(CodexBarPanelLayout.headerHeight == 28, "header height changed")
             try expect(CodexBarPanelLayout.rowHeight == 28, "row height changed")
@@ -51,10 +55,10 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
                 visibleFrame: visibleFrame
             )
 
-            try expect(detailFrame.origin.x == 652, "hover detail was not placed to the left")
-            try expect(detailFrame.origin.y == 710, "hover detail was not aligned with its row")
-            try expect(detailFrame.size.width == 240, "hover detail width changed")
-            try expect(detailFrame.size.height == 176, "hover detail height changed")
+            try expect(detailFrame.origin.x == 572, "hover detail was not placed to the left")
+            try expect(detailFrame.origin.y == 668, "hover detail was not aligned with its row")
+            try expect(detailFrame.size.width == 320, "hover detail width changed")
+            try expect(detailFrame.size.height == 260, "hover detail height changed")
         },
         CodexBarTestCase(name: "keeps hover details within the visible screen") {
             let visibleFrame = CGRect(x: 0, y: 24, width: 1200, height: 876)

@@ -241,6 +241,191 @@ func eventTransitionTestCases() -> [CodexBarTestCase] {
                 "activity node timestamps are not chronological"
             )
         },
+        CodexBarTestCase(name: "replaces a live plan and centers five visible steps") {
+            let taskStore = TaskStore()
+            let activityStore = LiveTaskActivityStore()
+            let start = event(.userPromptSubmit, timestamp: 100, prompt: "Show task progress")
+            _ = try await taskStore.apply(start)
+            _ = activityStore.apply(
+                start,
+                deliveryID: "delivery-start",
+                currentTasks: taskStore.tasks
+            )
+            let firstPlan = try parsedPlanEvent(
+                toolUseID: "plan-a",
+                timestamp: 101,
+                steps: (1...8).map { number in
+                    [
+                        "step": "步骤 \(number)",
+                        "status": number < 5
+                            ? "completed"
+                            : (number == 5 ? "in_progress" : "pending")
+                    ]
+                }
+            )
+
+            try expect(
+                activityStore.apply(
+                    firstPlan,
+                    deliveryID: "delivery-plan-a",
+                    currentTasks: taskStore.tasks
+                ),
+                "initial plan was ignored"
+            )
+            let task = try require(taskStore.tasks.first, "active task is missing")
+            let firstSnapshot = try require(
+                activityStore.plan(for: task),
+                "initial plan was not stored"
+            )
+            try expect(firstSnapshot.currentStepNumber == 5, "current step is not 5")
+            try expect(firstSnapshot.totalStepCount == 8, "total step count is not 8")
+            try expect(
+                firstSnapshot.visibleSteps(maximumCount: 5).map(\.title)
+                    == ["步骤 3", "步骤 4", "步骤 5", "步骤 6", "步骤 7"],
+                "five-step window was not centered on the current step"
+            )
+
+            let replacement = try parsedPlanEvent(
+                toolUseID: "plan-b",
+                timestamp: 102,
+                steps: (1...8).map { number in
+                    [
+                        "step": "步骤 \(number)",
+                        "status": number < 6
+                            ? "completed"
+                            : (number == 6 ? "in_progress" : "pending")
+                    ]
+                }
+            )
+            try expect(
+                activityStore.apply(
+                    replacement,
+                    deliveryID: "delivery-plan-b",
+                    currentTasks: taskStore.tasks
+                ),
+                "replacement plan was ignored"
+            )
+            let replacedSnapshot = try require(
+                activityStore.plan(for: task),
+                "replacement plan is missing"
+            )
+            try expect(replacedSnapshot.currentStepNumber == 6, "current step did not advance")
+            try expect(
+                replacedSnapshot.visibleSteps(maximumCount: 5).map(\.title)
+                    == ["步骤 4", "步骤 5", "步骤 6", "步骤 7", "步骤 8"],
+                "replacement plan did not move the visible window"
+            )
+
+            let stalePlan = try parsedPlanEvent(
+                toolUseID: "plan-stale",
+                timestamp: 101.5,
+                steps: [["step": "过时步骤", "status": "in_progress"]]
+            )
+            try expect(
+                !activityStore.apply(
+                    stalePlan,
+                    deliveryID: "delivery-plan-stale",
+                    currentTasks: taskStore.tasks
+                ),
+                "out-of-order plan replaced the latest snapshot"
+            )
+            try expect(
+                activityStore.plan(for: task) == replacedSnapshot,
+                "latest plan changed after a stale update"
+            )
+        },
+        CodexBarTestCase(name: "clears a plan for the next task and freezes it at Stop") {
+            let taskStore = TaskStore()
+            let activityStore = LiveTaskActivityStore()
+            let firstStart = event(.userPromptSubmit, timestamp: 100, prompt: "First task")
+            _ = try await taskStore.apply(firstStart)
+            _ = activityStore.apply(
+                firstStart,
+                deliveryID: "delivery-first-start",
+                currentTasks: taskStore.tasks
+            )
+            let firstPlan = try parsedPlanEvent(
+                toolUseID: "plan-first",
+                timestamp: 101,
+                steps: [
+                    ["step": "第一项", "status": "completed"],
+                    ["step": "第二项", "status": "in_progress"]
+                ]
+            )
+            _ = activityStore.apply(
+                firstPlan,
+                deliveryID: "delivery-first-plan",
+                currentTasks: taskStore.tasks
+            )
+            let firstTask = try require(taskStore.tasks.first, "first task is missing")
+            try expect(activityStore.plan(for: firstTask) != nil, "first plan was not captured")
+
+            let secondStart = event(
+                .userPromptSubmit,
+                session: "session-B",
+                turn: "turn-2",
+                timestamp: 200,
+                prompt: "Second task"
+            )
+            _ = try await taskStore.apply(secondStart)
+            _ = activityStore.apply(
+                secondStart,
+                deliveryID: "delivery-second-start",
+                currentTasks: taskStore.tasks
+            )
+            let secondTask = try require(taskStore.tasks.first, "second task is missing")
+            try expect(activityStore.plan(for: firstTask) == nil, "replaced task kept its plan")
+            try expect(activityStore.plan(for: secondTask) == nil, "new task inherited an old plan")
+
+            let secondPlan = try parsedPlanEvent(
+                toolUseID: "plan-second",
+                session: "session-B",
+                turn: "turn-2",
+                timestamp: 201,
+                steps: [["step": "当前步骤", "status": "in_progress"]]
+            )
+            _ = activityStore.apply(
+                secondPlan,
+                deliveryID: "delivery-second-plan",
+                currentTasks: taskStore.tasks
+            )
+            let stop = event(
+                .stop,
+                session: "session-B",
+                turn: "turn-2",
+                timestamp: 202
+            )
+            _ = try await taskStore.apply(stop)
+            _ = activityStore.apply(
+                stop,
+                deliveryID: "delivery-stop",
+                currentTasks: taskStore.tasks
+            )
+            let stoppedTask = try require(taskStore.tasks.first, "stopped task is missing")
+            let frozenPlan = try require(
+                activityStore.plan(for: stoppedTask),
+                "plan disappeared at Stop"
+            )
+            let latePlan = try parsedPlanEvent(
+                toolUseID: "plan-late",
+                session: "session-B",
+                turn: "turn-2",
+                timestamp: 203,
+                steps: [["step": "迟到步骤", "status": "completed"]]
+            )
+            try expect(
+                !activityStore.apply(
+                    latePlan,
+                    deliveryID: "delivery-late-plan",
+                    currentTasks: taskStore.tasks
+                ),
+                "late plan changed a stopped task"
+            )
+            try expect(
+                activityStore.plan(for: stoppedTask) == frozenPlan,
+                "stopped plan did not remain frozen"
+            )
+        },
         CodexBarTestCase(name: "freezes nodes at Stop and ignores late activity") {
             let taskStore = TaskStore()
             let activityStore = LiveTaskActivityStore()
@@ -394,7 +579,7 @@ func eventTransitionTestCases() -> [CodexBarTestCase] {
             try expect(activityStore.nodes(for: oldTask).isEmpty, "replaced turn remained in memory")
             try expect(activityStore.nodes(for: newTask).isEmpty, "new turn inherited old activity")
         },
-        CodexBarTestCase(name: "does not restore activity after reload") {
+        CodexBarTestCase(name: "does not restore live progress after reload") {
             let root = FileManager.default.temporaryDirectory
                 .appendingPathComponent("CodexBarActivityReloadTests-\(UUID().uuidString)", isDirectory: true)
             let persistenceURL = root.appendingPathComponent("tasks.json")
@@ -411,10 +596,18 @@ func eventTransitionTestCases() -> [CodexBarTestCase] {
                 toolInput: ["file_path": "/tmp/project-alpha/TransientOnly.swift"]
             )
             _ = activityStore.apply(activity, deliveryID: "delivery-read", currentTasks: taskStore.tasks)
+            let plan = try parsedPlanEvent(
+                toolUseID: "reload-plan",
+                timestamp: 102,
+                steps: [["step": "Transient plan only", "status": "in_progress"]]
+            )
+            _ = activityStore.apply(plan, deliveryID: "delivery-plan", currentTasks: taskStore.tasks)
             let task = try require(taskStore.tasks.first, "persisted task is missing")
             try expect(!activityStore.nodes(for: task).isEmpty, "live activity was not captured")
+            try expect(activityStore.plan(for: task) != nil, "live plan was not captured")
             let snapshot = String(decoding: try Data(contentsOf: persistenceURL), as: UTF8.self)
             try expect(!snapshot.contains("TransientOnly.swift"), "activity leaked into tasks.json")
+            try expect(!snapshot.contains("Transient plan only"), "plan leaked into tasks.json")
 
             let reloadedTaskStore = TaskStore(persistenceURL: persistenceURL)
             await reloadedTaskStore.load()
@@ -423,6 +616,10 @@ func eventTransitionTestCases() -> [CodexBarTestCase] {
             try expect(
                 reloadedActivityStore.nodes(for: reloadedTask).isEmpty,
                 "activity survived a LiveTaskActivityStore reload"
+            )
+            try expect(
+                reloadedActivityStore.plan(for: reloadedTask) == nil,
+                "plan survived a LiveTaskActivityStore reload"
             )
         },
         CodexBarTestCase(name: "drops activity as soon as its task is removed") {
@@ -1094,6 +1291,25 @@ private func parsedActivityEvent(
         now: { Date(timeIntervalSince1970: timestamp) },
         source: .visualStudioCode
     ).parse(input)
+}
+
+private func parsedPlanEvent(
+    toolUseID: String,
+    session: String = "session-A",
+    turn: String = "turn-1",
+    timestamp: TimeInterval,
+    cwd: String = "/tmp/project-alpha",
+    steps: [[String: String]]
+) throws -> CodexHookEvent {
+    try parsedActivityEvent(
+        toolName: "update_plan",
+        toolUseID: toolUseID,
+        session: session,
+        turn: turn,
+        timestamp: timestamp,
+        cwd: cwd,
+        toolInput: ["plan": steps]
+    )
 }
 
 private func event(

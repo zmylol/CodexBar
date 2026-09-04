@@ -247,6 +247,7 @@ func inboxTestCases() -> [CodexBarTestCase] {
             let writer = InboxWriter(paths: paths)
             _ = try writer.write(inboxEvent(.userPromptSubmit, timestamp: 100))
             _ = try writer.write(inboxActionEvent(timestamp: 105))
+            _ = try writer.write(inboxPlanEvent(timestamp: 107))
             _ = try writer.write(inboxEvent(.permissionRequest, timestamp: 110))
             _ = try writer.write(inboxEvent(.stop, timestamp: 120))
             let store = TaskStore(persistenceURL: paths.taskStore)
@@ -259,7 +260,7 @@ func inboxTestCases() -> [CodexBarTestCase] {
 
             let processedCount = try await processor.processPending()
 
-            try expect(processedCount == 4, "processor did not consume the activity event")
+            try expect(processedCount == 5, "processor did not consume both live events")
             let task = try require(store.tasks.first, "lifecycle task is missing")
             try expect(task.status == .ready, "lifecycle events did not reach ready")
             let nodes = activityStore.nodes(for: task)
@@ -270,9 +271,16 @@ func inboxTestCases() -> [CodexBarTestCase] {
                 nodes.first?.occurredAt == Date(timeIntervalSince1970: 105),
                 "activity timestamp is wrong"
             )
+            let plan = try require(activityStore.plan(for: task), "plan was not kept in memory")
+            try expect(plan.currentStepNumber == 2, "plan current step is wrong")
+            try expect(plan.totalStepCount == 3, "plan total step count is wrong")
             try expect(
                 try FileManager.default.contentsOfDirectory(atPath: paths.inbox.path).isEmpty,
                 "processed activity remained in Inbox"
+            )
+            try expect(
+                try FileManager.default.contentsOfDirectory(atPath: paths.activity.path).isEmpty,
+                "processed live events remained in Activity"
             )
 
             let archivedEvents = try FileManager.default.contentsOfDirectory(
@@ -290,6 +298,7 @@ func inboxTestCases() -> [CodexBarTestCase] {
 
             let taskSnapshot = String(decoding: try Data(contentsOf: paths.taskStore), as: UTF8.self)
             try expect(!taskSnapshot.contains("运行 Swift 测试"), "activity summary leaked into tasks.json")
+            try expect(!taskSnapshot.contains("Private transient plan"), "plan leaked into tasks.json")
             try expect(!taskSnapshot.contains("PreToolUse"), "activity event leaked into tasks.json")
         },
         CodexBarTestCase(name: "keeps activity when a continued turn completes in one Inbox batch") {
@@ -874,6 +883,35 @@ private func inboxActionEvent(
         "tool_name": "Bash",
         "tool_use_id": toolUseID,
         "tool_input": ["command": "swift test --filter InboxTests"],
+        "timestamp": timestamp
+    ])
+    return try CodexHookEventParser(
+        now: { date },
+        source: .visualStudioCode
+    ).parse(payload)
+}
+
+private func inboxPlanEvent(
+    timestamp: TimeInterval,
+    session: String = "session-A",
+    turn: String = "turn-1",
+    cwd: String = "/tmp/project-alpha"
+) throws -> CodexHookEvent {
+    let date = Date(timeIntervalSince1970: timestamp)
+    let payload = try JSONSerialization.data(withJSONObject: [
+        "session_id": session,
+        "turn_id": turn,
+        "cwd": cwd,
+        "hook_event_name": "PreToolUse",
+        "tool_name": "update_plan",
+        "tool_use_id": "tool-plan-inbox",
+        "tool_input": [
+            "plan": [
+                ["step": "Inspect", "status": "completed"],
+                ["step": "Private transient plan", "status": "in_progress"],
+                ["step": "Verify", "status": "pending"]
+            ]
+        ],
         "timestamp": timestamp
     ])
     return try CodexHookEventParser(

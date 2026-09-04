@@ -298,6 +298,29 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                 "manual refresh does not start recovery or explain missing Accessibility access"
             )
         },
+        CodexBarTestCase(name: "hover detail renders bounded live plan progress") {
+            let repositoryRoot = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            let sourceURL = repositoryRoot
+                .appendingPathComponent("Sources", isDirectory: true)
+                .appendingPathComponent("CodexBarApp", isDirectory: true)
+                .appendingPathComponent("TaskListView.swift")
+            let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+            try expect(
+                source.contains("activityStore.plan(for: task)")
+                    && source.contains("CodexBarPanelLayout.maximumVisiblePlanSteps"),
+                "hover detail is not wired to the bounded live plan"
+            )
+            try expect(
+                source.contains("plan.currentStepNumber")
+                    && source.contains("plan.totalStepCount")
+                    && source.contains("checkmark.circle"),
+                "hover detail does not expose plan state and N/M progress"
+            )
+        },
         CodexBarTestCase(name: "Accessibility grant recovery is armed after a denied startup") {
             let repositoryRoot = URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()

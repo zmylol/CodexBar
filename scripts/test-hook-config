@@ -109,7 +109,7 @@ function run(argv) {
     if (JSON.stringify(asyncEvents) !== JSON.stringify(["PreToolUse"])) {
         throw new Error("Only PreToolUse may be asynchronous, got: " + asyncEvents.join(", "));
     }
-    const expectedMatcher = "^(Bash|apply_patch|Edit|Write|Read|read_file|Grep|Glob|rg|search|view_image)$";
+    const expectedMatcher = "^(Bash|apply_patch|Edit|Write|Read|read_file|Grep|Glob|rg|search|view_image|update_plan)$";
     if (JSON.stringify(activityMatchers) !== JSON.stringify([expectedMatcher])) {
         throw new Error("PreToolUse matcher is missing or broader than the activity allowlist");
     }

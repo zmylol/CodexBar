@@ -24,6 +24,85 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
             try expect(stopped.name == .stop, "Stop was not parsed")
             try expect(stopped.lastAssistantMessagePresent, "assistant message presence was not captured")
         },
+        CodexBarTestCase(name: "parses a sanitized update_plan snapshot") {
+            let privateValue = "example-private-value"
+            let input = try JSONSerialization.data(withJSONObject: [
+                "session_id": "session-A",
+                "turn_id": "turn-1",
+                "cwd": "/tmp/project-alpha",
+                "hook_event_name": "PreToolUse",
+                "tool_name": "update_plan",
+                "tool_use_id": "tool-plan-1",
+                "tool_input": [
+                    "explanation": "private reasoning that is not needed by the thumbnail",
+                    "plan": [
+                        ["step": "梳理需求", "status": "completed"],
+                        ["step": "读取配置", "status": "completed"],
+                        ["step": "修改实现", "status": "completed"],
+                        ["step": "运行测试", "status": "completed"],
+                        [
+                            "step": "发布 api_key=\(privateValue)\u{202E}",
+                            "status": "in_progress"
+                        ]
+                    ]
+                ],
+                "timestamp": fixedNow.timeIntervalSince1970
+            ])
+
+            let event = try CodexHookEventParser(
+                now: { fixedNow },
+                source: .visualStudioCode
+            ).parse(input)
+            let plan = try require(event.plan, "update_plan snapshot is missing")
+
+            try expect(event.activity == nil, "update_plan was reduced to a generic command")
+            try expect(plan.steps.count == 5, "plan step count changed")
+            try expect(
+                plan.steps.map(\.status) == [
+                    .completed, .completed, .completed, .completed, .inProgress
+                ],
+                "plan statuses were not preserved"
+            )
+            try expect(
+                plan.steps.last?.title.contains("[REDACTED]") == true,
+                "plan credential was not redacted"
+            )
+            let encoded = String(
+                decoding: try JSONEncoder.codexBar.encode(event),
+                as: UTF8.self
+            )
+            try expect(!encoded.contains(privateValue), "plan credential was retained")
+            try expect(!encoded.contains("\u{202E}"), "plan bidi control was retained")
+            try expect(!encoded.contains("private reasoning"), "plan explanation was retained")
+            try expect(!encoded.contains("tool-plan-1"), "raw plan tool_use_id was retained")
+        },
+        CodexBarTestCase(name: "rejects malformed or unbounded plan snapshots") {
+            func parse(_ steps: [[String: String]]) throws -> CodexHookEvent {
+                let input = try JSONSerialization.data(withJSONObject: [
+                    "session_id": "session-A",
+                    "turn_id": "turn-1",
+                    "cwd": "/tmp/project-alpha",
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "update_plan",
+                    "tool_input": ["plan": steps]
+                ])
+                return try CodexHookEventParser(
+                    now: { fixedNow },
+                    source: .visualStudioCode
+                ).parse(input)
+            }
+
+            let duplicateCurrent = try parse([
+                ["step": "First", "status": "in_progress"],
+                ["step": "Second", "status": "in_progress"]
+            ])
+            let tooMany = try parse((1...21).map {
+                ["step": "Step \($0)", "status": "pending"]
+            })
+
+            try expect(duplicateCurrent.plan == nil, "multiple current steps were accepted")
+            try expect(tooMany.plan == nil, "unbounded plan steps were accepted")
+        },
         CodexBarTestCase(name: "summarizes apply_patch without retaining raw input") {
             let fullPath = "/Users/example/private-client/Sources/CodexBarCore/TaskStore.swift"
             let exampleSecret = "example-private-token"
