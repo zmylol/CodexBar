@@ -61,7 +61,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
             showNotice(message: "任务状态文件损坏，已隔离并重建。")
         }
         processInbox()
-        recoverStartupTasks()
+        recoverStartupTasks(reportCompletion: false)
         pollTimer = Timer.scheduledTimer(
             timeInterval: 0.75,
             target: self,
@@ -157,7 +157,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
             )
             return
         }
-        recoverStartupTasks()
+        recoverStartupTasks(reportCompletion: true)
     }
 
     func requestAccessibilityPermission() {
@@ -291,7 +291,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
            accessibilityRecoveryTrigger.consumeGrant(
                isTrusted: AccessibilityAuthorization.isTrusted
            ) {
-            recoverStartupTasks()
+            recoverStartupTasks(reportCompletion: false)
         }
         processInbox()
     }
@@ -355,14 +355,18 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         }
     }
 
-    private func recoverStartupTasks() {
+    private func recoverStartupTasks(reportCompletion: Bool) {
         guard AccessibilityAuthorization.isTrusted else {
             accessibilityRecoveryTrigger.waitForGrant()
             return
         }
         accessibilityRecoveryTrigger.prepareForAuthorizedRecovery()
         dismissAccessibilityNotice()
-        guard let threadSnapshotLoader, startupRecoveryTask == nil else {
+        guard let threadSnapshotLoader else {
+            showRefreshFeedback(.failed, reportCompletion: reportCompletion)
+            return
+        }
+        guard startupRecoveryTask == nil else {
             return
         }
         isRecoveringOpenTasks = true
@@ -386,9 +390,12 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 let reconciler = StartupTaskReconciler(store: store)
                 let windows = await activator.discoverWindowsAsync()
                 guard !Task.isCancelled,
-                      startupRecoveryID == recoveryID,
-                      !windows.isEmpty
+                      startupRecoveryID == recoveryID
                 else {
+                    return
+                }
+                guard !windows.isEmpty else {
+                    showRefreshFeedback(.noOpenWindows, reportCompletion: reportCompletion)
                     return
                 }
                 let snapshots: [CodexThreadSnapshot]
@@ -401,6 +408,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                         return
                     }
                     logRecoveryFailureIfNeeded()
+                    showRefreshFeedback(.failed, reportCompletion: reportCompletion)
                     return
                 }
                 guard !Task.isCancelled, startupRecoveryID == recoveryID else {
@@ -408,9 +416,12 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 }
                 let currentWindows = await activator.discoverWindowsAsync()
                 guard !Task.isCancelled,
-                      startupRecoveryID == recoveryID,
-                      !currentWindows.isEmpty
+                      startupRecoveryID == recoveryID
                 else {
+                    return
+                }
+                guard !currentWindows.isEmpty else {
+                    showRefreshFeedback(.noOpenWindows, reportCompletion: reportCompletion)
                     return
                 }
                 let changedCount = try await reconciler.reconcile(
@@ -420,16 +431,40 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 guard !Task.isCancelled, startupRecoveryID == recoveryID else {
                     return
                 }
-                if changedCount > 0 {
+                if changedCount > 0 && !reportCompletion {
                     notifyPresentationChanged(animated: false)
                 }
+                showRefreshFeedback(
+                    .completed(
+                        currentTaskCount: store.tasks.count,
+                        changedCount: changedCount
+                    ),
+                    reportCompletion: reportCompletion
+                )
             } catch {
                 guard !Task.isCancelled, startupRecoveryID == recoveryID else {
                     return
                 }
-                showNotice(message: "检测到任务状态变化，但无法保存核对结果。")
+                if reportCompletion {
+                    showRefreshFeedback(.persistenceFailed, reportCompletion: true)
+                } else {
+                    showNotice(message: "检测到任务状态变化，但无法保存核对结果。")
+                }
             }
         }
+    }
+
+    private func showRefreshFeedback(
+        _ outcome: CodexTaskRefreshOutcome,
+        reportCompletion: Bool
+    ) {
+        guard let message = CodexTaskRefreshFeedback.message(
+            for: outcome,
+            reportCompletion: reportCompletion
+        ) else {
+            return
+        }
+        showNotice(message: message, announceRepeated: true)
     }
 
     private func logRecoveryFailureIfNeeded(now: Date = Date()) {
@@ -459,9 +494,10 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     private func showNotice(
         message: String,
         showsAccessibilityAction: Bool = false,
-        highPriority: Bool = false
+        highPriority: Bool = false,
+        announceRepeated: Bool = false
     ) {
-        guard notice?.message != message else {
+        guard announceRepeated || notice?.message != message else {
             return
         }
         notice = PanelNotice(

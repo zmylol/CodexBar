@@ -309,11 +309,11 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             )
             try expect(
                 recoverySource.contains("reportCompletion")
-                    && recoverySource.contains("刷新完成")
-                    && recoverySource.contains("刷新失败")
-                    && recoverySource.contains("未发现已打开的 VS Code 窗口")
-                    && recoverySource.contains("没有变化"),
-                "manual refresh can finish or fail without visible feedback"
+                    && recoverySource.contains("showRefreshFeedback(.noOpenWindows")
+                    && recoverySource.contains("showRefreshFeedback(.failed")
+                    && recoverySource.contains(".completed(")
+                    && recoverySource.contains("showRefreshFeedback(.persistenceFailed"),
+                "manual refresh terminal branches are not routed to visible feedback"
             )
             try expect(
                 startSource.contains("recoverStartupTasks(reportCompletion: false)"),

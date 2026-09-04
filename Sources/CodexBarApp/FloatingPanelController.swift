@@ -53,7 +53,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
                 width: CodexBarPanelLayout.compactWidth,
                 height: initialHeight
             ),
-            styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
@@ -77,13 +77,8 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         panel.hidesOnDeactivate = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
-        panel.standardWindowButton(.closeButton)?.isHidden = true
-        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        panel.standardWindowButton(.zoomButton)?.isHidden = true
         panel.hasShadow = true
-        panel.isMovableByWindowBackground = true
+        panel.isMovableByWindowBackground = false
         panel.becomesKeyOnlyIfNeeded = false
         panel.animationBehavior = .utilityWindow
         let hostingView = NSHostingView(rootView: TaskListView(

@@ -52,11 +52,13 @@ struct TaskListView: View {
                 style: .continuous
             )
             .stroke(Color.white.opacity(0.16), lineWidth: 1)
+            .allowsHitTesting(false)
         }
         .overlay(alignment: .top) {
             Divider()
                 .opacity(0.28)
                 .offset(y: CodexBarPanelLayout.headerHeight)
+                .allowsHitTesting(false)
         }
         .ignoresSafeArea()
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: store.tasks)
@@ -68,24 +70,31 @@ struct TaskListView: View {
 
     private var header: some View {
         HStack(spacing: 5) {
-            Text("CodexBar")
-                .font(.system(size: 11, weight: .semibold, design: .rounded))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            if !store.tasks.isEmpty {
-                Text("· \(store.tasks.count)")
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
-                    .foregroundStyle(.tertiary)
-                    .accessibilityLabel("共 \(store.tasks.count) 个任务")
+            ZStack(alignment: .leading) {
+                PanelDragHandle()
+                HStack(spacing: 5) {
+                    Text("CodexBar")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    if !store.tasks.isEmpty {
+                        Text("· \(store.tasks.count)")
+                            .font(.system(size: 10, weight: .medium, design: .rounded))
+                            .foregroundStyle(.tertiary)
+                            .accessibilityLabel("共 \(store.tasks.count) 个任务")
+                    }
+                    Spacer(minLength: 2)
+                    if store.tasks.contains(where: { $0.status == .needsAttention }) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(.orange)
+                            .help("有任务需要处理")
+                            .accessibilityHidden(true)
+                    }
+                }
+                .allowsHitTesting(false)
             }
-            Spacer(minLength: 2)
-            if store.tasks.contains(where: { $0.status == .needsAttention }) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.orange)
-                    .help("有任务需要处理")
-                    .accessibilityHidden(true)
-            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             Menu {
                 Button("清除已读", action: model.clearRead)
                     .disabled(!store.tasks.contains { $0.status == .ready && !$0.isUnread })
@@ -207,6 +216,22 @@ struct TaskListView: View {
         .frame(height: CodexBarPanelLayout.noticeHeight)
         .background(Color.orange.opacity(0.08))
         .accessibilityElement(children: .contain)
+    }
+}
+
+private struct PanelDragHandle: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = PanelDragHandleView()
+        view.setAccessibilityElement(false)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+private final class PanelDragHandleView: NSView {
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
     }
 }
 
