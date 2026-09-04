@@ -72,12 +72,7 @@ struct TaskListView: View {
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-            if model.isRecoveringOpenTasks {
-                ProgressView()
-                    .controlSize(.mini)
-                    .frame(width: 10, height: 10)
-                    .accessibilityLabel("正在同步已打开的 VS Code Codex 任务")
-            } else if !store.tasks.isEmpty {
+            if !store.tasks.isEmpty {
                 Text("· \(store.tasks.count)")
                     .font(.system(size: 10, weight: .medium, design: .rounded))
                     .foregroundStyle(.tertiary)
@@ -113,6 +108,33 @@ struct TaskListView: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
             .accessibilityLabel("CodexBar 菜单")
+            Button(action: model.refreshOpenTasks) {
+                ZStack {
+                    if model.isRecoveringOpenTasks {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .accessibilityHidden(true)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10, weight: .semibold))
+                            .accessibilityHidden(true)
+                    }
+                }
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .fixedSize()
+            .disabled(model.isRecoveringOpenTasks)
+            .accessibilityLabel("刷新已打开的 VS Code Codex 任务")
+            .accessibilityValue(model.isRecoveringOpenTasks
+                ? "正在同步已打开的 VS Code Codex 任务"
+                : "就绪")
+            .accessibilityHint(model.isRecoveringOpenTasks
+                ? "刷新完成后可再次使用"
+                : "重新扫描所有已打开的 VS Code 窗口并更新任务列表")
+            .accessibilityInputLabels(["刷新任务", "刷新"])
+            .help("刷新已打开的 VS Code Codex 任务")
         }
         .padding(.leading, 10)
         .padding(.trailing, 4)

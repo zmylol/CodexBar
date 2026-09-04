@@ -147,6 +147,19 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         }
     }
 
+    func refreshOpenTasks() {
+        guard AccessibilityAuthorization.isTrusted else {
+            accessibilityRecoveryTrigger.waitForGrant()
+            showNotice(
+                message: "需要辅助功能权限才能刷新 VS Code 任务。",
+                showsAccessibilityAction: true,
+                highPriority: true
+            )
+            return
+        }
+        recoverStartupTasks()
+    }
+
     func requestAccessibilityPermission() {
         _ = AccessibilityAuthorization.requestIfNeeded()
         openAccessibilitySettings()
