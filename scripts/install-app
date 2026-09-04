@@ -78,6 +78,7 @@ done
 applications_root=${applications_root:a}
 support_root=${support_root:a}
 installed_bundle="$applications_root/CodexBar.app"
+installed_executable="$installed_bundle/Contents/MacOS/CodexBar"
 backup_root="$support_root/AppBackups"
 hook_bin="$support_root/bin"
 installed_hook="$hook_bin/codexbar-hook"
@@ -88,6 +89,12 @@ require_safe_directory "$installed_bundle"
 require_safe_directory "$hook_bin"
 require_safe_directory "$backup_root"
 require_safe_file "$installed_hook"
+
+if [[ -f "$installed_executable" ]] \
+    && /usr/sbin/lsof -t -a -d txt -- "$installed_executable" >/dev/null 2>&1; then
+    print -u2 "CodexBar is currently running. Quit CodexBar and rerun scripts/install-app."
+    exit 75
+fi
 
 /bin/mkdir -p "$applications_root" "$hook_bin" "$backup_root"
 require_within_root "$applications_root" "$installed_bundle:h"
