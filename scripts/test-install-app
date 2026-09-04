@@ -4,7 +4,15 @@ set -euo pipefail
 
 script_dir=${0:A:h}
 test_root=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/codexbar-install.XXXXXX")
-trap '/bin/rm -rf -- "$test_root"' EXIT
+running_app_pid=""
+cleanup() {
+    if [[ -n "$running_app_pid" ]]; then
+        /bin/kill -TERM "$running_app_pid" 2>/dev/null || true
+        wait "$running_app_pid" 2>/dev/null || true
+    fi
+    /bin/rm -rf -- "$test_root"
+}
+trap cleanup EXIT
 
 export CODEXBAR_APPLICATIONS_ROOT="$test_root/Applications"
 export CODEXBAR_SUPPORT_ROOT="$test_root/Application Support/CodexBar"
@@ -17,6 +25,25 @@ install_output=$("$script_dir/install-app")
 [[ "$install_output" == *"Enable live task updates: scripts/install-hooks"* ]]
 [[ "$install_output" == *"Quit and reopen CodexBar after an update"* ]]
 [[ "$install_output" == *"remove and re-add CodexBar in System Settings"* ]]
+installed_executable="$CODEXBAR_APPLICATIONS_ROOT/CodexBar.app/Contents/MacOS/CodexBar"
+/bin/cp /bin/sleep "$installed_executable"
+"$installed_executable" 60 &
+running_app_pid=$!
+for _ in {1..20}; do
+    if /usr/sbin/lsof -t -a -d txt -- "$installed_executable" >/dev/null 2>&1; then
+        break
+    fi
+    /bin/sleep 0.05
+done
+set +e
+"$script_dir/install-app" > "$test_root/running-install.stdout" 2> "$test_root/running-install.stderr"
+running_install_status=$?
+set -e
+[[ "$running_install_status" == 75 ]]
+/usr/bin/grep -q "Quit CodexBar and rerun scripts/install-app" "$test_root/running-install.stderr"
+/bin/kill -TERM "$running_app_pid"
+wait "$running_app_pid" 2>/dev/null || true
+running_app_pid=""
 /usr/bin/touch "$CODEXBAR_APPLICATIONS_ROOT/CodexBar.app/Contents/Resources/stale-install-artifact"
 for backup_index in {1..7}; do
     /bin/mkdir -p "$CODEXBAR_SUPPORT_ROOT/AppBackups/CodexBar-20000101T00000${backup_index}Z-1-${backup_index}.app"
