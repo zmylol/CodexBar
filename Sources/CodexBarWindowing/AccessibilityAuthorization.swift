@@ -26,6 +26,10 @@ package struct AccessibilityRecoveryTrigger: Sendable {
         isWaitingForGrant = true
     }
 
+    package mutating func prepareForAuthorizedRecovery() {
+        isWaitingForGrant = false
+    }
+
     package mutating func consumeGrant(isTrusted: Bool) -> Bool {
         guard isWaitingForGrant, isTrusted else {
             return false

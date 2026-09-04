@@ -360,6 +360,8 @@ final class CodexBarAppModel: NSObject, ObservableObject {
             accessibilityRecoveryTrigger.waitForGrant()
             return
         }
+        accessibilityRecoveryTrigger.prepareForAuthorizedRecovery()
+        dismissAccessibilityNotice()
         guard let threadSnapshotLoader, startupRecoveryTask == nil else {
             return
         }
@@ -445,6 +447,13 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         startupRecoveryTask = nil
         startupRecoveryID = nil
         isRecoveringOpenTasks = false
+    }
+
+    private func dismissAccessibilityNotice() {
+        guard notice?.showsAccessibilityAction == true else {
+            return
+        }
+        notice = nil
     }
 
     private func showNotice(
