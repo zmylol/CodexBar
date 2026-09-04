@@ -5,7 +5,7 @@ import Foundation
 func panelLayoutTestCases() -> [CodexBarTestCase] {
     [
         CodexBarTestCase(name: "uses the approved compact desktop footprint") {
-            try expect(CodexBarPanelLayout.compactWidth == 168, "compact width changed")
+            try expect(CodexBarPanelLayout.compactWidth == 112, "compact width is not two-thirds")
             try expect(CodexBarPanelLayout.detailWidth == 320, "hover detail width changed")
             try expect(
                 CodexBarPanelLayout.maximumVisiblePlanSteps == 5,
@@ -40,7 +40,7 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
                 "notice space was not added to the compact panel"
             )
             try expect(
-                CodexBarPanelLayout.compactWidth == 168,
+                CodexBarPanelLayout.compactWidth == 112,
                 "a notice widened the persistent panel contract"
             )
         },
@@ -71,7 +71,12 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
             )
         },
         CodexBarTestCase(name: "places hover details beside the matching compact row") {
-            let panelFrame = CGRect(x: 900, y: 700, width: 168, height: 140)
+            let panelFrame = CGRect(
+                x: 900,
+                y: 700,
+                width: CodexBarPanelLayout.compactWidth,
+                height: 140
+            )
             let visibleFrame = CGRect(x: 0, y: 0, width: 1200, height: 900)
             let detailHeight = CodexBarPanelLayout.detailHeight(visibleItemCount: 1)
 
@@ -92,16 +97,26 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
             let detailHeight = CodexBarPanelLayout.detailHeight(visibleItemCount: 5)
 
             let rightFrame = CodexBarPanelLayout.detailFrame(
-                panelFrame: CGRect(x: 18, y: 760, width: 168, height: 140),
+                panelFrame: CGRect(
+                    x: 18,
+                    y: 760,
+                    width: CodexBarPanelLayout.compactWidth,
+                    height: 140
+                ),
                 rowMidYFromTop: 14,
                 visibleFrame: visibleFrame,
                 detailHeight: detailHeight
             )
-            try expect(rightFrame.origin.x == 194, "hover detail did not fall back to the right")
+            try expect(rightFrame.origin.x == 138, "hover detail did not follow the narrower bar")
             try expect(rightFrame.maxY == visibleFrame.maxY, "top edge was not clamped")
 
             let bottomFrame = CodexBarPanelLayout.detailFrame(
-                panelFrame: CGRect(x: 900, y: 20, width: 168, height: 140),
+                panelFrame: CGRect(
+                    x: 900,
+                    y: 20,
+                    width: CodexBarPanelLayout.compactWidth,
+                    height: 140
+                ),
                 rowMidYFromTop: 126,
                 visibleFrame: visibleFrame,
                 detailHeight: detailHeight
@@ -110,7 +125,12 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
 
             let shortVisibleFrame = CGRect(x: 0, y: 24, width: 1200, height: 150)
             let shortScreenFrame = CodexBarPanelLayout.detailFrame(
-                panelFrame: CGRect(x: 900, y: 20, width: 168, height: 140),
+                panelFrame: CGRect(
+                    x: 900,
+                    y: 20,
+                    width: CodexBarPanelLayout.compactWidth,
+                    height: 140
+                ),
                 rowMidYFromTop: 70,
                 visibleFrame: shortVisibleFrame,
                 detailHeight: detailHeight
