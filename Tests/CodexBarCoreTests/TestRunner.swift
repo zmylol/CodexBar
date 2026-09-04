@@ -9,6 +9,7 @@ struct CodexBarTestRunner {
         tests += eventTransitionTestCases()
         tests += taskTimeFormatterTestCases()
         tests += panelLayoutTestCases()
+        tests += openTaskRefreshFeedbackTestCases()
         tests += detailSelectionTestCases()
         tests += inboxTestCases()
         tests += privacyStaticTestCases()

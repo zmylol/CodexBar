@@ -269,6 +269,11 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             ).last?.components(
                 separatedBy: "func requestAccessibilityPermission()"
             ).first ?? ""
+            let startSource = modelSource.components(
+                separatedBy: "func start()"
+            ).last?.components(
+                separatedBy: "func stop()"
+            ).first ?? ""
             let recoverySource = modelSource.components(
                 separatedBy: "private func recoverStartupTasks("
             ).last?.components(
@@ -305,8 +310,14 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             try expect(
                 recoverySource.contains("reportCompletion")
                     && recoverySource.contains("刷新完成")
-                    && recoverySource.contains("刷新失败"),
+                    && recoverySource.contains("刷新失败")
+                    && recoverySource.contains("未发现已打开的 VS Code 窗口")
+                    && recoverySource.contains("没有变化"),
                 "manual refresh can finish or fail without visible feedback"
+            )
+            try expect(
+                startSource.contains("recoverStartupTasks(reportCompletion: false)"),
+                "automatic startup recovery can show manual refresh notices"
             )
         },
         CodexBarTestCase(name: "header actions avoid native titlebar hit interception") {
@@ -330,10 +341,15 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             ).last?.components(
                 separatedBy: "self.detailPanel = CodexBarDetailPanel("
             ).first ?? ""
-            let rootDecoration = viewSource.components(
-                separatedBy: ".clipShape("
+            let taskListRoot = viewSource.components(
+                separatedBy: "struct TaskListView: View {"
             ).last?.components(
-                separatedBy: ".ignoresSafeArea()"
+                separatedBy: "private var header: some View"
+            ).first ?? ""
+            let headerSource = viewSource.components(
+                separatedBy: "private var header: some View"
+            ).last?.components(
+                separatedBy: "@ViewBuilder"
             ).first ?? ""
 
             try expect(
@@ -344,10 +360,12 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             )
             try expect(
                 controllerSource.contains("panel.isMovableByWindowBackground = false")
-                    && viewSource.contains("PanelDragHandle()"),
+                    && !controllerSource.contains("panel.isMovableByWindowBackground = true")
+                    && headerSource.contains("PanelDragHandle()")
+                    && viewSource.contains("window?.performDrag(with: event)"),
                 "the whole panel background can still steal clicks instead of a dedicated drag handle"
             )
-            let nonInteractiveDecorationCount = rootDecoration.components(
+            let nonInteractiveDecorationCount = taskListRoot.components(
                 separatedBy: ".allowsHitTesting(false)"
             ).count - 1
             try expect(
