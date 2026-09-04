@@ -112,7 +112,10 @@ func appServerSnapshotSourceTestCases() -> [CodexBarTestCase] {
             )
             try expect(cli.turnID == "cli-turn", "CLI recovery returned the wrong turn")
             try expect(cli.source == .cli, "CLI recovery lost the thread source")
-            try expect(cli.status == .interrupted, "CLI interruption was not reported")
+            try expect(
+                cli.status == .inProgress,
+                "CLI turn without completedAt was treated as terminal"
+            )
             try expect(
                 cli.startedAt == Date(timeIntervalSince1970: 100),
                 "CLI recovery did not safely reuse the Hook start time"
@@ -122,7 +125,10 @@ func appServerSnapshotSourceTestCases() -> [CodexBarTestCase] {
                 "VS Code active snapshot is missing"
             )
             try expect(vscode.source == .vscode, "VS Code recovery lost the thread source")
-            try expect(vscode.status == .failed, "VS Code failure was not reported")
+            try expect(
+                vscode.status == .inProgress,
+                "VS Code turn without completedAt was treated as terminal"
+            )
         },
         CodexBarTestCase(name: "surfaces unsupported active-task RPC methods") {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent(
