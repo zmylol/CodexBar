@@ -274,6 +274,11 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             ).last?.components(
                 separatedBy: "func stop()"
             ).first ?? ""
+            let pollSource = modelSource.components(
+                separatedBy: "private func pollInbox()"
+            ).last?.components(
+                separatedBy: "private func processInbox()"
+            ).first ?? ""
             let recoverySource = modelSource.components(
                 separatedBy: "private func recoverStartupTasks("
             ).last?.components(
@@ -303,9 +308,17 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             }
             try expect(
                 refreshSource.contains("guard AccessibilityAuthorization.isTrusted else")
+                    && refreshSource.contains("waitForGrant(reportCompletion: true)")
                     && refreshSource.contains("showsAccessibilityAction: true")
                     && refreshSource.contains("recoverStartupTasks(reportCompletion: true)"),
                 "manual refresh does not start recovery or explain missing Accessibility access"
+            )
+            try expect(
+                pollSource.contains("let recoveryRequest = accessibilityRecoveryTrigger.consumeGrant")
+                    && pollSource.contains(
+                        "reportCompletion: recoveryRequest.reportCompletion"
+                    ),
+                "an Accessibility grant discards the pending manual refresh feedback"
             )
             try expect(
                 recoverySource.contains("reportCompletion")
