@@ -217,6 +217,55 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                 "cancelled or superseded startup recovery can report stale failures"
             )
         },
+        CodexBarTestCase(name: "startup recovery exposes compact progress and final task count") {
+            let repositoryRoot = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            let appRoot = repositoryRoot
+                .appendingPathComponent("Sources", isDirectory: true)
+                .appendingPathComponent("CodexBarApp", isDirectory: true)
+            let modelSource = try String(
+                contentsOf: appRoot.appendingPathComponent("CodexBarAppModel.swift"),
+                encoding: .utf8
+            )
+            let viewSource = try String(
+                contentsOf: appRoot.appendingPathComponent("TaskListView.swift"),
+                encoding: .utf8
+            )
+
+            try expect(
+                modelSource.contains("@Published private(set) var isRecoveringOpenTasks"),
+                "startup recovery has no observable progress state"
+            )
+            try expect(
+                viewSource.contains("model.isRecoveringOpenTasks")
+                    && viewSource.contains("正在同步已打开的 VS Code Codex 任务")
+                    && viewSource.contains("store.tasks.count"),
+                "the compact header does not expose recovery progress and the final task count"
+            )
+        },
+        CodexBarTestCase(name: "Accessibility grant recovery is armed only from settings") {
+            let repositoryRoot = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            let sourceURL = repositoryRoot
+                .appendingPathComponent("Sources", isDirectory: true)
+                .appendingPathComponent("CodexBarApp", isDirectory: true)
+                .appendingPathComponent("CodexBarAppModel.swift")
+            let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+            try expect(
+                source.contains("accessibilityRecoveryTrigger.waitForGrant()"),
+                "opening Accessibility settings does not arm a one-shot recovery"
+            )
+            try expect(
+                source.contains("accessibilityRecoveryTrigger.isWaitingForGrant")
+                    && source.contains("accessibilityRecoveryTrigger.consumeGrant("),
+                "the existing inbox timer does not consume the one-shot grant"
+            )
+        },
         CodexBarTestCase(name: "startup recovery requests only VS Code thread metadata") {
             let repositoryRoot = URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()

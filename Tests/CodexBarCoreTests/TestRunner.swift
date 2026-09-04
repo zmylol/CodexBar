@@ -12,6 +12,7 @@ struct CodexBarTestRunner {
         tests += detailSelectionTestCases()
         tests += inboxTestCases()
         tests += privacyStaticTestCases()
+        tests += accessibilityRecoveryTestCases()
         tests += windowTitleMatchingTestCases()
         tests += windowActivationSequencingTestCases()
         tests += taskOpeningTestCases()
