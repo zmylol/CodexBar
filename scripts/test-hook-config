@@ -9,6 +9,7 @@ test_root=${test_root:a}
 trap '/bin/rm -rf -- "$test_root"' EXIT
 
 hooks_file="$test_root/.codex/hooks.json"
+config_file="${hooks_file:h}/config.toml"
 support_root="$test_root/Application Support/CodexBar"
 hook_executable="$support_root/bin/codexbar-hook"
 historical_hook_executable="/Applications/CodexBar-old.app/Contents/MacOS/codexbar-hook"
@@ -27,6 +28,10 @@ done
 export CODEXBAR_HOOKS_FILE="$hooks_file"
 export CODEXBAR_SUPPORT_ROOT="$support_root"
 export CODEXBAR_HOOK_EXECUTABLE="$hook_executable"
+
+print -r -- '[hooks.state]
+[hooks.state."hooks.json:user_prompt_submit:0:0"]
+trusted_hash = "sha256:test"' > "$config_file"
 
 assert_third_party_handlers_preserved() {
     local command
@@ -112,12 +117,18 @@ function run(argv) {
 JXA
 }
 
-install_output=$("$script_dir/install-hooks" --probe)
+install_output=$("$script_dir/install-hooks" --probe 2> "$test_root/state-only.stderr")
+[[ ! -s "$test_root/state-only.stderr" ]]
 [[ "$install_output" == *"The IDE chat has no /hooks command"* ]]
 [[ "$install_output" == *"Codex Settings > Hooks"* ]]
 [[ "$install_output" == *"Probe mode is diagnostic only"* ]]
 [[ "$install_output" == *"run scripts/install-hooks without --probe"* ]]
 [[ "$install_output" != *"Codex CLI"* ]]
+print -r -- '[[hooks.UserPromptSubmit]]' > "$config_file"
+"$script_dir/install-hooks" --probe \
+    > "$test_root/inline.stdout" 2> "$test_root/inline.stderr"
+/usr/bin/grep -q "config.toml also contains inline hooks" "$test_root/inline.stderr"
+print -r -- '[hooks.state]' > "$config_file"
 hook_backups=("$support_root/HookConfigBackups"/hooks-*.json(N))
 [[ ${#hook_backups} == 10 ]]
 "$script_dir/install-hooks" --probe > "$test_root/concurrent-install-1.log" &
