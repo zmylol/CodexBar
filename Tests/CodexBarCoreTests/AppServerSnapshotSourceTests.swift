@@ -48,12 +48,12 @@ func appServerSnapshotSourceTestCases() -> [CodexBarTestCase] {
                 "source returned the wrong thread update time"
             )
             try expect(
-                snapshots.first(where: { $0.cwd == "/work/interrupted" })?.status == .interrupted,
-                "source did not return an interrupted turn without completedAt"
+                snapshots.first(where: { $0.cwd == "/work/interrupted" })?.status == .inProgress,
+                "source treated an interrupted turn without completedAt as terminal"
             )
             try expect(
-                snapshots.first(where: { $0.cwd == "/work/failed" })?.status == .failed,
-                "source did not return a failed turn without completedAt"
+                snapshots.first(where: { $0.cwd == "/work/failed" })?.status == .inProgress,
+                "source treated a failed turn without completedAt as terminal"
             )
         },
         CodexBarTestCase(name: "loads exact CLI and VS Code turns for active Hook tasks") {
