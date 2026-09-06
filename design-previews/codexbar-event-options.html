@@ -1,0 +1,181 @@
+<div id="codexbar-event-options">
+  <style>
+    #codexbar-event-options { color-scheme: light dark; --cb-text:light-dark(#24272a,#eef0f2); --cb-muted:light-dark(#626971,#a7afb8); --cb-surface:light-dark(#f4f9fc,#232a30); --cb-line:light-dark(#d8e1e7,#3d4852); --cb-blue:light-dark(#0067cc,#66b5ff); --cb-blue-wash:light-dark(#e4f0fd,#243e56); --cb-orange:light-dark(#a94800,#ffad66); --cb-orange-wash:light-dark(#fff0de,#493526); --cb-green:light-dark(#28734e,#78cda4); color:var(--cb-text); font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif; }
+    #codexbar-event-options * { box-sizing:border-box; }
+    #codexbar-event-options .cb-controls { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:0 0 20px; }
+    #codexbar-event-options .cb-control-label { color:var(--cb-muted); font-size:12px; margin-right:4px; }
+    #codexbar-event-options button { font:inherit; cursor:pointer; }
+    #codexbar-event-options .cb-state-button, #codexbar-event-options .cb-choose { border:1px solid var(--cb-line); background:var(--cb-surface); color:var(--cb-text); border-radius:7px; padding:7px 10px; font-size:12px; }
+    #codexbar-event-options .cb-state-button[aria-pressed="true"] { background:var(--cb-blue-wash); color:var(--cb-blue); border-color:var(--cb-blue); }
+    #codexbar-event-options .cb-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px 20px; align-items:start; }
+    #codexbar-event-options .cb-option { min-width:0; }
+    #codexbar-event-options .cb-option-heading { display:flex; align-items:baseline; gap:8px; margin-bottom:8px; }
+    #codexbar-event-options h3 { font-size:14px; font-weight:600; margin:0; color:var(--cb-text); }
+    #codexbar-event-options .cb-option-tag { font-size:11px; color:var(--cb-muted); }
+    #codexbar-event-options .cb-popover { background:var(--cb-surface); border:1px solid var(--cb-line); border-radius:13px; box-shadow:0 3px 12px light-dark(#172f4610,#00000025); padding:16px; overflow-wrap:anywhere; }
+    #codexbar-event-options .cb-header { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:9px; }
+    #codexbar-event-options .cb-project { font-size:13px; font-weight:650; }
+    #codexbar-event-options .cb-status { color:var(--cb-blue); font-size:11px; font-weight:550; display:inline-flex; align-items:center; gap:5px; white-space:nowrap; }
+    #codexbar-event-options[data-state="waiting"] .cb-status { color:var(--cb-orange); }
+    #codexbar-event-options .cb-status svg { width:12px; height:12px; }
+    #codexbar-event-options .cb-request { font-size:12px; line-height:1.6; color:var(--cb-muted); margin-bottom:15px; }
+    #codexbar-event-options .cb-events { min-width:0; }
+    #codexbar-event-options .cb-footer { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:15px; padding-top:11px; border-top:1px solid var(--cb-line); font-size:11px; color:var(--cb-muted); }
+    #codexbar-event-options .cb-mock-link { color:var(--cb-blue); font-size:12px; font-weight:550; }
+    #codexbar-event-options[data-state="waiting"] .cb-mock-link { color:var(--cb-orange); }
+    #codexbar-event-options .cb-choose { margin-top:10px; background:transparent; }
+    #codexbar-event-options .cb-choose[aria-pressed="true"] { color:var(--cb-blue); background:var(--cb-blue-wash); border-color:var(--cb-blue); }
+    #codexbar-event-options .cb-caption { margin:8px 0 0; color:var(--cb-muted); font-size:12px; line-height:1.5; }
+    #codexbar-event-options .cb-time-list { display:grid; gap:0; }
+    #codexbar-event-options .cb-time-event { position:relative; display:grid; grid-template-columns:20px minmax(0,1fr) 30px; gap:8px; padding:8px 0; align-items:start; font-size:12px; line-height:1.5; }
+    #codexbar-event-options .cb-time-event:not(:last-child)::after { content:""; position:absolute; top:27px; bottom:-6px; left:7px; width:1px; background:var(--cb-line); }
+    #codexbar-event-options .cb-time-event svg { width:16px; height:16px; color:var(--cb-muted); margin-top:1px; }
+    #codexbar-event-options .cb-time-event time { color:var(--cb-muted); font-size:10px; white-space:nowrap; }
+    #codexbar-event-options .cb-time-event.is-current { color:var(--cb-blue); font-weight:600; }
+    #codexbar-event-options .cb-time-event.is-current svg { color:var(--cb-blue); }
+    #codexbar-event-options[data-state="waiting"] .cb-time-event.is-current, #codexbar-event-options[data-state="waiting"] .cb-time-event.is-current svg { color:var(--cb-orange); }
+    #codexbar-event-options .cb-focus { padding:12px; border-radius:8px; background:var(--cb-blue-wash); }
+    #codexbar-event-options[data-state="waiting"] .cb-focus { background:var(--cb-orange-wash); }
+    #codexbar-event-options .cb-eyebrow { font-size:10px; font-weight:500; color:var(--cb-muted); margin-bottom:5px; }
+    #codexbar-event-options .cb-primary { font-size:15px; font-weight:650; line-height:1.45; }
+    #codexbar-event-options .cb-subtle { font-size:11px; color:var(--cb-muted); line-height:1.5; margin-top:5px; }
+    #codexbar-event-options .cb-context { display:grid; grid-template-columns:42px minmax(0,1fr); gap:8px; font-size:12px; line-height:1.55; margin-top:12px; }
+    #codexbar-event-options .cb-context > span:first-child { color:var(--cb-muted); font-size:11px; }
+    #codexbar-event-options .cb-evidence { display:flex; align-items:center; gap:7px; color:var(--cb-muted); font-size:11px; margin-top:12px; }
+    #codexbar-event-options .cb-evidence svg { width:14px; height:14px; flex:none; }
+    #codexbar-event-options .cb-route { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:4px; margin:2px 0 16px; }
+    #codexbar-event-options .cb-route-step { position:relative; display:flex; flex-direction:column; align-items:center; gap:7px; text-align:center; color:var(--cb-muted); font-size:11px; }
+    #codexbar-event-options .cb-route-step:not(:last-child)::after { content:""; position:absolute; top:8px; left:calc(50% + 12px); width:calc(100% - 20px); height:1px; background:var(--cb-line); }
+    #codexbar-event-options .cb-route-marker { width:17px; height:17px; border:1px solid var(--cb-line); border-radius:50%; display:grid; place-items:center; font-size:10px; }
+    #codexbar-event-options .cb-route-step.is-done .cb-route-marker { border-color:var(--cb-green); color:var(--cb-green); }
+    #codexbar-event-options .cb-route-step.is-active { color:var(--cb-blue); font-weight:600; }
+    #codexbar-event-options .cb-route-step.is-active .cb-route-marker { background:var(--cb-blue); border-color:var(--cb-blue); color:var(--cb-surface); }
+    #codexbar-event-options[data-state="waiting"] .cb-route-step.is-active { color:var(--cb-orange); }
+    #codexbar-event-options[data-state="waiting"] .cb-route-step.is-active .cb-route-marker { background:var(--cb-orange); border-color:var(--cb-orange); }
+    #codexbar-event-options .cb-route-title { font-size:14px; font-weight:600; margin-bottom:9px; }
+    #codexbar-event-options .cb-progress-label { color:var(--cb-muted); font-size:11px; margin-top:12px; }
+    #codexbar-event-options .cb-story { border-left:3px solid var(--cb-blue); padding-left:12px; }
+    #codexbar-event-options[data-state="waiting"] .cb-story { border-left-color:var(--cb-orange); }
+    #codexbar-event-options .cb-story-text { margin:0; font-size:14px; line-height:1.8; color:var(--cb-text); }
+    #codexbar-event-options .cb-story-text strong { font-weight:650; }
+    #codexbar-event-options .cb-story-before { font-size:11px; color:var(--cb-muted); margin-top:13px; line-height:1.5; }
+    #codexbar-event-options .cb-selection { margin-top:18px; font-size:13px; color:var(--cb-blue); line-height:1.5; }
+    #codexbar-event-options .cb-selection:empty { display:none; }
+    #codexbar-event-options .cb-sr { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+    @media(max-width:620px) { #codexbar-event-options .cb-grid { grid-template-columns:minmax(0,1fr); gap:22px; } }
+    @media(pointer:coarse) { #codexbar-event-options button { min-height:44px; } }
+    @media(prefers-reduced-motion:no-preference) { #codexbar-event-options .cb-events { transition:background-color 160ms ease; } }
+  </style>
+  <div class="cb-controls" role="group" aria-label="切换示例事件状态">
+    <span class="cb-control-label">示例状态</span>
+    <button class="cb-state-button" data-state="running" aria-pressed="true">执行中</button>
+    <button class="cb-state-button" data-state="waiting" aria-pressed="false">等待审批</button>
+    <button class="cb-state-button" data-state="resumed" aria-pressed="false">继续执行</button>
+  </div>
+  <div class="cb-grid">
+    <section class="cb-option" aria-labelledby="cb-option-a">
+      <div class="cb-option-heading"><h3 id="cb-option-a">A · 连续时间线</h3><span class="cb-option-tag">看事件经过</span></div>
+      <div class="cb-popover">
+        <div class="cb-header"><span class="cb-project">CodexBar</span><span class="cb-status"></span></div>
+        <div class="cb-request">修复审批处理后仍显示三角标记的问题</div>
+        <div class="cb-events" data-panel="a"></div>
+        <div class="cb-footer"><span>最近事件</span><span class="cb-mock-link">查看会话 ↗</span></div>
+      </div>
+      <div class="cb-caption">新事件接在后面，保留前因后果。</div>
+      <button class="cb-choose" data-choice="A" aria-pressed="false">选择 A</button>
+    </section>
+    <section class="cb-option" aria-labelledby="cb-option-b">
+      <div class="cb-option-heading"><h3 id="cb-option-b">B · 当前重点</h3><span class="cb-option-tag">一眼看进展</span></div>
+      <div class="cb-popover">
+        <div class="cb-header"><span class="cb-project">CodexBar</span><span class="cb-status"></span></div>
+        <div class="cb-request">修复审批处理后仍显示三角标记的问题</div>
+        <div class="cb-events" data-panel="b"></div>
+        <div class="cb-footer"><span>计划已完成 2/4 步</span><span class="cb-mock-link">查看会话 ↗</span></div>
+      </div>
+      <div class="cb-caption">突出现在，已做和后续保持在固定位置。</div>
+      <button class="cb-choose" data-choice="B" aria-pressed="false">选择 B</button>
+    </section>
+    <section class="cb-option" aria-labelledby="cb-option-c">
+      <div class="cb-option-heading"><h3 id="cb-option-c">C · 阶段路线</h3><span class="cb-option-tag">看整体位置</span></div>
+      <div class="cb-popover">
+        <div class="cb-header"><span class="cb-project">CodexBar</span><span class="cb-status"></span></div>
+        <div class="cb-request">修复审批处理后仍显示三角标记的问题</div>
+        <div class="cb-events" data-panel="c"></div>
+        <div class="cb-footer"><span>计划已完成 2/4 步</span><span class="cb-mock-link">查看会话 ↗</span></div>
+      </div>
+      <div class="cb-caption">阶段位置稳定，具体事件附在当前阶段下。</div>
+      <button class="cb-choose" data-choice="C" aria-pressed="false">选择 C</button>
+    </section>
+    <section class="cb-option" aria-labelledby="cb-option-d">
+      <div class="cb-option-heading"><h3 id="cb-option-d">D · 进展播报</h3><span class="cb-option-tag">读一段说明</span></div>
+      <div class="cb-popover">
+        <div class="cb-header"><span class="cb-project">CodexBar</span><span class="cb-status"></span></div>
+        <div class="cb-request">修复审批处理后仍显示三角标记的问题</div>
+        <div class="cb-events" data-panel="d"></div>
+        <div class="cb-footer"><span>根据计划与事件整理</span><span class="cb-mock-link">查看会话 ↗</span></div>
+      </div>
+      <div class="cb-caption">把已做、当前和后续串成短句，保留上一条。</div>
+      <button class="cb-choose" data-choice="D" aria-pressed="false">选择 D</button>
+    </section>
+  </div>
+  <div class="cb-sr" aria-live="polite" data-announcement></div>
+  <div class="cb-selection" aria-live="polite" data-selection></div>
+  <script>
+    (() => {
+      const root = document.getElementById('codexbar-event-options');
+      const names = {A:'连续时间线',B:'当前重点',C:'阶段路线',D:'进展播报'};
+      const glyphs = {
+        book:'<path d="M2 3h5c2 0 3 1 3 2v12c0-1-1-2-3-2H2zM18 3h-5c-2 0-3 1-3 2v12c0-1 1-2 3-2h5z"/>',
+        pencil:'<path d="m3 13 10-10 4 4L7 17l-5 1zM11 5l4 4"/>',
+        terminal:'<rect x="2" y="3" width="16" height="14" rx="3"/><path d="m5 7 3 3-3 3m6 0h4"/>',
+        triangle:'<path d="m10 2 9 16H1zM10 7v5m0 2v1"/>',
+        circle:'<circle cx="10" cy="10" r="5" fill="currentColor" stroke="none"/>',
+        check:'<path d="m4 10 4 4 8-9"/>',
+        layers:'<path d="m10 2 8 4-8 4-8-4zm-8 9 8 4 8-4m-16 5 8 4 8-4"/>'
+      };
+      const icon = name => '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+glyphs[name]+'</svg>';
+      const evidence = (glyph,text) => '<div class="cb-evidence">'+icon(glyph)+'<span>'+text+'</span></div>';
+      const states = {
+        running:{label:'执行中',glyph:'circle',focus:'验证审批恢复',sub:'当前阶段',recent:'发起 Swift 测试命令',action:'查看会话 ↗'},
+        waiting:{label:'需要处理',glyph:'triangle',focus:'需要你处理',sub:'运行到「验证审批恢复」',recent:'有待处理的审批请求',action:'去处理 ↗'},
+        resumed:{label:'执行中',glyph:'circle',focus:'继续验证审批恢复',sub:'待处理标记已清除',recent:'收到恢复执行通知',action:'查看会话 ↗'}
+      };
+      function render(key) {
+        const state = states[key];
+        root.dataset.state = key;
+        root.querySelectorAll('[data-state]').forEach(button => {
+          if(button.tagName === 'BUTTON') button.setAttribute('aria-pressed',String(button.dataset.state === key));
+        });
+        root.querySelectorAll('.cb-status').forEach(node => { node.innerHTML = icon(state.glyph)+state.label; });
+        root.querySelectorAll('.cb-mock-link').forEach(node => { node.textContent = state.action; });
+        const rows = [['book','读取状态处理逻辑','3分前'],['pencil','修改状态同步实现','1分前']];
+        if(key === 'running') rows.push(['terminal','发起 Swift 测试命令','刚刚']);
+        if(key === 'waiting') rows.push(['terminal','准备运行验证命令','稍早'],['triangle','需要处理审批请求','刚刚']);
+        if(key === 'resumed') rows.push(['triangle','曾等待审批处理','稍早'],['circle','已恢复执行，继续验证','刚刚']);
+        root.querySelector('[data-panel="a"]').innerHTML = '<div class="cb-time-list">'+rows.map((row,i)=>'<div class="cb-time-event '+(i===rows.length-1?'is-current':'')+'">'+icon(row[0])+'<span>'+row[1]+'</span><time>'+row[2]+'</time></div>').join('')+'</div>';
+        root.querySelector('[data-panel="b"]').innerHTML = '<div class="cb-focus"><div class="cb-eyebrow">'+state.sub+'</div><div class="cb-primary">'+state.focus+'</div></div><div class="cb-context"><span>已做</span><span>接入状态通知</span></div><div class="cb-context"><span>后续</span><span>检查重启后的状态恢复</span></div>'+evidence(key==='waiting'?'triangle':key==='resumed'?'circle':'terminal',state.recent);
+        root.querySelector('[data-panel="c"]').innerHTML = '<div class="cb-route">'+['定位','接入','验证','重启'].map((label,i)=>'<div class="cb-route-step '+(i<2?'is-done':i===2?'is-active':'')+'"><span class="cb-route-marker">'+(i<2?'✓':i===2?(key==='waiting'?'!':'3'):'4')+'</span><span>'+label+'</span></div>').join('')+'</div><div class="cb-route-title">验证审批恢复</div>'+ (key==='waiting'?'<div class="cb-focus"><div class="cb-primary">待处理请求</div><div class="cb-subtle">当前阶段保持在这里</div></div>':evidence(key==='resumed'?'circle':'terminal',state.recent))+'<div class="cb-progress-label">下一阶段：检查重启场景</div>';
+        const stories = {
+          running:'状态通知接入步骤已完成。<strong>现在验证审批恢复</strong>，随后检查重启场景。',
+          waiting:'状态通知接入步骤已完成。验证过程中出现<strong>待处理审批</strong>，需要你返回会话处理。',
+          resumed:'待处理标记已清除，<strong>继续验证审批恢复</strong>。后续仍是检查重启场景。'
+        };
+        const previous = key==='resumed'?'验证中出现待处理审批':key==='waiting'?'开始验证审批恢复':'进入状态通知接入步骤';
+        root.querySelector('[data-panel="d"]').innerHTML = '<div class="cb-story"><div class="cb-eyebrow">最新进展</div><p class="cb-story-text">'+stories[key]+'</p></div><div class="cb-story-before">上一条 · '+previous+'</div>'+evidence(key==='waiting'?'triangle':key==='resumed'?'circle':'terminal',state.recent);
+        root.querySelector('[data-announcement]').textContent = '示例切换为'+state.label+'，四种方案已同步更新。';
+      }
+      root.querySelectorAll('.cb-state-button').forEach(button => button.addEventListener('click',()=>render(button.dataset.state)));
+      root.querySelectorAll('.cb-choose').forEach(button => button.addEventListener('click',async()=>{
+        const choice = button.dataset.choice;
+        root.querySelectorAll('.cb-choose').forEach(item=>item.setAttribute('aria-pressed',String(item===button)));
+        const output = root.querySelector('[data-selection]');
+        output.textContent = '已选 '+choice+' · '+names[choice];
+        if(typeof window.openai?.sendFollowUpMessage === 'function') {
+          try { await window.openai.sendFollowUpMessage({prompt:'我选择缩略图事件动态方案 '+choice+'：'+names[choice]+'。请按这个方向调整。',title:'选择方案 '+choice}); }
+          catch { output.textContent = '已选 '+choice+' · '+names[choice]+'；也可以在对话中回复这个编号。'; }
+        }
+      }));
+      render('running');
+    })();
+  </script>
+</div>
