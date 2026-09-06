@@ -224,7 +224,7 @@ func inboxTestCases() -> [CodexBarTestCase] {
             try expect(secondCount == 2, "second poll did not consume prompt and activity")
             try expect(task.turnID == "turn-25", "backlog did not advance to its final prompt")
             try expect(
-                activityStore.nodes(for: task).first?.kind == .test,
+                activityStore.nodes(for: task).first?.kind == .read,
                 "deferred activity was not attached to its prompt"
             )
         },
@@ -469,8 +469,8 @@ func inboxTestCases() -> [CodexBarTestCase] {
             try expect(task.status == .ready, "lifecycle events did not reach ready")
             let nodes = activityStore.nodes(for: task)
             try expect(nodes.count == 1, "activity was not retained as one in-memory node")
-            try expect(nodes.first?.kind == .test, "activity kind is wrong")
-            try expect(nodes.first?.summary == "运行 Swift 测试", "activity summary is wrong")
+            try expect(nodes.first?.kind == .read, "activity kind is wrong")
+            try expect(nodes.first?.summary == "读取 Sources/Example.swift", "activity summary is wrong")
             try expect(
                 nodes.first?.occurredAt == Date(timeIntervalSince1970: 105),
                 "activity timestamp is wrong"
@@ -501,7 +501,7 @@ func inboxTestCases() -> [CodexBarTestCase] {
             )
 
             let taskSnapshot = String(decoding: try Data(contentsOf: paths.taskStore), as: UTF8.self)
-            try expect(!taskSnapshot.contains("运行 Swift 测试"), "activity summary leaked into tasks.json")
+            try expect(!taskSnapshot.contains("读取 Sources/Example.swift"), "activity summary leaked into tasks.json")
             try expect(!taskSnapshot.contains("Private transient plan"), "plan leaked into tasks.json")
             try expect(!taskSnapshot.contains("PreToolUse"), "activity event leaked into tasks.json")
         },
@@ -540,7 +540,7 @@ func inboxTestCases() -> [CodexBarTestCase] {
             let task = try require(store.tasks.first, "continued task is missing")
             try expect(task.turnID == "continued-turn", "continued stop did not replace the turn")
             try expect(
-                activityStore.nodes(for: task).first?.summary == "运行 Swift 测试",
+                activityStore.nodes(for: task).first?.summary == "读取 Sources/Example.swift",
                 "one-batch continued turn discarded its activity"
             )
         },
@@ -1076,7 +1076,7 @@ private func inboxActionEvent(
     session: String = "session-A",
     turn: String = "turn-1",
     cwd: String = "/tmp/project-alpha",
-    toolUseID: String = "tool-test-1"
+    toolUseID: String = "tool-read-1"
 ) throws -> CodexHookEvent {
     let date = Date(timeIntervalSince1970: timestamp)
     let payload = try JSONSerialization.data(withJSONObject: [
@@ -1084,9 +1084,9 @@ private func inboxActionEvent(
         "turn_id": turn,
         "cwd": cwd,
         "hook_event_name": "PreToolUse",
-        "tool_name": "Bash",
+        "tool_name": "Read",
         "tool_use_id": toolUseID,
-        "tool_input": ["command": "swift test --filter InboxTests"],
+        "tool_input": ["file_path": "Sources/Example.swift"],
         "timestamp": timestamp
     ])
     return try CodexHookEventParser(

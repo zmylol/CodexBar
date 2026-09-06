@@ -62,6 +62,7 @@ private final class CodexBarAppDelegate: NSObject, NSApplicationDelegate {
             activityStore: activityStore,
             processor: processor,
             activator: AccessibilityWindowActivator(),
+            inboxMonitor: CodexInboxMonitor(paths: paths),
             threadSnapshotLoader: InstalledVSCodeCodexThreadSnapshotSource()
         )
         let panelController = FloatingPanelController(model: model)

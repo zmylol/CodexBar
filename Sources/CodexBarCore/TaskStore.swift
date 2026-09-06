@@ -72,6 +72,24 @@ public final class TaskStore: ObservableObject {
         return operation.value
     }
 
+    /// Applies an authoritative live status only to the exact existing task and turn.
+    @discardableResult
+    public func applyRuntimeStatus(
+        sessionID: String,
+        turnID: String,
+        cwd: String,
+        status: CodexTaskStatus
+    ) async throws -> Bool {
+        let operation = try await storage.applyRuntimeStatus(
+            sessionID: sessionID,
+            turnID: turnID,
+            cwd: cwd,
+            status: status
+        )
+        publish(operation.state)
+        return operation.value
+    }
+
     @discardableResult
     public func markRead(taskID: String) async throws -> Bool {
         let operation = try await storage.markRead(taskID: taskID)
@@ -138,6 +156,7 @@ private actor TaskStoreStorage {
 
     private var tasks: [CodexTask] = []
     private var appliedEventIDs: Set<String> = []
+    private var approvalTracker = CodexApprovalTracker()
     private var deletedTaskTombstones: [DeletedTaskTombstone] = []
     private var recoverySnapshotURL: URL?
     private let persistenceURL: URL?
@@ -159,6 +178,7 @@ private actor TaskStoreStorage {
         ensureLoaded()
         let previousTasks = tasks
         let previousEventIDs = appliedEventIDs
+        let previousApprovalTracker = approvalTracker
         guard applyInMemory(event) else {
             return operation(false)
         }
@@ -171,6 +191,7 @@ private actor TaskStoreStorage {
         } catch {
             tasks = previousTasks
             appliedEventIDs = previousEventIDs
+            approvalTracker = previousApprovalTracker
             throw error
         }
         revision &+= 1
@@ -186,7 +207,7 @@ private actor TaskStoreStorage {
             let cwd = nonempty(event.cwd),
             let normalizedCWD = PathNormalizer.normalize(cwd),
             let eventName = event.name,
-            let eventStatus = status(for: eventName)
+            event.timestamp.timeIntervalSince1970.isFinite
         else {
             return false
         }
@@ -194,6 +215,47 @@ private actor TaskStoreStorage {
         let taskID = "\(sessionID):\(turnID)"
         guard !deletedTaskTombstones.contains(where: { $0.taskID == taskID }) else {
             return false
+        }
+        let exactTaskIndex = tasks.firstIndex {
+            $0.sessionID == sessionID && $0.turnID == turnID && $0.cwd == normalizedCWD
+        }
+        if eventName == .preToolUse || eventName == .postToolUse {
+            guard let index = exactTaskIndex,
+                  tasks[index].status != .ready,
+                  event.timestamp >= tasks[index].startedAt
+            else {
+                return false
+            }
+            let task = tasks[index]
+            if eventName == .preToolUse {
+                approvalTracker.recordInvocation(event, task: task)
+                return false
+            }
+            guard approvalTracker.resolveApproval(event, task: task),
+                  task.status == .needsAttention
+            else {
+                return false
+            }
+            tasks[index].status = .running
+            tasks[index].updatedAt = max(task.updatedAt, event.timestamp)
+            tasks[index].isUnread = false
+            rememberAppliedEventID(eventID)
+            return true
+        }
+        guard let eventStatus = status(for: eventName) else {
+            return false
+        }
+        var hasPendingApproval = false
+        if eventName == .permissionRequest,
+           let index = tasks.firstIndex(where: { $0.id == taskID }) {
+            guard exactTaskIndex == index,
+                  tasks[index].status != .ready,
+                  event.timestamp >= tasks[index].startedAt,
+                  approvalTracker.recordApproval(event, task: tasks[index])
+            else {
+                return false
+            }
+            hasPendingApproval = true
         }
         let workspaceComponent = URL(fileURLWithPath: normalizedCWD).lastPathComponent
         guard let workspaceName = PromptSanitizer.sanitizeDisplayText(
@@ -206,7 +268,7 @@ private actor TaskStoreStorage {
         var nextTasks = Self.collapsingOlderTurns(tasks)
         if let index = nextTasks.firstIndex(where: { $0.id == taskID }) {
             var task = nextTasks[index]
-            let advancesState = eventIsNotStale(
+            let advancesState = (hasPendingApproval && task.status == .running) || eventIsNotStale(
                 timestamp: event.timestamp,
                 status: eventStatus,
                 comparedWith: task
@@ -214,7 +276,7 @@ private actor TaskStoreStorage {
 
             if advancesState {
                 task.status = eventStatus
-                task.updatedAt = event.timestamp
+                task.updatedAt = max(task.updatedAt, event.timestamp)
                 task.isUnread = eventName != .userPromptSubmit
 
                 if eventName == .userPromptSubmit,
@@ -318,15 +380,23 @@ private actor TaskStoreStorage {
             }
         }
 
-        var nextEventIDs = appliedEventIDs
-        nextEventIDs.insert(eventID)
-        if nextEventIDs.count > 100_000,
-           let identifierToDiscard = nextEventIDs.min() {
-            nextEventIDs.remove(identifierToDiscard)
-        }
         tasks = nextTasks
-        appliedEventIDs = nextEventIDs
+        approvalTracker.retainTasks(tasks)
+        if eventName == .permissionRequest,
+           exactTaskIndex == nil,
+           let task = task(matchingAppliedEvent: event) {
+            approvalTracker.recordApproval(event, task: task)
+        }
+        rememberAppliedEventID(eventID)
         return true
+    }
+
+    private func rememberAppliedEventID(_ eventID: String) {
+        appliedEventIDs.insert(eventID)
+        if appliedEventIDs.count > 100_000,
+           let identifierToDiscard = appliedEventIDs.min() {
+            appliedEventIDs.remove(identifierToDiscard)
+        }
     }
 
     func apply(
@@ -339,6 +409,7 @@ private actor TaskStoreStorage {
 
         let previousTasks = tasks
         let previousEventIDs = appliedEventIDs
+        let previousApprovalTracker = approvalTracker
         var appliedCount = 0
         var appliedEvents: [TaskStoreAppliedEvent] = []
         for event in events where applyInMemory(event) {
@@ -360,6 +431,7 @@ private actor TaskStoreStorage {
         } catch {
             tasks = previousTasks
             appliedEventIDs = previousEventIDs
+            approvalTracker = previousApprovalTracker
             throw error
         }
         revision &+= 1
@@ -428,6 +500,7 @@ private actor TaskStoreStorage {
             deletedTaskTombstones: deletedTaskTombstones
         )
         tasks = nextTasks
+        approvalTracker.retainTasks(tasks)
         revision &+= 1
         return operation(changedCount)
     }
@@ -452,6 +525,43 @@ private actor TaskStoreStorage {
 
     private func wholeSecond(_ date: Date) -> TimeInterval {
         floor(date.timeIntervalSince1970)
+    }
+
+    func applyRuntimeStatus(
+        sessionID: String,
+        turnID: String,
+        cwd: String,
+        status: CodexTaskStatus
+    ) throws -> TaskStoreOperation<Bool> {
+        ensureLoaded()
+        guard let sessionID = nonempty(sessionID, maximumCharacters: 512),
+              let turnID = nonempty(turnID, maximumCharacters: 512),
+              let normalizedCWD = PathNormalizer.normalize(cwd),
+              !deletedTaskTombstones.contains(where: { $0.taskID == "\(sessionID):\(turnID)" }),
+              let index = tasks.firstIndex(where: {
+                  $0.sessionID == sessionID && $0.turnID == turnID && $0.cwd == normalizedCWD
+              }),
+              tasks[index].status != status
+        else {
+            return operation(false)
+        }
+        var nextTasks = tasks
+        nextTasks[index].status = status
+        nextTasks[index].updatedAt = max(nextTasks[index].updatedAt, Date())
+        nextTasks[index].isUnread = status != .running
+        try persist(
+            tasks: nextTasks,
+            appliedEventIDs: appliedEventIDs,
+            deletedTaskTombstones: deletedTaskTombstones
+        )
+        tasks = nextTasks
+        if status == .running {
+            approvalTracker.acknowledgeRunning(task: tasks[index])
+        } else if status == .ready {
+            approvalTracker.reset(task: tasks[index])
+        }
+        revision &+= 1
+        return operation(true)
     }
 
     func markRead(taskID: String) throws -> TaskStoreOperation<Bool> {
@@ -488,6 +598,7 @@ private actor TaskStoreStorage {
         )
         tasks = nextTasks
         deletedTaskTombstones = nextTombstones
+        approvalTracker.retainTasks(tasks)
         revision &+= 1
         return operation(true)
     }
@@ -529,6 +640,7 @@ private actor TaskStoreStorage {
         )
         tasks = nextTasks
         deletedTaskTombstones = nextTombstones
+        approvalTracker.retainTasks(tasks)
         revision &+= 1
         return operation(removedCount)
     }
@@ -552,6 +664,7 @@ private actor TaskStoreStorage {
         )
         tasks = nextTasks
         deletedTaskTombstones = nextTombstones
+        approvalTracker.retainTasks(tasks)
         revision &+= 1
         return operation(removedCount)
     }
@@ -665,7 +778,7 @@ private actor TaskStoreStorage {
 
     private func status(for eventName: CodexHookEventName) -> CodexTaskStatus? {
         switch eventName {
-        case .preToolUse:
+        case .preToolUse, .postToolUse:
             return nil
         case .userPromptSubmit:
             return .running

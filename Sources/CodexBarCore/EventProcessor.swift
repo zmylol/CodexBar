@@ -23,15 +23,7 @@ public final class EventProcessor {
             return 0
         }
         let initialTasks = store.tasks
-        let lifecycleEvents = pendingEvents.filter { $0.event.name != .preToolUse }
-        let lifecycleResult: TaskStoreEventBatchResult
-        if !lifecycleEvents.isEmpty {
-            lifecycleResult = try await store.applyForEventProcessing(
-                lifecycleEvents.map(\.event)
-            )
-        } else {
-            lifecycleResult = .empty
-        }
+        let lifecycleResult = try await store.applyForEventProcessing(pendingEvents.map(\.event))
         activityStore.applyBatch(
             pendingEvents,
             initialTasks: initialTasks,

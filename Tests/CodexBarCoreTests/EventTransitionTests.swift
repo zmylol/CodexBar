@@ -5,6 +5,254 @@ import CodexBarCore
 @MainActor
 func eventTransitionTestCases() -> [CodexBarTestCase] {
     [
+        CodexBarTestCase(name: "resumes only after the approved invocation completes") {
+            let store = TaskStore()
+            _ = try await store.apply(event(.userPromptSubmit, timestamp: 100))
+            _ = try await store.apply(approvalEvent(.preToolUse, invocation: "a", timestamp: 101))
+            _ = try await store.apply(approvalEvent(.preToolUse, invocation: "a", timestamp: 101.5))
+            _ = try await store.apply(approvalEvent(.permissionRequest, timestamp: 102))
+            try expect(store.tasks.first?.status == .needsAttention, "approval did not show attention")
+            _ = try await store.apply(approvalEvent(.preToolUse, invocation: "b", fingerprint: "b", timestamp: 103))
+            try expect(store.tasks.first?.status == .needsAttention, "unrelated execution cleared approval")
+            try expect(
+                try await store.apply(approvalEvent(.postToolUse, invocation: "a", timestamp: 104)),
+                "approved completion did not resume the task"
+            )
+            let task = try require(store.tasks.first, "resumed task is missing")
+            try expect(task.status == .running, "approved task did not resume running")
+            try expect(!task.isUnread, "resumed task remained unread")
+            try expect(task.updatedAt == Date(timeIntervalSince1970: 104), "completion timestamp was lost")
+            try expect(
+                try await !store.apply(approvalEvent(.postToolUse, invocation: "a", timestamp: 105)),
+                "repeated completion changed the task"
+            )
+        },
+        CodexBarTestCase(name: "keeps attention until every parallel approval completes") {
+            let store = TaskStore()
+            _ = try await store.apply([
+                event(.userPromptSubmit, timestamp: 100),
+                approvalEvent(.preToolUse, invocation: "a", timestamp: 101),
+                approvalEvent(.preToolUse, invocation: "b", fingerprint: "b", timestamp: 102),
+                approvalEvent(.permissionRequest, timestamp: 103),
+                approvalEvent(.permissionRequest, fingerprint: "b", timestamp: 104)
+            ])
+            _ = try await store.apply(approvalEvent(.postToolUse, invocation: "a", timestamp: 105))
+            try expect(store.tasks.first?.status == .needsAttention, "one completion cleared another approval")
+            _ = try await store.apply(approvalEvent(.postToolUse, invocation: "b", fingerprint: "b", timestamp: 106))
+            try expect(store.tasks.first?.status == .running, "all completed approvals did not resume")
+            _ = try await store.apply(approvalEvent(.preToolUse, invocation: "c", timestamp: 107))
+            _ = try await store.apply(approvalEvent(.permissionRequest, timestamp: 108))
+            _ = try await store.apply(approvalEvent(.postToolUse, invocation: "a", timestamp: 109))
+            try expect(store.tasks.first?.status == .needsAttention, "old completion cleared the next approval")
+            _ = try await store.apply(approvalEvent(.postToolUse, invocation: "c", timestamp: 110))
+            try expect(store.tasks.first?.status == .running, "second approval cycle did not resume")
+        },
+        CodexBarTestCase(name: "does not guess ambiguous or missing approval correlations") {
+            for includeFirstPre in [false, true] {
+                let store = TaskStore()
+                _ = try await store.apply(event(.userPromptSubmit, timestamp: 100))
+                if includeFirstPre {
+                    _ = try await store.apply(approvalEvent(.preToolUse, invocation: "a", timestamp: 101))
+                    _ = try await store.apply(approvalEvent(.preToolUse, invocation: "b", timestamp: 102))
+                }
+                _ = try await store.apply(approvalEvent(.permissionRequest, timestamp: 103))
+                _ = try await store.apply(approvalEvent(.postToolUse, invocation: "a", timestamp: 104))
+                _ = try await store.apply(approvalEvent(.postToolUse, invocation: "b", timestamp: 105))
+                try expect(store.tasks.first?.status == .needsAttention, "uncertain correlation cleared approval")
+            }
+        },
+        CodexBarTestCase(name: "shows a delayed unresolved approval after another invocation resumes") {
+            let store = TaskStore()
+            _ = try await store.apply([
+                event(.userPromptSubmit, timestamp: 100),
+                approvalEvent(.preToolUse, invocation: "a", timestamp: 101),
+                approvalEvent(.preToolUse, invocation: "b", fingerprint: "b", timestamp: 102),
+                approvalEvent(.permissionRequest, fingerprint: "b", timestamp: 104),
+                approvalEvent(.postToolUse, invocation: "b", fingerprint: "b", timestamp: 108)
+            ])
+            try expect(store.tasks.first?.status == .running, "first completed approval did not resume")
+            _ = try await store.apply(approvalEvent(.permissionRequest, timestamp: 103))
+            try expect(store.tasks.first?.status == .needsAttention, "delayed unresolved approval stayed hidden")
+            try expect(store.tasks.first?.updatedAt == Date(timeIntervalSince1970: 108), "delayed approval moved time backwards")
+            _ = try await store.apply(approvalEvent(.postToolUse, invocation: "a", timestamp: 106))
+            try expect(store.tasks.first?.status == .running, "delayed matching completion did not resume")
+            try expect(store.tasks.first?.updatedAt == Date(timeIntervalSince1970: 108), "delayed completion moved time backwards")
+        },
+        CodexBarTestCase(name: "recognizes a completed delayed approval without binding the next equal input") {
+            let store = TaskStore()
+            _ = try await store.apply([
+                event(.userPromptSubmit, timestamp: 100),
+                approvalEvent(.preToolUse, invocation: "a", timestamp: 101),
+                approvalEvent(.postToolUse, invocation: "a", timestamp: 104),
+                approvalEvent(.preToolUse, invocation: "b", timestamp: 105)
+            ])
+            let delayedApproval = approvalEvent(.permissionRequest, timestamp: 102)
+            _ = try await store.apply(delayedApproval)
+            _ = try await store.apply(delayedApproval)
+            try expect(store.tasks.first?.status == .running, "already completed delayed approval reopened attention")
+            _ = try await store.apply(approvalEvent(.permissionRequest, timestamp: 106))
+            try expect(store.tasks.first?.status == .needsAttention, "next invocation approval was treated as completed")
+            _ = try await store.apply(approvalEvent(.postToolUse, invocation: "a", timestamp: 107))
+            try expect(store.tasks.first?.status == .needsAttention, "previous invocation cleared the next equal input")
+            _ = try await store.apply(approvalEvent(.postToolUse, invocation: "b", timestamp: 108))
+            try expect(store.tasks.first?.status == .running, "next equal input approval did not resume")
+        },
+        CodexBarTestCase(name: "shows delayed ambiguous approvals without reviving finished or mismatched tasks") {
+            let store = TaskStore()
+            _ = try await store.apply([
+                event(.userPromptSubmit, timestamp: 100),
+                approvalEvent(.preToolUse, invocation: "a", timestamp: 101),
+                approvalEvent(.preToolUse, invocation: "c", timestamp: 102),
+                approvalEvent(.preToolUse, invocation: "b", fingerprint: "b", timestamp: 103),
+                approvalEvent(.permissionRequest, fingerprint: "b", timestamp: 105),
+                approvalEvent(.postToolUse, invocation: "b", fingerprint: "b", timestamp: 106)
+            ])
+            _ = try await store.apply(approvalEvent(.permissionRequest, timestamp: 104))
+            try expect(store.tasks.first?.status == .needsAttention, "delayed ambiguous approval stayed hidden")
+            _ = try await store.apply(approvalEvent(.postToolUse, invocation: "a", timestamp: 107))
+            _ = try await store.apply(approvalEvent(.postToolUse, invocation: "c", timestamp: 108))
+            try expect(store.tasks.first?.status == .needsAttention, "ambiguous approval guessed a completion")
+            _ = try await store.apply(event(.stop, timestamp: 109))
+            _ = try await store.apply(approvalEvent(.permissionRequest, timestamp: 110))
+            try expect(store.tasks.first?.status == .ready, "approval revived a finished task")
+            _ = try await store.apply(event(.userPromptSubmit, turn: "turn-2", timestamp: 111))
+            _ = try await store.apply(approvalEvent(.permissionRequest, timestamp: 112))
+            _ = try await store.apply(approvalEvent(.permissionRequest, timestamp: 113, turn: "turn-2", cwd: "/tmp/wrong-project"))
+            try expect(store.tasks.first?.status == .running, "mismatched approval changed the current task")
+        },
+        CodexBarTestCase(name: "keeps attention when approval tracking reaches its memory bound") {
+            let store = TaskStore()
+            _ = try await store.apply(event(.userPromptSubmit, timestamp: 100))
+            var invocations: [CodexHookEvent] = []
+            for index in 0..<1_025 {
+                let invocation = String(format: "%064x", index)
+                invocations.append(CodexHookEvent(
+                    id: "bounded-pre-\(index)",
+                    sessionID: "session-A",
+                    turnID: "turn-1",
+                    cwd: "/tmp/project-alpha",
+                    name: .preToolUse,
+                    promptSummary: nil,
+                    toolName: "Bash",
+                    timestamp: Date(timeIntervalSince1970: 101),
+                    lastAssistantMessagePresent: false,
+                    toolExecution: CodexHookToolExecution(
+                        invocationID: invocation,
+                        inputFingerprint: invocation
+                    ),
+                    source: .visualStudioCode
+                ))
+            }
+            _ = try await store.apply(invocations)
+            _ = try await store.apply(approvalEvent(.permissionRequest, fingerprint: "0", timestamp: 102))
+            _ = try await store.apply(approvalEvent(.postToolUse, invocation: "0", fingerprint: "0", timestamp: 103))
+            try expect(store.tasks.first?.status == .needsAttention, "overflow discarded an unresolved blocker")
+        },
+        CodexBarTestCase(name: "ignores approval completions outside the exact active task") {
+            let store = TaskStore()
+            _ = try await store.apply(approvalEvent(.postToolUse, invocation: "a", timestamp: 99))
+            try expect(store.tasks.isEmpty, "completion created a task")
+            _ = try await store.apply([
+                event(.userPromptSubmit, timestamp: 100),
+                approvalEvent(.preToolUse, invocation: "a", timestamp: 101),
+                approvalEvent(.permissionRequest, timestamp: 103)
+            ])
+            for unmatched in [
+                approvalEvent(.postToolUse, invocation: "a", timestamp: 104, cwd: "/tmp/other-project"),
+                approvalEvent(.postToolUse, invocation: "a", timestamp: 105, turn: "other-turn"),
+                approvalEvent(.postToolUse, invocation: "b", timestamp: 106)
+            ] {
+                _ = try await store.apply(unmatched)
+                try expect(store.tasks.first?.status == .needsAttention, "unmatched completion cleared approval")
+            }
+            _ = try await store.apply(event(.stop, timestamp: 107))
+            _ = try await store.apply(approvalEvent(.postToolUse, invocation: "a", timestamp: 108))
+            try expect(store.tasks.first?.status == .ready, "completion revived a finished task")
+            _ = try await store.remove(taskID: "session-A:turn-1")
+            _ = try await store.apply(approvalEvent(.postToolUse, invocation: "a", timestamp: 109))
+            try expect(store.tasks.isEmpty, "completion revived a deleted task")
+        },
+        CodexBarTestCase(name: "does not use an earlier completion to clear a later approval") {
+            let store = TaskStore()
+            _ = try await store.apply([
+                event(.userPromptSubmit, timestamp: 100),
+                approvalEvent(.preToolUse, invocation: "a", timestamp: 101),
+                approvalEvent(.permissionRequest, timestamp: 103),
+                approvalEvent(.postToolUse, invocation: "a", timestamp: 102)
+            ])
+            try expect(store.tasks.first?.status == .needsAttention, "earlier completion cleared a later request")
+            _ = try await store.apply(event(.userPromptSubmit, turn: "turn-2", timestamp: 110))
+            _ = try await store.apply([
+                approvalEvent(.preToolUse, invocation: "b", timestamp: 111, turn: "turn-2"),
+                approvalEvent(.permissionRequest, timestamp: 112, turn: "turn-2"),
+                approvalEvent(.postToolUse, invocation: "a", timestamp: 113),
+                approvalEvent(.postToolUse, invocation: "b", timestamp: 114, turn: "turn-2")
+            ])
+            try expect(store.tasks.first?.status == .running, "old turn approval blocked a new turn")
+        },
+        CodexBarTestCase(name: "keeps approval correlation transient and conservative across restart") {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("CodexBarApprovalRestart-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let persistenceURL = root.appendingPathComponent("tasks.json")
+            let store = TaskStore(persistenceURL: persistenceURL)
+            _ = try await store.apply(event(.userPromptSubmit, timestamp: 100))
+            let snapshot = try Data(contentsOf: persistenceURL)
+            _ = try await store.apply(approvalEvent(.preToolUse, invocation: "a", timestamp: 101))
+            try expect(try Data(contentsOf: persistenceURL) == snapshot, "invocation tracking rewrote tasks.json")
+            _ = try await store.apply(approvalEvent(.permissionRequest, timestamp: 102))
+            let persisted = String(decoding: try Data(contentsOf: persistenceURL), as: UTF8.self)
+            try expect(!persisted.contains(String(repeating: "a", count: 64)), "invocation metadata was persisted")
+            let reloaded = TaskStore(persistenceURL: persistenceURL)
+            await reloaded.load()
+            _ = try await reloaded.apply([
+                approvalEvent(.postToolUse, invocation: "a", timestamp: 103),
+                approvalEvent(.preToolUse, invocation: "b", fingerprint: "b", timestamp: 104),
+                approvalEvent(.permissionRequest, fingerprint: "b", timestamp: 105),
+                approvalEvent(.postToolUse, invocation: "b", fingerprint: "b", timestamp: 106)
+            ])
+            try expect(reloaded.tasks.first?.status == .needsAttention, "new correlation cleared unknown pre-restart approval")
+        },
+        CodexBarTestCase(name: "rolls back approval correlation when persistence fails") {
+            for batch in [false, true] {
+                let root = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("CodexBarApprovalRollback-\(UUID().uuidString)", isDirectory: true)
+                defer {
+                    try? FileManager.default.setAttributes(
+                        [.posixPermissions: NSNumber(value: 0o700)],
+                        ofItemAtPath: root.path
+                    )
+                    try? FileManager.default.removeItem(at: root)
+                }
+                let persistenceURL = root.appendingPathComponent("tasks.json")
+                let store = TaskStore(persistenceURL: persistenceURL)
+                _ = try await store.apply([
+                    event(.userPromptSubmit, timestamp: 100),
+                    approvalEvent(.preToolUse, invocation: "a", timestamp: 101),
+                    approvalEvent(.permissionRequest, timestamp: 102)
+                ])
+                let savedSnapshot = try Data(contentsOf: persistenceURL)
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: NSNumber(value: 0o500)],
+                    ofItemAtPath: root.path
+                )
+                let completion = approvalEvent(.postToolUse, invocation: "a", timestamp: 103)
+                var didThrow = false
+                do {
+                    if batch { _ = try await store.apply([completion]) }
+                    else { _ = try await store.apply(completion) }
+                } catch { didThrow = true }
+                try expect(didThrow, "approval persistence failure was swallowed")
+                try expect(store.tasks.first?.status == .needsAttention, "failed commit changed visible state")
+                try expect(try Data(contentsOf: persistenceURL) == savedSnapshot, "failed commit changed durable state")
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: NSNumber(value: 0o700)],
+                    ofItemAtPath: root.path
+                )
+                _ = try await store.apply(completion)
+                try expect(store.tasks.first?.status == .running, "retry lost approval correlation after rollback")
+            }
+        },
         CodexBarTestCase(name: "applies lifecycle state transitions") {
             let store = TaskStore()
             let start = event(.userPromptSubmit, timestamp: 100, prompt: "Build the parser")
@@ -54,6 +302,29 @@ func eventTransitionTestCases() -> [CodexBarTestCase] {
                 try Data(contentsOf: persistenceURL) == snapshotBefore,
                 "activity changed the durable task snapshot"
             )
+        },
+        CodexBarTestCase(name: "shows agent collaboration without claiming task completion") {
+            let taskStore = TaskStore()
+            let activityStore = LiveTaskActivityStore()
+            let start = event(.userPromptSubmit, timestamp: 100, prompt: "Coordinate a subtask")
+            _ = try await taskStore.apply(start)
+            _ = activityStore.apply(start, deliveryID: "start", currentTasks: taskStore.tasks)
+            let activity = try parsedActivityEvent(
+                toolName: "close_agent",
+                toolUseID: "agent-close",
+                timestamp: 110,
+                toolInput: ["agent_id": "private-agent-identity"]
+            )
+            try expect(try await !taskStore.apply(activity), "agent tool changed durable task state")
+            try expect(
+                activityStore.apply(activity, deliveryID: "agent", currentTasks: taskStore.tasks),
+                "agent collaboration was not shown"
+            )
+            let task = try require(taskStore.tasks.first, "parent task is missing")
+            let node = try require(activityStore.nodes(for: task).last, "agent activity is missing")
+            try expect(node.kind.rawValue == "agent", "agent collaboration has the wrong category")
+            try expect(node.summary == "子任务协作", "pre-tool activity implied an unobserved completion")
+            try expect(task.status == .running, "closing an agent completed the parent task")
         },
         CodexBarTestCase(name: "records activity only for the exact active turn") {
             let taskStore = TaskStore()
@@ -1401,6 +1672,32 @@ private func event(
         toolName: nil,
         timestamp: Date(timeIntervalSince1970: timestamp),
         lastAssistantMessagePresent: false,
+        source: .visualStudioCode
+    )
+}
+
+private func approvalEvent(
+    _ name: CodexHookEventName,
+    invocation: String? = nil,
+    fingerprint: String = "a",
+    timestamp: TimeInterval,
+    turn: String = "turn-1",
+    cwd: String = "/tmp/project-alpha"
+) -> CodexHookEvent {
+    CodexHookEvent(
+        id: "approval-\(name.rawValue)-\(invocation ?? "request")-\(fingerprint)-\(turn)-\(timestamp)",
+        sessionID: "session-A",
+        turnID: turn,
+        cwd: cwd,
+        name: name,
+        promptSummary: nil,
+        toolName: "Bash",
+        timestamp: Date(timeIntervalSince1970: timestamp),
+        lastAssistantMessagePresent: false,
+        toolExecution: CodexHookToolExecution(
+            invocationID: invocation.map { String(repeating: $0, count: 64) },
+            inputFingerprint: String(repeating: fingerprint, count: 64)
+        ),
         source: .visualStudioCode
     )
 }

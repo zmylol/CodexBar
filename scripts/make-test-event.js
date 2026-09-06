@@ -1,6 +1,6 @@
 function run(argv) {
     if (argv.length < 2 || argv.length > 3) {
-        throw new Error("usage: make-test-event.js <running|action|attention|ready> <cwd> [title]");
+        throw new Error("usage: make-test-event.js <running|action|attention|resumed|ready> <cwd> [title]");
     }
 
     const state = argv[0];
@@ -18,15 +18,18 @@ function run(argv) {
     if (state === "running") {
         event.hook_event_name = "UserPromptSubmit";
         event.prompt = argv[2] || ("Simulated task for " + workspace);
-    } else if (state === "action") {
-        event.hook_event_name = "PreToolUse";
+    } else if (state === "action" || state === "resumed") {
+        event.hook_event_name = state === "action" ? "PreToolUse" : "PostToolUse";
         event.tool_name = "Bash";
         event.tool_use_id = "manual-swift-test-" + safeWorkspace;
         event.tool_input = { command: "swift test --filter HookParsingTests" };
     } else if (state === "attention") {
         event.hook_event_name = "PermissionRequest";
         event.tool_name = "Bash";
-        event.tool_input = { description: "Simulated permission request" };
+        event.tool_input = {
+            command: "swift test --filter HookParsingTests",
+            description: "Simulated permission request"
+        };
     } else if (state === "ready") {
         event.hook_event_name = "Stop";
         event.stop_hook_active = false;

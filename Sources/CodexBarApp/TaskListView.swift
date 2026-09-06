@@ -13,12 +13,14 @@ struct TaskListView: View {
 
     private let onTaskHoverChanged: (CodexTask, CGFloat, Bool) -> Void
     private let onTaskFocusChanged: (CodexTask, CGFloat, Bool) -> Void
+    private let onTaskDetailRequested: (CodexTask, CGFloat) -> Void
     private let onDismissTaskDetail: () -> Void
 
     init(
         model: CodexBarAppModel,
         onTaskHoverChanged: @escaping (CodexTask, CGFloat, Bool) -> Void = { _, _, _ in },
         onTaskFocusChanged: @escaping (CodexTask, CGFloat, Bool) -> Void = { _, _, _ in },
+        onTaskDetailRequested: @escaping (CodexTask, CGFloat) -> Void = { _, _ in },
         onDismissTaskDetail: @escaping () -> Void = {}
     ) {
         self.model = model
@@ -26,6 +28,7 @@ struct TaskListView: View {
         self.activityStore = model.activityStore
         self.onTaskHoverChanged = onTaskHoverChanged
         self.onTaskFocusChanged = onTaskFocusChanged
+        self.onTaskDetailRequested = onTaskDetailRequested
         self.onDismissTaskDetail = onDismissTaskDetail
     }
 
@@ -61,12 +64,12 @@ struct TaskListView: View {
                 .allowsHitTesting(false)
         }
         .ignoresSafeArea()
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: store.tasks)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: model.visibleTasks)
         .onExitCommand(perform: onDismissTaskDetail)
         .onDisappear(perform: onDismissTaskDetail)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("CodexBar VS Code Codex 任务")
-        .accessibilityValue("共 \(store.tasks.count) 个任务")
+        .accessibilityValue("共 \(model.visibleTasks.count) 个任务")
     }
 
     private var header: some View {
@@ -74,27 +77,25 @@ struct TaskListView: View {
             ZStack(alignment: .leading) {
                 PanelDragHandle()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                HStack(spacing: 5) {
-                    Text("CodexBar")
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Spacer(minLength: 2)
-                    if store.tasks.contains(where: { $0.status == .needsAttention }) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(.orange)
-                            .help("有任务需要处理")
-                            .accessibilityHidden(true)
-                    }
-                }
-                .allowsHitTesting(false)
+                Text("CodexBar")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .allowsHitTesting(false)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             Menu {
                 Button("清除已读", action: model.clearRead)
-                    .disabled(!store.tasks.contains { $0.status == .ready && !$0.isUnread })
+                    .disabled(!model.visibleTasks.contains { $0.status == .ready && !$0.isUnread })
                 Button("清除 7 天前不可匹配任务", action: model.clearOldUnmatchedTasks)
+                Picker("显示模式", selection: Binding(
+                    get: { model.panelDisplayMode },
+                    set: { model.setPanelDisplayMode($0) }
+                )) {
+                    Text("固定高度（滚动）").tag(CodexBarPanelDisplayMode.scrolling)
+                    Text("自动展开").tag(CodexBarPanelDisplayMode.expanded)
+                }
                 Menu("移动悬浮条") {
                     Button("左上", action: { model.placePanel(.topLeft) })
                     Button("右上", action: { model.placePanel(.topRight) })
@@ -149,7 +150,7 @@ struct TaskListView: View {
 
     @ViewBuilder
     private var content: some View {
-        let sortedTasks = store.sortedTasks
+        let sortedTasks = model.visibleSortedTasks
         VStack(spacing: 0) {
             if let notice = model.notice {
                 noticeView(notice)
@@ -159,29 +160,43 @@ struct TaskListView: View {
             }
 
             if sortedTasks.isEmpty {
-                Text("等待 VS Code Codex 事件")
+                Text(model.hasNoOpenWindows ? "当前没有打开的 VS Code 窗口" : "等待 VS Code Codex 事件")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(sortedTasks, id: \.cwd) { task in
-                            CompactTaskRow(
-                                task: task,
-                                activitySummary: activityStore.nodes(for: task).last?.summary,
-                                plan: activityStore.plan(for: task),
-                                coordinateSpaceName: Self.coordinateSpaceName,
-                                action: { model.activate(task) },
-                                deleteAction: { model.remove(task) },
-                                onHoverChanged: onTaskHoverChanged,
-                                onFocusChanged: onTaskFocusChanged
-                            )
+                GeometryReader { geometry in
+                    if model.panelDisplayMode == .expanded,
+                       CGFloat(sortedTasks.count) * CodexBarPanelLayout.rowHeight <= geometry.size.height {
+                        VStack(spacing: 0) {
+                            taskRows(sortedTasks)
                         }
+                    } else {
+                        ScrollView {
+                            LazyVStack(spacing: 0) {
+                                taskRows(sortedTasks)
+                            }
+                        }
+                        .scrollIndicators(.hidden)
                     }
                 }
-                .scrollIndicators(.hidden)
             }
+        }
+    }
+
+    private func taskRows(_ tasks: [CodexTask]) -> some View {
+        ForEach(tasks, id: \.cwd) { task in
+            CompactTaskRow(
+                task: task,
+                activities: activityStore.nodes(for: task),
+                plan: activityStore.plan(for: task),
+                coordinateSpaceName: Self.coordinateSpaceName,
+                action: { model.activate(task) },
+                deleteAction: { model.remove(task) },
+                onHoverChanged: onTaskHoverChanged,
+                onFocusChanged: onTaskFocusChanged,
+                onDetailRequested: onTaskDetailRequested
+            )
         }
     }
 
@@ -243,13 +258,14 @@ private struct CompactTaskRow: View {
     }
 
     let task: CodexTask
-    let activitySummary: String?
+    let activities: [CodexTaskActivity]
     let plan: CodexTaskPlan?
     let coordinateSpaceName: String
     let action: () -> Void
     let deleteAction: () -> Void
     let onHoverChanged: (CodexTask, CGFloat, Bool) -> Void
     let onFocusChanged: (CodexTask, CGFloat, Bool) -> Void
+    let onDetailRequested: (CodexTask, CGFloat) -> Void
 
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @State private var isHovered = false
@@ -261,11 +277,7 @@ private struct CompactTaskRow: View {
                 for: task,
                 relativeTo: context.date
             )
-            let accessibilityProgressText = plan.map {
-                "，\(planAccessibilitySummary($0))"
-            } ?? activitySummary.map {
-                "，最近动作，\($0)"
-            } ?? ""
+            let summary = CodexTaskDetailSummary(task: task, plan: plan, activities: activities)
 
             GeometryReader { geometry in
                 let rowMidY = geometry.frame(in: .named(coordinateSpaceName)).midY
@@ -299,12 +311,13 @@ private struct CompactTaskRow: View {
                     )
                     .accessibilityValue(
                         "\(task.isUnread ? "未读，" : "")\(accessibilityTimeText)"
-                            + accessibilityProgressText
+                            + "，\(summary.accessibilitySummary)"
                     )
-                    .accessibilityHint("切换到对应的 VS Code 窗口")
+                    .accessibilityHint("切换到对应的 VS Code 窗口，按右方向键查看进展详情")
                     .accessibilityInputLabels([task.workspaceName, task.title])
 
                     Menu {
+                        Button("查看进展详情") { onDetailRequested(task, rowMidY) }
                         Button("删除任务", role: .destructive, action: deleteAction)
                     } label: {
                         Image(systemName: "ellipsis")
@@ -351,31 +364,16 @@ private struct CompactTaskRow: View {
                 .onChange(of: focusedControl) { focusedControl in
                     onFocusChanged(task, rowMidY, focusedControl != nil)
                 }
+                .onMoveCommand { direction in
+                    if direction == .right { onDetailRequested(task, rowMidY) }
+                }
                 .contextMenu {
+                    Button("查看进展详情") { onDetailRequested(task, rowMidY) }
                     Button("删除任务", role: .destructive, action: deleteAction)
                 }
             }
         }
         .frame(height: CodexBarPanelLayout.rowHeight)
-    }
-
-    private func planAccessibilitySummary(_ plan: CodexTaskPlan) -> String {
-        let overview: String
-        if plan.isComplete {
-            overview = "计划已完成，共 \(plan.totalStepCount) 步"
-        } else if let currentStep = plan.currentStep {
-            overview = "当前第 \(plan.currentStepNumber) 步，共 \(plan.totalStepCount) 步；"
-                + "已完成 \(plan.completedStepCount) 步；当前：\(currentStep.title)"
-        } else {
-            overview = "等待第 \(plan.currentStepNumber) 步，共 \(plan.totalStepCount) 步；"
-                + "已完成 \(plan.completedStepCount) 步"
-        }
-        let visibleSteps = plan.visibleSteps(
-            maximumCount: CodexBarPanelLayout.maximumVisiblePlanSteps
-        ).map { step in
-            "\(step.status.accessibilityLabel)：\(step.title)"
-        }.joined(separator: "；")
-        return visibleSteps.isEmpty ? overview : "\(overview)；可见步骤：\(visibleSteps)"
     }
 
     private var showsTaskMenu: Bool {
@@ -418,35 +416,30 @@ struct TaskHoverDetailView: View {
     }
 
     var body: some View {
-        let preferredHeight = currentPreferredHeight
-        Group {
-            if let task = store.tasks.first(where: { $0.cwd == cwd }) {
-                if let plan = activityStore.plan(for: task) {
-                    detailContent(
+        ScrollView {
+            Group {
+                if let task = store.tasks.first(where: { $0.cwd == cwd }) {
+                    let summary = CodexTaskDetailSummary(
                         task: task,
-                        nodes: [],
-                        plan: plan,
-                        relativeTo: Date()
+                        plan: activityStore.plan(for: task),
+                        activities: activityStore.nodes(for: task)
                     )
-                } else {
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        detailContent(
-                            task: task,
-                            nodes: activityStore.nodes(for: task),
-                            plan: nil,
-                            relativeTo: context.date
-                        )
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                        TaskDetailCard(task: task, summary: summary, date: context.date, onOpen: onOpen)
                     }
+                } else {
+                    Color.clear.frame(height: 0)
                 }
-            } else {
-                Color.clear
+            }
+            .frame(width: CodexBarPanelLayout.detailWidth, alignment: .topLeading)
+            .fixedSize(horizontal: false, vertical: true)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(key: TaskDetailHeightKey.self, value: geometry.size.height)
+                }
             }
         }
-        .frame(
-            width: CodexBarPanelLayout.detailWidth,
-            height: preferredHeight,
-            alignment: .topLeading
-        )
+        .frame(width: CodexBarPanelLayout.detailWidth, alignment: .topLeading)
         .background {
             if reduceTransparency {
                 Color(nsColor: .windowBackgroundColor)
@@ -457,252 +450,30 @@ struct TaskHoverDetailView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.white.opacity(0.16), lineWidth: 1)
+                .stroke(Color.primary.opacity(0.10), lineWidth: 1)
         }
         .onHover(perform: onHoverChanged)
-        .onChange(of: preferredHeight, perform: onPreferredHeightChanged)
+        .onPreferenceChange(TaskDetailHeightKey.self) { height in
+            if height > 0 { onPreferredHeightChanged(height.rounded(.up)) }
+        }
         .onExitCommand(perform: onDismiss)
-        .accessibilityHidden(true)
-    }
-
-    private var currentPreferredHeight: CGFloat {
-        guard let task = store.tasks.first(where: { $0.cwd == cwd }) else {
-            return CodexBarPanelLayout.detailHeight(visibleItemCount: 0)
-        }
-        let visibleItemCount: Int
-        if let plan = activityStore.plan(for: task) {
-            visibleItemCount = plan.visibleSteps(
-                maximumCount: CodexBarPanelLayout.maximumVisiblePlanSteps
-            ).count
-        } else {
-            visibleItemCount = activityStore.nodes(for: task).count
-        }
-        return CodexBarPanelLayout.detailHeight(visibleItemCount: visibleItemCount)
-    }
-
-    private func detailContent(
-        task: CodexTask,
-        nodes: [CodexTaskActivity],
-        plan: CodexTaskPlan?,
-        relativeTo date: Date
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 7) {
-                Image(systemName: task.status.symbolName)
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(task.status.color)
-                Text(task.workspaceName)
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                Text(task.status.label)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(task.status.color)
-            }
-
-            Text(task.title)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            Group {
-                if let plan {
-                    planList(plan)
-                } else {
-                    activityList(nodes, status: task.status, accent: task.status.color)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-
-            Divider().opacity(0.32)
-
-            HStack(spacing: 6) {
-                if let plan {
-                    HStack(spacing: 5) {
-                        PlanProgressIndicator(
-                            progressFraction: plan.progressFraction
-                        )
-                        Text(planProgressText(for: plan))
-                            .font(.system(size: 10, weight: .medium).monospacedDigit())
-                            .foregroundStyle(.primary)
-                    }
-                    .padding(.horizontal, 7)
-                    .frame(height: 24)
-                    .background(task.status.color.opacity(0.10), in: Capsule())
-                    .overlay {
-                        Capsule()
-                            .stroke(task.status.color.opacity(0.24), lineWidth: 1)
-                    }
-                } else {
-                    Text(detailTimeText(for: task, relativeTo: date))
-                        .font(.system(size: 10).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 4)
-                Button(action: onOpen) {
-                    Label("切换到 VS Code", systemImage: "arrow.up.forward.app")
-                        .font(.system(size: 11, weight: .medium))
-                        .frame(minHeight: 24)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(12)
-    }
-
-    private func planList(_ plan: CodexTaskPlan) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            ForEach(plan.visibleSteps(
-                maximumCount: CodexBarPanelLayout.maximumVisiblePlanSteps
-            )) { step in
-                HStack(spacing: 7) {
-                    PlanStepIndicator(status: step.status)
-                    Text(step.title)
-                        .font(.system(
-                            size: 11,
-                            weight: step.status == .inProgress ? .medium : .regular
-                        ))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .help(step.title)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func activityList(
-        _ nodes: [CodexTaskActivity],
-        status: CodexTaskStatus,
-        accent: Color
-    ) -> some View {
-        if nodes.isEmpty {
-            Label(
-                status == .ready ? "暂无实时动作" : "等待 VS Code Codex 执行动作…",
-                systemImage: status == .ready ? "minus" : "ellipsis"
-            )
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-        } else {
-            VStack(alignment: .leading, spacing: 3) {
-                ForEach(nodes) { node in
-                    HStack(spacing: 6) {
-                        Image(systemName: node.kind.symbolName)
-                            .font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(node.id == nodes.last?.id ? accent : .secondary)
-                            .frame(width: 10)
-                        Text(node.summary)
-                            .font(.system(
-                                size: 10,
-                                weight: node.id == nodes.last?.id ? .medium : .regular
-                            ))
-                            .foregroundStyle(node.id == nodes.last?.id ? .primary : .secondary)
-                            .lineLimit(1)
-                    }
-                }
-            }
-        }
-    }
-
-    private func detailTimeText(for task: CodexTask, relativeTo date: Date) -> String {
-        let timeText = CodexTaskTimeFormatter.text(for: task, relativeTo: date)
-        switch task.status {
-        case .running:
-            return "已运行 \(timeText)"
-        case .needsAttention:
-            return "\(timeText)需要处理"
-        case .ready:
-            return "\(timeText)变为可查看"
-        }
-    }
-
-    private func planProgressText(for plan: CodexTaskPlan) -> String {
-        if plan.isComplete {
-            return "计划已完成 \(plan.totalStepCount) / \(plan.totalStepCount) 步"
-        }
-        if plan.currentStep == nil {
-            return "等待第 \(plan.currentStepNumber) / \(plan.totalStepCount) 步"
-        }
-        return "第 \(plan.currentStepNumber) / \(plan.totalStepCount) 步"
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(store.tasks.first(where: { $0.cwd == cwd })?.workspaceName ?? "任务") 进展详情")
     }
 }
 
-private struct PlanProgressIndicator: View {
-    let progressFraction: Double
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(Color.primary.opacity(0.35), lineWidth: 1.5)
-            Circle()
-                .trim(from: 0, to: min(max(CGFloat(progressFraction), 0), 1))
-                .stroke(
-                    Color.primary,
-                    style: StrokeStyle(lineWidth: 1.5, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
-        }
-        .frame(width: 12, height: 12)
-        .accessibilityHidden(true)
+private struct TaskDetailHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
-private struct PlanStepIndicator: View {
-    let status: CodexTaskPlanStepStatus
-
-    var body: some View {
-        Group {
-            switch status {
-            case .completed:
-                Image(systemName: "checkmark.circle")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.primary)
-            case .inProgress:
-                ZStack {
-                    Circle()
-                        .stroke(Color.primary.opacity(0.35), lineWidth: 1.5)
-                    Circle()
-                        .trim(from: 0, to: 0.7)
-                        .stroke(
-                            Color.primary,
-                            style: StrokeStyle(lineWidth: 1.5, lineCap: .round)
-                        )
-                        .rotationEffect(.degrees(-90))
-                }
-                .frame(width: 11, height: 11)
-            case .pending:
-                Circle()
-                    .stroke(Color.primary, lineWidth: 1.25)
-                    .frame(width: 9, height: 9)
-                    .padding(1)
-            }
-        }
-        .frame(width: 12, height: 12)
-        .accessibilityHidden(true)
-    }
-}
-
-private extension CodexTaskPlanStepStatus {
-    var accessibilityLabel: String {
-        switch self {
-        case .completed:
-            return "已完成"
-        case .inProgress:
-            return "当前"
-        case .pending:
-            return "待处理"
-        }
-    }
-}
-
-private extension CodexTaskActivityKind {
+extension CodexTaskActivityKind {
     var symbolName: String {
         switch self {
         case .read:
-            return "doc.text"
+            return "book"
         case .search:
             return "magnifyingglass"
         case .edit:
@@ -711,11 +482,13 @@ private extension CodexTaskActivityKind {
             return "checkmark.diamond"
         case .command:
             return "terminal"
+        case .agent:
+            return "circle.hexagongrid.fill"
         }
     }
 }
 
-private extension CodexTaskStatus {
+extension CodexTaskStatus {
     var label: String {
         switch self {
         case .running:

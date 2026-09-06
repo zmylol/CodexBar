@@ -87,7 +87,7 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                 "old-task cleanup performs Accessibility I/O on the main actor"
             )
             try expect(
-                source.contains("await activator.discoverWindowsAsync()"),
+                source.contains("await activator.discoverWindowSnapshotAsync()"),
                 "old-task cleanup does not use asynchronous window discovery"
             )
         },
@@ -178,7 +178,7 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                 "app startup still prepares its storage directory on the main actor"
             )
         },
-        CodexBarTestCase(name: "normal polling does not launch App Server recovery") {
+        CodexBarTestCase(name: "normal synchronization uses events without periodic data polling") {
             let repositoryRoot = URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
@@ -188,6 +188,14 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                 .appendingPathComponent("CodexBarApp", isDirectory: true)
                 .appendingPathComponent("CodexBarAppModel.swift")
             let appModelSource = try String(contentsOf: appModelURL, encoding: .utf8)
+
+            try expect(
+                !appModelSource.contains("Timer.scheduledTimer")
+                    && !appModelSource.contains("pollInbox")
+                    && !appModelSource.contains("nextWindowScanAt")
+                    && !appModelSource.contains("nextWindowRecoveryAt"),
+                "the application still wakes periodically to scan tasks or windows"
+            )
 
             try expect(
                 !appModelSource.contains("TaskRecoveryThrottle(interval: 5)"),
@@ -241,7 +249,7 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             try expect(
                 viewSource.contains("model.isRecoveringOpenTasks")
                     && viewSource.contains("正在同步已打开的 VS Code Codex 任务")
-                    && viewSource.contains("store.tasks.count"),
+                    && viewSource.contains("model.visibleTasks.count"),
                 "the compact header does not expose recovery progress and the final task count"
             )
         },
@@ -274,8 +282,8 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             ).last?.components(
                 separatedBy: "func stop()"
             ).first ?? ""
-            let pollSource = modelSource.components(
-                separatedBy: "private func pollInbox()"
+            let environmentChangeSource = modelSource.components(
+                separatedBy: "private func handleWindowEnvironmentChange()"
             ).last?.components(
                 separatedBy: "private func processInbox()"
             ).first ?? ""
@@ -301,13 +309,13 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             try expect(
                 headerSource.contains("HStack(spacing: 3)")
                     && headerSource.contains(".padding(.leading, 6)")
-                    && !headerSource.contains("Text(\"· \\(store.tasks.count)\")")
+                    && !headerSource.contains("Text(\"· \\(model.visibleTasks.count)\")")
                     && hiddenMenuIndicatorCount >= 2,
                 "the compact bar does not adapt its header and menus to the narrow width"
             )
             try expect(
                 viewSource.contains(
-                    ".accessibilityValue(\"共 \\(store.tasks.count) 个任务\")"
+                    ".accessibilityValue(\"共 \\(model.visibleTasks.count) 个任务\")"
                 ),
                 "hiding the visual task count also removed it from VoiceOver"
             )
@@ -330,8 +338,8 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                 "manual refresh does not start recovery or explain missing Accessibility access"
             )
             try expect(
-                pollSource.contains("let recoveryRequest = accessibilityRecoveryTrigger.consumeGrant")
-                    && pollSource.contains(
+                environmentChangeSource.contains("let recoveryRequest = accessibilityRecoveryTrigger.consumeGrant")
+                    && environmentChangeSource.contains(
                         "reportCompletion: recoveryRequest.reportCompletion"
                     ),
                 "an Accessibility grant discards the pending manual refresh feedback"
@@ -411,62 +419,6 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                 "decorative root overlays can still intercept pointer events"
             )
         },
-        CodexBarTestCase(name: "hover detail renders bounded live plan progress") {
-            let repositoryRoot = URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-            let sourceURL = repositoryRoot
-                .appendingPathComponent("Sources", isDirectory: true)
-                .appendingPathComponent("CodexBarApp", isDirectory: true)
-                .appendingPathComponent("TaskListView.swift")
-            let controllerURL = repositoryRoot
-                .appendingPathComponent("Sources", isDirectory: true)
-                .appendingPathComponent("CodexBarApp", isDirectory: true)
-                .appendingPathComponent("FloatingPanelController.swift")
-            let source = try String(contentsOf: sourceURL, encoding: .utf8)
-            let controllerSource = try String(contentsOf: controllerURL, encoding: .utf8)
-
-            try expect(
-                source.contains("activityStore.plan(for: task)")
-                    && source.contains("CodexBarPanelLayout.maximumVisiblePlanSteps"),
-                "hover detail is not wired to the bounded live plan"
-            )
-            try expect(
-                source.contains("plan.currentStepNumber")
-                    && source.contains("plan.totalStepCount")
-                    && source.contains("checkmark.circle"),
-                "hover detail does not expose plan state and N/M progress"
-            )
-            try expect(
-                source.contains("planAccessibilitySummary")
-                    && source.contains("计划已完成")
-                    && source.contains("等待第"),
-                "VoiceOver does not distinguish active, waiting, and completed plans"
-            )
-            try expect(
-                !source.contains(
-                    ".foregroundStyle(step.status == .inProgress ? .primary : .secondary)"
-                ),
-                "completed or pending plan text uses a low-contrast secondary color"
-            )
-            try expect(
-                source.contains("CodexBarPanelLayout.detailHeight(visibleItemCount:")
-                    && source.contains(".onChange(of: preferredHeight")
-                    && source.contains("onPreferredHeightChanged")
-                    && !source.contains("height: CodexBarPanelLayout.detailHeight,")
-                    && !source.contains(
-                        ".frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)"
-                    ),
-                "hover detail content still reserves the fixed maximum height"
-            )
-            try expect(
-                controllerSource.contains("onPreferredHeightChanged:")
-                    && controllerSource.contains("detailHeight: preferredHeight")
-                    && !controllerSource.contains("height: CodexBarPanelLayout.detailHeight"),
-                "the detail panel does not resize when its visible content count changes"
-            )
-        },
         CodexBarTestCase(name: "Accessibility grant recovery is armed after a denied startup") {
             let repositoryRoot = URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
@@ -512,7 +464,7 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             try expect(
                 source.contains("accessibilityRecoveryTrigger.isWaitingForGrant")
                     && source.contains("accessibilityRecoveryTrigger.consumeGrant("),
-                "the existing inbox timer does not consume the one-shot grant"
+                "application events do not consume the one-shot grant"
             )
         },
         CodexBarTestCase(name: "startup recovery requests only VS Code thread metadata") {

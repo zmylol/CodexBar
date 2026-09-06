@@ -244,6 +244,34 @@ func hookParsingTestCases() -> [CodexBarTestCase] {
             )
             try expect(!encoded.contains(privateQuery), "Bash search arguments were retained")
         },
+        CodexBarTestCase(name: "classifies agent tools without retaining delegation content") {
+            let parser = CodexHookEventParser(now: { fixedNow }, source: .visualStudioCode)
+            for tool in ["spawn_agent", "send_input", "send_message", "wait_agent", "resume_agent", "close_agent", "followup_task", "interrupt_agent"] {
+                let input = try JSONSerialization.data(withJSONObject: [
+                    "session_id": "session-A",
+                    "turn_id": "turn-1",
+                    "cwd": "/tmp/project-alpha",
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": tool,
+                    "tool_use_id": "agent-tool-call",
+                    "tool_input": [
+                        "message": "private-delegation-message",
+                        "prompt": "private-delegation-prompt",
+                        "description": "private-delegation-description",
+                        "agent_id": "private-agent-identity",
+                        "path": "/tmp/project-alpha/private-agent-path"
+                    ]
+                ])
+                let event = try parser.parse(input)
+                try expect(event.activity?.kind.rawValue == "agent", "\(tool) lost its agent icon category")
+                try expect(event.activity?.safeSubject == nil, "agent arguments became a path summary")
+                let encoded = String(decoding: try JSONEncoder.codexBar.encode(event), as: UTF8.self)
+                try expect(!encoded.contains("private-"), "delegation content was retained")
+            }
+
+            let unknown = try parser.parse(Data(#"{"hook_event_name":"PreToolUse","tool_name":"mcp__custom__spawn_agent"}"#.utf8))
+            try expect(unknown.activity?.kind == .command, "unknown tools were guessed to be agents")
+        },
         CodexBarTestCase(name: "handles a single quote path without crashing") {
             let input = try JSONSerialization.data(withJSONObject: [
                 "session_id": "session-A",

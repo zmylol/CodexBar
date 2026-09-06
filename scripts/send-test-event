@@ -5,7 +5,7 @@ set -euo pipefail
 script_dir=${0:A:h}
 repo_root=${script_dir:h}
 if [[ $# -lt 2 || $# -gt 3 ]]; then
-    print -u2 "usage: scripts/send-test-event <running|action|attention|ready> <absolute-cwd> [title]"
+    print -u2 "usage: scripts/send-test-event <running|action|attention|resumed|ready> <absolute-cwd> [title]"
     exit 64
 fi
 
@@ -13,7 +13,7 @@ state=$1
 workspace_path=$2
 title=${3:-}
 if [[ "$state" != "running" && "$state" != "action" \
-    && "$state" != "attention" && "$state" != "ready" ]]; then
+    && "$state" != "attention" && "$state" != "resumed" && "$state" != "ready" ]]; then
     print -u2 "Unsupported state: $state"
     exit 64
 fi

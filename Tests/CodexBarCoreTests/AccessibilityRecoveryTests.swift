@@ -67,7 +67,7 @@ func accessibilityRecoveryTestCases() -> [CodexBarTestCase] {
             )
             try expect(
                 trigger.consumeGrant(isTrusted: true) == nil,
-                "the next poll launched a duplicate recovery"
+                "the next application event launched a duplicate recovery"
             )
         }
     ]

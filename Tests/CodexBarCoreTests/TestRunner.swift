@@ -6,18 +6,27 @@ import Foundation
 struct CodexBarTestRunner {
     static func main() async {
         var tests = hookParsingTestCases()
+        tests += approvalPayloadTestCases()
         tests += eventTransitionTestCases()
+        tests += runtimeStatusStoreTestCases()
+        tests += runtimeStatusTestCases()
+        tests += runtimeStatusMonitoringTests()
         tests += taskTimeFormatterTestCases()
         tests += panelLayoutTestCases()
+        tests += taskDetailSummaryTestCases()
         tests += openTaskRefreshFeedbackTestCases()
         tests += detailSelectionTestCases()
         tests += inboxTestCases()
+        tests += inboxMonitoringTests()
         tests += privacyStaticTestCases()
         tests += accessibilityRecoveryTestCases()
         tests += windowTitleMatchingTestCases()
         tests += windowActivationSequencingTestCases()
         tests += taskOpeningTestCases()
         tests += startupReconciliationTestCases()
+        tests += taskVisibilityTestCases()
+        tests += windowSnapshotDiscoveryTestCases()
+        tests += windowMonitorTestCases()
         tests += appServerSnapshotSourceTestCases()
         var failures = 0
 

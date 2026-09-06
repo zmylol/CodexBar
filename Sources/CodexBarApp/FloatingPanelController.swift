@@ -8,8 +8,21 @@ private final class CodexBarPanel: NSPanel {
 }
 
 private final class CodexBarDetailPanel: NSPanel {
+    var onDismiss: (() -> Void)?
+    var onNavigate: ((NSEvent) -> Bool)?
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    override func cancelOperation(_ sender: Any?) {
+        onDismiss?()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if onNavigate?(event) != true {
+            super.keyDown(with: event)
+        }
+    }
 }
 
 enum PanelPlacement {
@@ -38,14 +51,22 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     private var detailHideTask: Task<Void, Never>?
     private var panelFrameUpdateTask: Task<Void, Never>?
     private var detailSelection = CodexBarDetailSelection()
+    private var displayedDetailTarget: CodexBarDetailTarget?
     private var detailTaskID: String?
+    private var measuredDetailHeight: CGFloat?
     private var isDetailHovered = false
     private var isUpdatingPanelFrame = false
+    private weak var taskListResponder: NSResponder?
 
     init(model: CodexBarAppModel, defaults: UserDefaults = .standard) {
         self.model = model
         self.defaults = defaults
-        let initialHeight = Self.height(taskCount: model.store.tasks.count, noticeVisible: false)
+        let initialHeight = CodexBarPanelLayout.height(
+            taskCount: model.visibleTasks.count,
+            noticeVisible: false,
+            displayMode: model.panelDisplayMode,
+            maximumHeight: max(0, (NSScreen.main?.visibleFrame.height ?? 900) - 2 * Metrics.margin)
+        )
         self.panel = CodexBarPanel(
             contentRect: NSRect(
                 x: 0,
@@ -57,7 +78,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        let initialDetailHeight = CodexBarPanelLayout.detailHeight(visibleItemCount: 0)
+        let initialDetailHeight = CodexBarPanelLayout.defaultDetailHeight
         self.detailPanel = CodexBarDetailPanel(
             contentRect: NSRect(
                 x: 0,
@@ -90,6 +111,9 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
             onTaskFocusChanged: { [weak self] task, rowMidY, focused in
                 self?.taskFocusChanged(task, rowMidY: rowMidY, focused: focused)
             },
+            onTaskDetailRequested: { [weak self] task, rowMidY in
+                self?.focusTaskDetail(task, rowMidY: rowMidY)
+            },
             onDismissTaskDetail: { [weak self] in
                 self?.hideTaskDetail(clearTriggers: true)
             }
@@ -97,6 +121,13 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         hostingView.sizingOptions = []
         panel.contentView = hostingView
 
+        detailPanel.delegate = self
+        (detailPanel as? CodexBarDetailPanel)?.onDismiss = { [weak self] in
+            self?.dismissTaskDetail()
+        }
+        (detailPanel as? CodexBarDetailPanel)?.onNavigate = { [weak self] event in
+            self?.navigateTaskDetail(event) ?? false
+        }
         detailPanel.level = .floating
         detailPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         detailPanel.hidesOnDeactivate = false
@@ -106,6 +137,17 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         detailPanel.becomesKeyOnlyIfNeeded = true
         detailPanel.animationBehavior = .none
         restorePosition()
+        updateHeight(
+            taskCount: model.visibleTasks.count,
+            noticeVisible: model.notice != nil,
+            animated: false
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(screenParametersDidChange(_:)),
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
     }
 
     func show() {
@@ -113,10 +155,15 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     }
 
     func updateHeight(taskCount: Int, noticeVisible: Bool, animated: Bool) {
-        var frame = panel.frame
-        let topEdge = frame.maxY
-        frame.size.height = Self.height(taskCount: taskCount, noticeVisible: noticeVisible)
-        frame.origin.y = topEdge - frame.height
+        let visibleFrame = ((panel.screen ?? NSScreen.main)?.visibleFrame ?? panel.frame)
+            .insetBy(dx: Metrics.margin, dy: Metrics.margin)
+        let frame = CodexBarPanelLayout.panelFrame(
+            currentFrame: panel.frame,
+            taskCount: taskCount,
+            noticeVisible: noticeVisible,
+            displayMode: model.panelDisplayMode,
+            visibleFrame: visibleFrame
+        )
         guard frame != panel.frame else {
             if detailPanel.isVisible {
                 refreshTaskDetail()
@@ -187,6 +234,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     }
 
     func windowDidMove(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === panel else { return }
         if isUpdatingPanelFrame && NSEvent.pressedMouseButtons == 0 {
             return
         }
@@ -195,6 +243,24 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         isUpdatingPanelFrame = false
         hideTaskDetail(clearTriggers: true)
         persistPanelOrigin()
+    }
+
+    func windowDidChangeScreen(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === panel, !isUpdatingPanelFrame else { return }
+        screenParametersDidChange(notification)
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === detailPanel, displayedDetailTarget != nil else { return }
+        scheduleTaskDetailHide()
+    }
+
+    @objc private func screenParametersDidChange(_ notification: Notification) {
+        updateHeight(
+            taskCount: model.visibleTasks.count,
+            noticeVisible: model.notice != nil,
+            animated: false
+        )
     }
 
     private func taskHoverChanged(
@@ -232,11 +298,12 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     }
 
     private func refreshTaskDetail() {
-        guard let target = detailSelection.selected else {
+        let retainedTarget = isDetailHovered || detailPanel.isKeyWindow ? displayedDetailTarget : nil
+        guard let target = detailSelection.selected ?? retainedTarget else {
             hideTaskDetail(clearTriggers: false)
             return
         }
-        guard let task = model.store.tasks.first(where: { $0.cwd == target.cwd }) else {
+        guard let task = model.visibleTasks.first(where: { $0.cwd == target.cwd }) else {
             detailSelection.clear()
             hideTaskDetail(clearTriggers: false)
             return
@@ -244,12 +311,85 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         showTaskDetail(task, rowMidY: target.rowMidY)
     }
 
+    private func focusTaskDetail(_ task: CodexTask, rowMidY: CGFloat) {
+        guard let currentTask = model.visibleTasks.first(where: { $0.id == task.id }) else { return }
+        if !detailPanel.isKeyWindow {
+            taskListResponder = panel.firstResponder
+        }
+        showTaskDetail(currentTask, rowMidY: rowMidY)
+        detailPanel.makeKeyAndOrderFront(nil)
+        if let contentView = detailPanel.contentView {
+            contentView.layoutSubtreeIfNeeded()
+            let responder = detailScrollView(in: contentView) ?? contentView
+            if !detailPanel.makeFirstResponder(responder) {
+                detailPanel.makeFirstResponder(detailPanel)
+            }
+        }
+    }
+
+    private func detailScrollView(in view: NSView) -> NSScrollView? {
+        if let scrollView = view as? NSScrollView { return scrollView }
+        for child in view.subviews {
+            if let scrollView = detailScrollView(in: child) { return scrollView }
+        }
+        return nil
+    }
+
+    private func navigateTaskDetail(_ event: NSEvent) -> Bool {
+        guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+              let key = event.charactersIgnoringModifiers?.unicodeScalars.first?.value,
+              let contentView = detailPanel.contentView,
+              let scrollView = detailScrollView(in: contentView)
+        else {
+            return false
+        }
+        let clipView = scrollView.contentView
+        var bounds = clipView.bounds
+        let direction: CGFloat = clipView.isFlipped ? 1 : -1
+        let line = scrollView.verticalLineScroll
+        let page = max(bounds.height - scrollView.verticalPageScroll, line)
+        switch Int(key) {
+        case NSUpArrowFunctionKey:
+            bounds.origin.y -= direction * line
+        case NSDownArrowFunctionKey:
+            bounds.origin.y += direction * line
+        case NSPageUpFunctionKey:
+            bounds.origin.y -= direction * page
+        case NSPageDownFunctionKey:
+            bounds.origin.y += direction * page
+        case NSHomeFunctionKey:
+            bounds.origin.y = clipView.isFlipped ? clipView.documentRect.minY : clipView.documentRect.maxY - bounds.height
+        case NSEndFunctionKey:
+            bounds.origin.y = clipView.isFlipped ? clipView.documentRect.maxY - bounds.height : clipView.documentRect.minY
+        default:
+            return false
+        }
+        clipView.scroll(to: clipView.constrainBoundsRect(bounds).origin)
+        scrollView.reflectScrolledClipView(clipView)
+        return true
+    }
+
+    private func dismissTaskDetail() {
+        let restoreFocus = detailPanel.isKeyWindow
+        let responder = taskListResponder
+        hideTaskDetail(clearTriggers: true)
+        if restoreFocus {
+            panel.makeKeyAndOrderFront(nil)
+            if let responder { panel.makeFirstResponder(responder) }
+        }
+    }
+
     private func showTaskDetail(_ task: CodexTask, rowMidY: CGFloat) {
         detailHideTask?.cancel()
         detailHideTask = nil
-        let preferredHeight = preferredDetailHeight(for: task)
+        displayedDetailTarget = CodexBarDetailTarget(cwd: task.cwd, rowMidY: rowMidY)
+        let preferredHeight = detailTaskID == task.id
+            ? measuredDetailHeight ?? CodexBarPanelLayout.defaultDetailHeight
+            : CodexBarPanelLayout.defaultDetailHeight
 
         if detailTaskID != task.id {
+            measuredDetailHeight = nil
+            detailTaskID = task.id
             let cwd = task.cwd
             let detailView = TaskHoverDetailView(
                 store: model.store,
@@ -257,7 +397,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
                 cwd: cwd,
                 onOpen: { [weak self] in
                     guard let self,
-                          let currentTask = model.store.tasks.first(where: { $0.cwd == cwd })
+                          let currentTask = model.visibleTasks.first(where: { $0.cwd == cwd })
                     else {
                         return
                     }
@@ -268,43 +408,31 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
                     self?.detailHoverChanged(hovering)
                 },
                 onPreferredHeightChanged: { [weak self] preferredHeight in
-                    self?.detailHeightChanged(preferredHeight, cwd: cwd)
+                    self?.detailHeightChanged(preferredHeight, cwd: cwd, taskID: task.id)
                 },
                 onDismiss: { [weak self] in
-                    self?.hideTaskDetail(clearTriggers: true)
+                    self?.dismissTaskDetail()
                 }
             )
             let hostingView = NSHostingView(rootView: detailView)
             hostingView.sizingOptions = []
             detailPanel.contentView = hostingView
-            detailTaskID = task.id
         }
 
-        updateDetailFrame(rowMidY: rowMidY, preferredHeight: preferredHeight)
+        updateDetailFrame(rowMidY: rowMidY, preferredHeight: measuredDetailHeight ?? preferredHeight)
         detailPanel.orderFrontRegardless()
     }
 
-    private func preferredDetailHeight(for task: CodexTask) -> CGFloat {
-        let visibleItemCount: Int
-        if let plan = model.activityStore.plan(for: task) {
-            visibleItemCount = plan.visibleSteps(
-                maximumCount: CodexBarPanelLayout.maximumVisiblePlanSteps
-            ).count
-        } else {
-            visibleItemCount = model.activityStore.nodes(for: task).count
-        }
-        return CodexBarPanelLayout.detailHeight(visibleItemCount: visibleItemCount)
-    }
-
-    private func detailHeightChanged(_ preferredHeight: CGFloat, cwd: String) {
-        guard detailPanel.isVisible,
-              let target = detailSelection.selected,
+    private func detailHeightChanged(_ preferredHeight: CGFloat, cwd: String, taskID: String) {
+        guard let target = displayedDetailTarget,
               target.cwd == cwd,
-              let task = model.store.tasks.first(where: { $0.cwd == cwd }),
-              detailTaskID == task.id
+              let task = model.visibleTasks.first(where: { $0.cwd == cwd }),
+              detailTaskID == taskID,
+              task.id == taskID
         else {
             return
         }
+        measuredDetailHeight = preferredHeight
         updateDetailFrame(rowMidY: target.rowMidY, preferredHeight: preferredHeight)
     }
 
@@ -341,7 +469,8 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
                 return
             }
             guard let self,
-                  !isDetailHovered else {
+                  !isDetailHovered,
+                  !detailPanel.isKeyWindow else {
                 return
             }
             refreshTaskDetail()
@@ -351,9 +480,12 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     private func hideTaskDetail(clearTriggers: Bool) {
         detailHideTask?.cancel()
         detailHideTask = nil
+        displayedDetailTarget = nil
+        taskListResponder = nil
         detailPanel.orderOut(nil)
         detailPanel.contentView = nil
         detailTaskID = nil
+        measuredDetailHeight = nil
         isDetailHovered = false
         if clearTriggers {
             detailSelection.clear()
@@ -372,13 +504,6 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     private func persistPanelOrigin() {
         defaults.set(panel.frame.origin.x, forKey: DefaultsKey.originX)
         defaults.set(panel.frame.origin.y, forKey: DefaultsKey.originY)
-    }
-
-    private static func height(taskCount: Int, noticeVisible: Bool) -> CGFloat {
-        CodexBarPanelLayout.height(
-            taskCount: taskCount,
-            noticeVisible: noticeVisible
-        )
     }
 
     private func restorePosition() {

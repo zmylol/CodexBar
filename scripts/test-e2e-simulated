@@ -27,6 +27,11 @@ export CODEXBAR_HOOK_EXECUTABLE="$hook_binary"
 workspace="$test_root/projects/project-alpha"
 /bin/mkdir -p "$workspace"
 
+# More than one source batch must drain after the single startup notification.
+for index in {1..30}; do
+    "$script_dir/send-test-event" ready "$test_root/projects/backlog-$index" >/dev/null
+done
+
 CODEXBAR_SUPPORT_ROOT="$CODEXBAR_SUPPORT_ROOT" "$app_binary" \
     >"$test_root/app.stdout" 2>"$test_root/app.stderr" &
 app_pid=$!
@@ -34,9 +39,24 @@ app_pid=$!
 "$script_dir/send-test-event" running "$workspace" "End-to-end simulated task"
 "$script_dir/send-test-event" action "$workspace"
 "$script_dir/send-test-event" attention "$workspace"
+task_store="$CODEXBAR_SUPPORT_ROOT/tasks.json"
+for _ in {1..50}; do
+    if [[ -f "$task_store" ]] && /usr/bin/grep -q '"status":"needsAttention"' "$task_store"; then
+        break
+    fi
+    /bin/sleep 0.1
+done
+/usr/bin/grep -q '"status":"needsAttention"' "$task_store"
+"$script_dir/send-test-event" resumed "$workspace"
+for _ in {1..50}; do
+    if /usr/bin/grep -q '"status":"running"' "$task_store"; then
+        break
+    fi
+    /bin/sleep 0.1
+done
+/usr/bin/grep -q '"status":"running"' "$task_store"
 "$script_dir/send-test-event" ready "$workspace"
 
-task_store="$CODEXBAR_SUPPORT_ROOT/tasks.json"
 for _ in {1..50}; do
     inbox_files=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
     activity_files=("$CODEXBAR_SUPPORT_ROOT/Activity"/*.json(N))
@@ -45,7 +65,7 @@ for _ in {1..50}; do
         && /usr/bin/grep -q '"status":"ready"' "$task_store" \
         && [[ ${#inbox_files} == 0 ]] \
         && [[ ${#activity_files} == 0 ]] \
-        && [[ ${#processed_files} == 3 ]]; then
+        && [[ ${#processed_files} == 33 ]]; then
         break
     fi
     /bin/sleep 0.1
@@ -55,6 +75,7 @@ done
 /usr/bin/grep -q 'End-to-end simulated task' "$task_store"
 /usr/bin/grep -q '"status":"ready"' "$task_store"
 /usr/bin/grep -q '"isUnread":true' "$task_store"
+/usr/bin/grep -q '"workspaceName":"backlog-30"' "$task_store"
 if /usr/bin/grep -q '运行 Swift 测试\|PreToolUse' "$task_store"; then
     print -u2 "Transient activity leaked into tasks.json"
     exit 1
@@ -64,8 +85,8 @@ activity_files=("$CODEXBAR_SUPPORT_ROOT/Activity"/*.json(N))
 processed_files=("$CODEXBAR_SUPPORT_ROOT/Processed"/*.json(N))
 [[ ${#inbox_files} == 0 ]]
 [[ ${#activity_files} == 0 ]]
-[[ ${#processed_files} == 3 ]]
+[[ ${#processed_files} == 33 ]]
 /bin/kill -0 "$app_pid"
 [[ ! -s "$test_root/app.stderr" ]]
 
-print "PASS simulated Hook → Inbox → TaskStore → running app flow"
+print "PASS event-driven Hook → Inbox → TaskStore drains backlog and restores running after matched approval completion"

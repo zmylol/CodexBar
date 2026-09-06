@@ -6,6 +6,10 @@ import os
 
 @MainActor
 final class CodexBarAppModel: NSObject, ObservableObject {
+    @Published private(set) var panelDisplayMode = CodexBarPanelDisplayMode(
+        rawValue: UserDefaults.standard.string(forKey: "codexbar.panelDisplayMode") ?? ""
+    ) ?? .scrolling
+    @Published private var taskVisibility = VSCodeTaskVisibility()
     @Published private(set) var isRecoveringOpenTasks = false
     @Published private(set) var notice: PanelNotice? {
         didSet {
@@ -18,6 +22,9 @@ final class CodexBarAppModel: NSObject, ObservableObject {
 
     let store: TaskStore
     let activityStore: LiveTaskActivityStore
+    var visibleTasks: [CodexTask] { taskVisibility.visibleTasks(in: store.tasks) }
+    var visibleSortedTasks: [CodexTask] { taskVisibility.visibleTasks(in: store.sortedTasks) }
+    var hasNoOpenWindows: Bool { taskVisibility.hasNoOpenWindows }
     var onPresentationChanged: ((Int, Bool, Bool) -> Void)?
     var onPanelPlacementRequested: ((PanelPlacement) -> Void)?
     var onAnnouncementRequested: ((String, Bool) -> Void)?
@@ -25,8 +32,18 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     private let processor: EventProcessor
     private let activator: AccessibilityWindowActivator
     private let threadSnapshotLoader: (any CodexThreadSnapshotLoading)?
+    private let inboxMonitor: CodexInboxMonitor
+    private let windowMonitor: VSCodeWindowMonitor
+    private let runtimeMonitor = CodexRuntimeStatusMonitor()
+    private var runtimeProjection = RuntimeStatusProjectionWorker()
+    private var runtimeStates: [String: CodexRuntimeStatusUpdate] = [:]
+    private var runtimeEvents: [RuntimeStatusEvent] = []
+    private var runtimeEventBytes = 0
+    private var runtimeProcessingTask: Task<Void, Never>?
+    private var runtimeProcessingID: UUID?
     private let oldTaskCleanupWorker = OldTaskCleanupWorker()
-    private var pollTimer: Timer?
+    private var isStarted = false
+    private var inboxNeedsProcessing = false
     private var inboxProcessingTask: Task<Void, Never>?
     private var inboxProcessingID: UUID?
     private var oldTaskCleanupTask: Task<Void, Never>?
@@ -40,42 +57,92 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     )
     private var nextRecoveryErrorLogAt = Date.distantPast
     private var windowActivationTask: Task<Void, Never>?
+    private var windowScanTask: Task<Void, Never>?
+    private var windowScanID: UUID?
+    private var windowScanPending = false
+    private var windowEventGeneration: UInt64 = 0
+    private var needsWindowRecovery = false
+    private var pendingRefreshCompletion = false
 
     init(
         store: TaskStore,
         activityStore: LiveTaskActivityStore,
         processor: EventProcessor,
         activator: AccessibilityWindowActivator,
+        inboxMonitor: CodexInboxMonitor,
+        windowMonitor: VSCodeWindowMonitor = VSCodeWindowMonitor(),
         threadSnapshotLoader: (any CodexThreadSnapshotLoading)? = nil
     ) {
         self.store = store
         self.activityStore = activityStore
         self.processor = processor
         self.activator = activator
+        self.inboxMonitor = inboxMonitor
+        self.windowMonitor = windowMonitor
         self.threadSnapshotLoader = threadSnapshotLoader
     }
 
     func start() {
         stop()
+        isStarted = true
         if store.recoverySnapshotURL != nil {
             showNotice(message: "任务状态文件损坏，已隔离并重建。")
         }
+        startInboxMonitoring()
+        runtimeMonitor.start(onChange: { [weak self] data in
+            self?.enqueueRuntimeEvent(.frame(data))
+        }, onUnavailable: { [weak self] sessions in
+            self?.enqueueRuntimeEvent(.unavailable(sessions))
+        })
+        synchronizeRuntimeSessions()
+        windowMonitor.onStatusChange = { [weak self] status in
+            guard let self, isStarted else { return }
+            switch status {
+            case .accessibilityPermissionRequired:
+                accessibilityRecoveryTrigger.waitForGrant(reportCompletion: false)
+                showNotice(
+                    message: "需要辅助功能权限才能自动同步 VS Code 窗口。",
+                    showsAccessibilityAction: true
+                )
+            case .failed:
+                showNotice(message: "无法监听 VS Code 窗口变化，请点击刷新重试。")
+            case .observing:
+                if notice?.message == "无法监听 VS Code 窗口变化，请点击刷新重试。" {
+                    notice = nil
+                }
+            case .stopped:
+                break
+            }
+        }
+        windowMonitor.start { [weak self] in
+            self?.handleWindowEnvironmentChange()
+        }
         processInbox()
         recoverStartupTasks(reportCompletion: false)
-        pollTimer = Timer.scheduledTimer(
-            timeInterval: 0.75,
-            target: self,
-            selector: #selector(pollInbox),
-            userInfo: nil,
-            repeats: true
-        )
-        if let pollTimer {
-            RunLoop.main.add(pollTimer, forMode: .common)
-        }
     }
 
     func stop() {
+        isStarted = false
+        runtimeMonitor.stop()
+        runtimeProcessingTask?.cancel()
+        runtimeProcessingTask = nil
+        runtimeProcessingID = nil
+        runtimeEvents.removeAll()
+        runtimeEventBytes = 0
+        runtimeStates.removeAll()
+        runtimeProjection = RuntimeStatusProjectionWorker()
+        inboxMonitor.stop()
+        windowMonitor.stop()
+        windowMonitor.onStatusChange = nil
         cancelStartupRecovery()
+        windowScanTask?.cancel()
+        windowScanTask = nil
+        windowScanID = nil
+        windowScanPending = false
+        windowEventGeneration &+= 1
+        needsWindowRecovery = false
+        pendingRefreshCompletion = false
+        inboxNeedsProcessing = false
         inboxProcessingTask?.cancel()
         inboxProcessingTask = nil
         inboxProcessingID = nil
@@ -84,8 +151,16 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         oldTaskCleanupID = nil
         windowActivationTask?.cancel()
         windowActivationTask = nil
-        pollTimer?.invalidate()
-        pollTimer = nil
+    }
+
+    private func startInboxMonitoring() {
+        do {
+            try inboxMonitor.start { [weak self] in
+                self?.processInbox()
+            }
+        } catch {
+            showNotice(message: "无法监听任务事件，请点击刷新重试。")
+        }
     }
 
     func activate(_ task: CodexTask) {
@@ -148,6 +223,10 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     }
 
     func refreshOpenTasks() {
+        startInboxMonitoring()
+        runtimeMonitor.refresh()
+        processInbox()
+        windowMonitor.refreshObservers()
         guard AccessibilityAuthorization.isTrusted else {
             accessibilityRecoveryTrigger.waitForGrant(reportCompletion: true)
             showNotice(
@@ -163,6 +242,15 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     func requestAccessibilityPermission() {
         _ = AccessibilityAuthorization.requestIfNeeded()
         openAccessibilitySettings()
+    }
+
+    func setPanelDisplayMode(_ mode: CodexBarPanelDisplayMode) {
+        guard panelDisplayMode != mode else {
+            return
+        }
+        panelDisplayMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: "codexbar.panelDisplayMode")
+        notifyPresentationChanged(animated: true)
     }
 
     func openAccessibilitySettings() {
@@ -181,6 +269,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         cancelStartupRecovery()
         let store = self.store
         Task { [weak self] in
+            defer { self?.performPendingWindowRecovery() }
             do {
                 _ = try await store.remove(taskID: task.id)
                 guard let self else {
@@ -197,6 +286,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         cancelStartupRecovery()
         let store = self.store
         Task { [weak self] in
+            defer { self?.performPendingWindowRecovery() }
             do {
                 _ = try await store.clearRead()
                 guard let self else {
@@ -226,7 +316,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         oldTaskCleanupID = cleanupID
         let activator = self.activator
         oldTaskCleanupTask = Task { [weak self] in
-            let windows = await activator.discoverWindowsAsync()
+            let windowSnapshot = await activator.discoverWindowSnapshotAsync()
             guard let self, oldTaskCleanupID == cleanupID else {
                 return
             }
@@ -237,6 +327,10 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 }
             }
             guard !Task.isCancelled else {
+                return
+            }
+            guard let windows = windowSnapshot else {
+                showNotice(message: "无法读取 VS Code 窗口，未清理任何任务。")
                 return
             }
 
@@ -284,8 +378,10 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         NSApplication.shared.terminate(nil)
     }
 
-    @objc
-    private func pollInbox() {
+    private func handleWindowEnvironmentChange() {
+        guard isStarted else { return }
+        runtimeMonitor.retryDiscovery()
+        windowEventGeneration &+= 1
         if startupRecoveryTask == nil,
            accessibilityRecoveryTrigger.isWaitingForGrant,
            let recoveryRequest = accessibilityRecoveryTrigger.consumeGrant(
@@ -295,10 +391,166 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 reportCompletion: recoveryRequest.reportCompletion
             )
         }
-        processInbox()
+        scanOpenWindows()
+    }
+
+    private func scanOpenWindows() {
+        guard isStarted, AccessibilityAuthorization.isTrusted else {
+            return
+        }
+        windowScanPending = true
+        guard windowScanTask == nil else {
+            return
+        }
+        let scanID = UUID()
+        windowScanID = scanID
+        windowScanTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if windowScanID == scanID {
+                    windowScanTask = nil
+                    windowScanID = nil
+                    performPendingWindowRecovery()
+                }
+            }
+            while windowScanPending {
+                windowScanPending = false
+                let generation = windowEventGeneration
+                let windows = await activator.discoverWindowSnapshotAsync()
+                guard !Task.isCancelled, windowScanID == scanID else { return }
+                guard generation == windowEventGeneration else {
+                    windowScanPending = true
+                    continue
+                }
+                guard let windows else { return }
+                updateOpenWindows(windows)
+            }
+        }
+    }
+
+    private func performPendingWindowRecovery() {
+        guard isStarted, needsWindowRecovery, startupRecoveryTask == nil,
+              windowScanTask == nil else { return }
+        let reportCompletion = pendingRefreshCompletion
+        pendingRefreshCompletion = false
+        recoverStartupTasks(reportCompletion: reportCompletion)
+    }
+
+    private func updateOpenWindows(
+        _ windows: [VSCodeWindowDescriptor],
+        requestsRecovery: Bool = true
+    ) {
+        let previousWorkspaces = Set(visibleTasks.map(\.cwd))
+        guard taskVisibility.update(windows: windows) else { return }
+        if windows.isEmpty {
+            needsWindowRecovery = pendingRefreshCompletion
+        } else if requestsRecovery {
+            let matcher = VSCodeWindowMatcher()
+            let hasUnknownWindow = windows.contains { window in
+                !store.tasks.contains { task in
+                    if case .notFound = matcher.match(normalizedCWD: task.cwd, windows: [window]) {
+                        return false
+                    }
+                    return true
+                }
+            }
+            if hasUnknownWindow || visibleTasks.contains(where: { !previousWorkspaces.contains($0.cwd) }) {
+                needsWindowRecovery = true
+            }
+        }
+        // Window activation errors are obsolete once the set of windows changes.
+        if notice?.message == "未找到对应的 VS Code 窗口。"
+            || notice?.message == "Visual Studio Code 当前未运行。" {
+            notice = nil
+        }
+        notifyPresentationChanged(animated: false)
+    }
+
+    private func synchronizeRuntimeSessions() {
+        guard isStarted else { return }
+        runtimeMonitor.setSessions(Set(visibleTasks.map(\.sessionID)))
+    }
+
+    private func enqueueRuntimeEvent(_ event: RuntimeStatusEvent) {
+        guard isStarted else { return }
+        if case .frame(let data) = event {
+            // Bound transient snapshots while the projection worker is busy.
+            guard runtimeEventBytes + data.count <= 64 * 1024 * 1024,
+                  runtimeEvents.count < 128 else {
+                runtimeProcessingTask?.cancel()
+                runtimeProcessingTask = nil
+                runtimeProcessingID = nil
+                runtimeEvents.removeAll()
+                runtimeEventBytes = 0
+                runtimeStates.removeAll()
+                runtimeProjection = RuntimeStatusProjectionWorker()
+                runtimeMonitor.refresh()
+                return
+            }
+            runtimeEventBytes += data.count
+        } else if case .reconcile = event,
+                  runtimeEvents.contains(where: { if case .reconcile = $0 { return true }; return false }) {
+            return
+        }
+        runtimeEvents.append(event)
+        guard runtimeProcessingTask == nil else { return }
+        let processingID = UUID()
+        runtimeProcessingID = processingID
+        let projection = runtimeProjection
+        runtimeProcessingTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if runtimeProcessingID == processingID {
+                    runtimeProcessingID = nil
+                    runtimeProcessingTask = nil
+                }
+            }
+            while !runtimeEvents.isEmpty {
+                let event = runtimeEvents.removeFirst()
+                var updatesToApply: [CodexRuntimeStatusUpdate] = []
+                switch event {
+                case .frame(let data):
+                    runtimeEventBytes -= data.count
+                    let result = await projection.consume(data)
+                    guard !Task.isCancelled, runtimeProcessingID == processingID else { return }
+                    if let sessionID = result.invalidatedSessionID {
+                        runtimeStates.removeValue(forKey: sessionID)
+                    }
+                    if let sessionID = result.resnapshotSessionID {
+                        runtimeStates.removeValue(forKey: sessionID)
+                        runtimeMonitor.requestSnapshot(sessionID: sessionID)
+                    }
+                    if let update = result.update {
+                        runtimeStates[update.sessionID] = update
+                        updatesToApply = [update]
+                    }
+                case .unavailable(let sessions):
+                    for sessionID in sessions { runtimeStates.removeValue(forKey: sessionID) }
+                    await projection.reset(sessions: sessions)
+                    guard !Task.isCancelled, runtimeProcessingID == processingID else { return }
+                case .reconcile:
+                    updatesToApply = Array(runtimeStates.values)
+                }
+                let visibleSessions = Set(visibleTasks.map(\.sessionID))
+                for update in updatesToApply where visibleSessions.contains(update.sessionID) {
+                    guard let turnID = update.turnID, let cwd = update.cwd else { continue }
+                    do {
+                        let changed = try await store.applyRuntimeStatus(
+                            sessionID: update.sessionID, turnID: turnID, cwd: cwd, status: update.status
+                        )
+                        guard !Task.isCancelled, runtimeProcessingID == processingID else { return }
+                        if changed { notifyPresentationChanged(animated: true) }
+                    } catch {
+                        showNotice(message: "无法保存实时任务状态，请点击刷新重试。")
+                    }
+                }
+            }
+        }
     }
 
     private func processInbox() {
+        guard isStarted else { return }
+        inboxNeedsProcessing = true
         guard inboxProcessingTask == nil else {
             return
         }
@@ -311,18 +563,36 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         inboxProcessingID = processingID
         let processor = self.processor
         inboxProcessingTask = Task { [weak self] in
+            guard let self else { return }
             let result: Result<Int, Error>
             do {
-                result = .success(try await processor.processPending())
+                var processedCount = 0
+                repeat {
+                    inboxNeedsProcessing = false
+                    let count = try await processor.processPending()
+                    guard !Task.isCancelled, inboxProcessingID == processingID else { return }
+                    processedCount += count
+                    if count > 0 {
+                        inboxNeedsProcessing = true
+                    }
+                } while inboxNeedsProcessing
+                result = .success(processedCount)
             } catch {
                 result = .failure(error)
             }
 
-            guard let self, inboxProcessingID == processingID else {
+            guard inboxProcessingID == processingID else {
                 return
             }
             inboxProcessingTask = nil
             inboxProcessingID = nil
+            let hasQueuedEvent = inboxNeedsProcessing
+            inboxNeedsProcessing = false
+            defer {
+                if hasQueuedEvent, isStarted, !Task.isCancelled {
+                    processInbox()
+                }
+            }
             guard !Task.isCancelled else {
                 return
             }
@@ -335,6 +605,9 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 showNotice(message: "事件 Inbox 处理失败；文件已保留以便重试。")
                 return
             }
+            synchronizeRuntimeSessions()
+            runtimeMonitor.retryDiscovery()
+            enqueueRuntimeEvent(.reconcile)
             guard processedCount > 0 else {
                 return
             }
@@ -348,7 +621,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 return priorUpdatedAt[task.id] != task.updatedAt
             }
             notifyPresentationChanged(animated: shouldAnimate)
-            let changedTasks = store.tasks.filter { priorUpdatedAt[$0.id] != $0.updatedAt }
+            let changedTasks = visibleTasks.filter { priorUpdatedAt[$0.id] != $0.updatedAt }
             if let attention = changedTasks.first(where: { $0.status == .needsAttention }) {
                 onAnnouncementRequested?("\(attention.workspaceName) 需要处理", true)
             } else if let ready = changedTasks.first(where: { $0.status == .ready }) {
@@ -358,6 +631,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     }
 
     private func recoverStartupTasks(reportCompletion: Bool) {
+        guard isStarted else { return }
         guard AccessibilityAuthorization.isTrusted else {
             accessibilityRecoveryTrigger.waitForGrant(
                 reportCompletion: reportCompletion
@@ -366,13 +640,13 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         }
         accessibilityRecoveryTrigger.prepareForAuthorizedRecovery()
         dismissAccessibilityNotice()
-        guard let threadSnapshotLoader else {
-            showRefreshFeedback(.failed, reportCompletion: reportCompletion)
-            return
-        }
         guard startupRecoveryTask == nil else {
+            needsWindowRecovery = true
+            pendingRefreshCompletion = pendingRefreshCompletion || reportCompletion
             return
         }
+        needsWindowRecovery = false
+        let priorVisibleTasks = visibleTasks
         isRecoveringOpenTasks = true
         let recoveryID = UUID()
         startupRecoveryID = recoveryID
@@ -387,19 +661,35 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                     startupRecoveryTask = nil
                     startupRecoveryID = nil
                     isRecoveringOpenTasks = false
+                    performPendingWindowRecovery()
                 }
             }
 
             do {
                 let reconciler = StartupTaskReconciler(store: store)
-                let windows = await activator.discoverWindowsAsync()
+                let initialGeneration = windowEventGeneration
+                let windowSnapshot = await activator.discoverWindowSnapshotAsync()
                 guard !Task.isCancelled,
                       startupRecoveryID == recoveryID
                 else {
                     return
                 }
+                guard initialGeneration == windowEventGeneration else {
+                    needsWindowRecovery = true
+                    pendingRefreshCompletion = pendingRefreshCompletion || reportCompletion
+                    return
+                }
+                guard let windows = windowSnapshot else {
+                    showRefreshFeedback(.failed, reportCompletion: reportCompletion)
+                    return
+                }
+                updateOpenWindows(windows, requestsRecovery: false)
                 guard !windows.isEmpty else {
                     showRefreshFeedback(.noOpenWindows, reportCompletion: reportCompletion)
+                    return
+                }
+                guard let threadSnapshotLoader else {
+                    showRefreshFeedback(.failed, reportCompletion: reportCompletion)
                     return
                 }
                 let snapshots: [CodexThreadSnapshot]
@@ -418,29 +708,47 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 guard !Task.isCancelled, startupRecoveryID == recoveryID else {
                     return
                 }
-                let currentWindows = await activator.discoverWindowsAsync()
+                let currentGeneration = windowEventGeneration
+                let currentWindowSnapshot = await activator.discoverWindowSnapshotAsync()
                 guard !Task.isCancelled,
                       startupRecoveryID == recoveryID
                 else {
                     return
                 }
+                guard currentGeneration == windowEventGeneration else {
+                    needsWindowRecovery = true
+                    pendingRefreshCompletion = pendingRefreshCompletion || reportCompletion
+                    return
+                }
+                guard let currentWindows = currentWindowSnapshot else {
+                    showRefreshFeedback(.failed, reportCompletion: reportCompletion)
+                    return
+                }
+                updateOpenWindows(currentWindows)
                 guard !currentWindows.isEmpty else {
                     showRefreshFeedback(.noOpenWindows, reportCompletion: reportCompletion)
                     return
                 }
-                let changedCount = try await reconciler.reconcile(
+                _ = try await reconciler.reconcile(
                     snapshots: snapshots,
                     windows: currentWindows
                 )
                 guard !Task.isCancelled, startupRecoveryID == recoveryID else {
                     return
                 }
+                synchronizeRuntimeSessions()
+                enqueueRuntimeEvent(.reconcile)
+                let currentTasks = visibleTasks
+                let changedCount = Set(
+                    priorVisibleTasks.filter { !currentTasks.contains($0) }.map(\.id)
+                        + currentTasks.filter { !priorVisibleTasks.contains($0) }.map(\.id)
+                ).count
                 if changedCount > 0 && !reportCompletion {
                     notifyPresentationChanged(animated: false)
                 }
                 showRefreshFeedback(
                     .completed(
-                        currentTaskCount: store.tasks.count,
+                        currentTaskCount: visibleTasks.count,
                         changedCount: changedCount
                     ),
                     reportCompletion: reportCompletion
@@ -512,8 +820,27 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     }
 
     private func notifyPresentationChanged(animated: Bool) {
+        synchronizeRuntimeSessions()
         activityStore.synchronize(with: store.tasks)
-        onPresentationChanged?(store.tasks.count, notice != nil, animated)
+        onPresentationChanged?(visibleTasks.count, notice != nil, animated)
+    }
+}
+
+private enum RuntimeStatusEvent {
+    case frame(Data)
+    case unavailable(Set<String>)
+    case reconcile
+}
+
+private actor RuntimeStatusProjectionWorker {
+    private var reducer = CodexRuntimeStatusReducer()
+
+    func consume(_ data: Data) -> CodexRuntimeStatusResult {
+        reducer.consume(data)
+    }
+
+    func reset(sessions: Set<String>) {
+        for sessionID in sessions { reducer.reset(sessionID: sessionID) }
     }
 }
 

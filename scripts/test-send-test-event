@@ -14,15 +14,17 @@ workspace="$test_root/projects/project-alpha"
 "$script_dir/send-test-event" running "$workspace" "Build a test feature"
 "$script_dir/send-test-event" action "$workspace"
 "$script_dir/send-test-event" attention "$workspace"
+"$script_dir/send-test-event" resumed "$workspace"
 "$script_dir/send-test-event" ready "$workspace"
 
 lifecycle_events=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))
 activity_events=("$CODEXBAR_SUPPORT_ROOT/Activity"/*.json(N))
-[[ ${#lifecycle_events} == 3 ]]
-[[ ${#activity_events} == 1 ]]
+[[ ${#lifecycle_events} == 5 ]]
+[[ ${#activity_events} == 0 ]]
 /usr/bin/grep -l 'UserPromptSubmit' "$lifecycle_events[@]" >/dev/null
-/usr/bin/grep -l 'PreToolUse' "$activity_events[@]" >/dev/null
-if /usr/bin/grep -q 'manual-swift-test' "$activity_events[@]"; then
+/usr/bin/grep -l 'PreToolUse' "$lifecycle_events[@]" >/dev/null
+/usr/bin/grep -l 'PostToolUse' "$lifecycle_events[@]" >/dev/null
+if /usr/bin/grep -q 'manual-swift-test' "$lifecycle_events[@]"; then
     print -u2 "Raw tool_use_id leaked into the transient activity event"
     exit 1
 fi
@@ -34,4 +36,4 @@ if "$script_dir/send-test-event" unsupported "$workspace" >/dev/null 2>&1; then
     exit 1
 fi
 
-print "PASS send-test-event writes one activity and all three lifecycle fixtures"
+print "PASS send-test-event writes ordered approval and recovery fixtures without raw tool IDs"

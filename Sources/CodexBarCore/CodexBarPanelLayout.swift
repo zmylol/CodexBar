@@ -1,5 +1,10 @@
 import CoreGraphics
 
+public enum CodexBarPanelDisplayMode: String, CaseIterable {
+    case scrolling
+    case expanded
+}
+
 public enum CodexBarPanelLayout {
     public static let compactWidth: CGFloat = 126
     public static let detailWidth: CGFloat = 320
@@ -10,26 +15,43 @@ public enum CodexBarPanelLayout {
     public static let emptyHeight: CGFloat = 56
     public static let noticeHeight: CGFloat = 84
     public static let maximumRows = 5
-    public static let maximumVisiblePlanSteps = 5
+    public static let defaultDetailHeight: CGFloat = 220
 
-    private static let compactDetailHeight: CGFloat = 136
-    private static let additionalDetailItemHeight: CGFloat = 20
-
-    public static func height(taskCount: Int, noticeVisible: Bool) -> CGFloat {
-        let visibleTaskCount = min(max(taskCount, 0), maximumRows)
+    public static func height(
+        taskCount: Int,
+        noticeVisible: Bool,
+        displayMode: CodexBarPanelDisplayMode = .scrolling,
+        maximumHeight: CGFloat = .greatestFiniteMagnitude
+    ) -> CGFloat {
+        let taskCount = max(taskCount, 0)
+        let visibleTaskCount = displayMode == .expanded
+            ? taskCount
+            : min(taskCount, maximumRows)
         let contentHeight = visibleTaskCount == 0
             ? emptyHeight
             : CGFloat(visibleTaskCount) * rowHeight
-        return headerHeight + contentHeight + (noticeVisible ? noticeHeight : 0)
+        let preferredHeight = headerHeight + contentHeight + (noticeVisible ? noticeHeight : 0)
+        return min(preferredHeight, max(maximumHeight, 0))
     }
 
-    public static func detailHeight(visibleItemCount: Int) -> CGFloat {
-        let visibleItemCount = min(
-            max(visibleItemCount, 1),
-            maximumVisiblePlanSteps
+    public static func panelFrame(
+        currentFrame: CGRect,
+        taskCount: Int,
+        noticeVisible: Bool,
+        displayMode: CodexBarPanelDisplayMode,
+        visibleFrame: CGRect
+    ) -> CGRect {
+        let height = height(
+            taskCount: taskCount,
+            noticeVisible: noticeVisible,
+            displayMode: displayMode,
+            maximumHeight: visibleFrame.height
         )
-        return compactDetailHeight
-            + CGFloat(visibleItemCount - 1) * additionalDetailItemHeight
+        let maximumX = max(visibleFrame.minX, visibleFrame.maxX - compactWidth)
+        let maximumY = max(visibleFrame.minY, visibleFrame.maxY - height)
+        let x = min(max(currentFrame.minX, visibleFrame.minX), maximumX)
+        let y = min(max(currentFrame.maxY - height, visibleFrame.minY), maximumY)
+        return CGRect(x: x, y: y, width: compactWidth, height: height)
     }
 
     public static func detailFrame(

@@ -89,7 +89,7 @@ function removeCodexBarHandlers(configuration, executables) {
 }
 
 function validateTargetEventGroups(configuration) {
-    ["UserPromptSubmit", "PreToolUse", "PermissionRequest", "Stop"].forEach(function (eventName) {
+    ["UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop"].forEach(function (eventName) {
         const groups = configuration.hooks[eventName];
         if (groups === undefined) {
             return;
@@ -129,11 +129,23 @@ function install(configuration, executable, mode, managedExecutables) {
     }
     const activityHandler = Object.assign({}, handler, { async: true });
     configuration.hooks.PreToolUse.push({
-        matcher: "^(Bash|apply_patch|Edit|Write|Read|read_file|Grep|Glob|rg|search|view_image)$",
+        matcher: "^(Read|read_file|Grep|Glob|rg|search|view_image|spawn_agent|send_input|send_message|wait_agent|resume_agent|close_agent|followup_task|interrupt_agent)$",
         hooks: [activityHandler]
+    });
+    const approvalMatcher = "^(Bash|apply_patch|Edit|Write|mcp__.+__.+)$";
+    configuration.hooks.PreToolUse.push({
+        matcher: approvalMatcher,
+        hooks: [Object.assign({}, handler)]
     });
     configuration.hooks.PreToolUse.push({
         matcher: "^update_plan$",
+        hooks: [Object.assign({}, handler)]
+    });
+    if (!Array.isArray(configuration.hooks.PostToolUse)) {
+        configuration.hooks.PostToolUse = [];
+    }
+    configuration.hooks.PostToolUse.push({
+        matcher: approvalMatcher,
         hooks: [Object.assign({}, handler)]
     });
 }

@@ -46,7 +46,15 @@ public struct VSCodeWindowMatcher: Sendable {
             return .notFound
         }
 
-        let workspaceName = URL(fileURLWithPath: normalizedPath).lastPathComponent
+        return match(normalizedCWD: normalizedPath, windows: windows)
+    }
+
+    /// TaskStore paths are already canonical; presentation must not resolve them on disk again.
+    package func match(
+        normalizedCWD: String,
+        windows: [VSCodeWindowDescriptor]
+    ) -> VSCodeWindowMatchResult {
+        let workspaceName = URL(fileURLWithPath: normalizedCWD).lastPathComponent
         guard !workspaceName.isEmpty else {
             return .notFound
         }

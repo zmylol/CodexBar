@@ -38,36 +38,57 @@ public final class AccessibilityWindowActivator {
             return []
         }
 
-        return AccessibilityWindowDescriptorReader.enumerate(
+        return VSCodeWindowSnapshotReader.enumerate(
             applicationIdentities: runningVisualStudioCodeApplicationIdentities(),
-            messagingTimeout: Self.messagingTimeout,
-            codeSignatureValidator: codeSignatureValidator
-        )
+            using: AccessibilityWindowDescriptorReader(
+                messagingTimeout: Self.messagingTimeout,
+                codeSignatureValidator: codeSignatureValidator
+            )
+        ) ?? []
     }
 
     /// Enumerates descriptors without making Accessibility calls on the main actor.
     public func discoverWindowsAsync(
         promptForAccessibility: Bool = false
     ) async -> [VSCodeWindowDescriptor] {
-        guard ensureAccessibilityPermission(promptIfNeeded: promptForAccessibility) else {
-            return []
+        await discoverWindowSnapshotAsync(promptForAccessibility: promptForAccessibility) ?? []
+    }
+
+    /// An empty snapshot confirms there are no standard windows. `nil` means
+    /// discovery was incomplete, so callers must preserve their previous state.
+    public func discoverWindowSnapshotAsync(
+        promptForAccessibility: Bool = false
+    ) async -> [VSCodeWindowDescriptor]? {
+        guard !Task.isCancelled,
+              ensureAccessibilityPermission(promptIfNeeded: promptForAccessibility),
+              let applicationIdentities = runningVisualStudioCodeApplicationSnapshot()
+        else {
+            return nil
         }
 
-        let applicationIdentities = runningVisualStudioCodeApplicationIdentities()
         let messagingTimeout = Self.messagingTimeout
         let codeSignatureValidator = codeSignatureValidator
         let enumerationTask = Task.detached(priority: .utility) {
-            AccessibilityWindowDescriptorReader.enumerate(
+            VSCodeWindowSnapshotReader.enumerate(
                 applicationIdentities: applicationIdentities,
-                messagingTimeout: messagingTimeout,
-                codeSignatureValidator: codeSignatureValidator
+                using: AccessibilityWindowDescriptorReader(
+                    messagingTimeout: messagingTimeout,
+                    codeSignatureValidator: codeSignatureValidator
+                )
             )
         }
-        return await withTaskCancellationHandler {
+        let snapshot = await withTaskCancellationHandler {
             await enumerationTask.value
         } onCancel: {
             enumerationTask.cancel()
         }
+        guard !Task.isCancelled,
+              AccessibilityAuthorization.isTrusted,
+              runningVisualStudioCodeApplicationSnapshot() == applicationIdentities
+        else {
+            return nil
+        }
+        return snapshot
     }
 
     /// Raises an existing VS Code Stable window matching `cwd` and minimizes
@@ -127,6 +148,27 @@ public final class AccessibilityWindowActivator {
                 launchDate: launchDate
             )
         }
+    }
+
+    private func runningVisualStudioCodeApplicationSnapshot() -> [VSCodeApplicationIdentity]? {
+        var identities: [VSCodeApplicationIdentity] = []
+        for application in NSWorkspace.shared.runningApplications where
+            !application.isTerminated
+                && application.bundleIdentifier == Self.visualStudioCodeBundleIdentifier
+        {
+            guard codeSignatureValidator(application.processIdentifier),
+                  let bundleIdentifier = application.bundleIdentifier,
+                  let launchDate = application.launchDate
+            else {
+                return nil
+            }
+            identities.append(VSCodeApplicationIdentity(
+                processIdentifier: application.processIdentifier,
+                bundleIdentifier: bundleIdentifier,
+                launchDate: launchDate
+            ))
+        }
+        return identities.sorted { $0.processIdentifier < $1.processIdentifier }
     }
 
 }
@@ -420,58 +462,100 @@ private final class AccessibilityWindowActivationOperations:
     }
 }
 
-private enum AccessibilityWindowDescriptorReader {
-    static func enumerate(
+package protocol VSCodeWindowSnapshotReading {
+    associatedtype Window
+
+    var isTrusted: Bool { get }
+    var isCancelled: Bool { get }
+    func isCurrentApplication(_ identity: VSCodeApplicationIdentity) -> Bool
+    func windows(for identity: VSCodeApplicationIdentity) -> [Window]?
+    func role(of window: Window) -> String?
+    func subrole(of window: Window) -> String?
+    func title(of window: Window) -> String?
+}
+
+package enum VSCodeWindowSnapshotReader {
+    package static func enumerate<Reader: VSCodeWindowSnapshotReading>(
         applicationIdentities: [VSCodeApplicationIdentity],
-        messagingTimeout: Float,
-        codeSignatureValidator: @Sendable (pid_t) -> Bool
-    ) -> [VSCodeWindowDescriptor] {
+        using reader: Reader
+    ) -> [VSCodeWindowDescriptor]? {
+        guard reader.isTrusted, !reader.isCancelled else {
+            return nil
+        }
         var result: [VSCodeWindowDescriptor] = []
 
         for applicationIdentity in applicationIdentities {
-            guard !currentTaskIsCancelled() else {
-                return []
+            guard reader.isTrusted, !reader.isCancelled,
+                  reader.isCurrentApplication(applicationIdentity),
+                  let elements = reader.windows(for: applicationIdentity)
+            else {
+                return nil
             }
-            guard isCurrentApplication(
-                applicationIdentity,
-                codeSignatureValidator: codeSignatureValidator
-            ) else {
-                continue
-            }
-            let processIdentifier = applicationIdentity.processIdentifier
-            let applicationElement = AXUIElementCreateApplication(processIdentifier)
-            AXUIElementSetMessagingTimeout(applicationElement, messagingTimeout)
-            guard let elements: [AXUIElement] = copyAttribute(
-                kAXWindowsAttribute as CFString,
-                from: applicationElement
-            ) else {
-                continue
-            }
-
             for (index, element) in elements.enumerated() {
-                guard !currentTaskIsCancelled() else {
-                    return []
-                }
-                AXUIElementSetMessagingTimeout(element, messagingTimeout)
-                guard isStandardWindow(element),
-                      let title: String = copyAttribute(kAXTitleAttribute as CFString, from: element)
+                guard reader.isTrusted, !reader.isCancelled,
+                      let role = reader.role(of: element)
                 else {
+                    return nil
+                }
+                guard role == (kAXWindowRole as String) else {
                     continue
                 }
+                guard let subrole = reader.subrole(of: element) else {
+                    return nil
+                }
+                guard subrole == (kAXStandardWindowSubrole as String) else {
+                    continue
+                }
+                guard let title = reader.title(of: element) else {
+                    return nil
+                }
                 result.append(VSCodeWindowDescriptor(
-                    id: (Int(processIdentifier) << 32) | index,
+                    id: (Int(applicationIdentity.processIdentifier) << 32) | index,
                     title: title
                 ))
             }
         }
 
+        guard reader.isTrusted, !reader.isCancelled,
+              applicationIdentities.allSatisfy(reader.isCurrentApplication)
+        else {
+            return nil
+        }
         return result
     }
+}
 
-    private static func isCurrentApplication(
-        _ identity: VSCodeApplicationIdentity,
-        codeSignatureValidator: @Sendable (pid_t) -> Bool
-    ) -> Bool {
+private struct AccessibilityWindowDescriptorReader: VSCodeWindowSnapshotReading {
+    let messagingTimeout: Float
+    let codeSignatureValidator: @Sendable (pid_t) -> Bool
+
+    var isTrusted: Bool { AccessibilityAuthorization.isTrusted }
+
+    var isCancelled: Bool {
+        withUnsafeCurrentTask { task in
+            task?.isCancelled ?? false
+        }
+    }
+
+    func windows(for identity: VSCodeApplicationIdentity) -> [AXUIElement]? {
+        let applicationElement = AXUIElementCreateApplication(identity.processIdentifier)
+        guard AXUIElementSetMessagingTimeout(applicationElement, messagingTimeout) == .success,
+              let elements: [AXUIElement] = copyAttribute(
+                  kAXWindowsAttribute as CFString,
+                  from: applicationElement
+              )
+        else {
+            return nil
+        }
+        for element in elements {
+            guard AXUIElementSetMessagingTimeout(element, messagingTimeout) == .success else {
+                return nil
+            }
+        }
+        return elements
+    }
+
+    func isCurrentApplication(_ identity: VSCodeApplicationIdentity) -> Bool {
         guard let application = NSRunningApplication(
             processIdentifier: identity.processIdentifier
         ) else {
@@ -486,20 +570,19 @@ private enum AccessibilityWindowDescriptorReader {
         )
     }
 
-    private static func currentTaskIsCancelled() -> Bool {
-        withUnsafeCurrentTask { task in
-            task?.isCancelled ?? false
-        }
+    func role(of window: AXUIElement) -> String? {
+        copyAttribute(kAXRoleAttribute as CFString, from: window)
     }
 
-    private static func isStandardWindow(_ element: AXUIElement) -> Bool {
-        let role: String? = copyAttribute(kAXRoleAttribute as CFString, from: element)
-        let subrole: String? = copyAttribute(kAXSubroleAttribute as CFString, from: element)
-        return role == (kAXWindowRole as String)
-            && subrole == (kAXStandardWindowSubrole as String)
+    func subrole(of window: AXUIElement) -> String? {
+        copyAttribute(kAXSubroleAttribute as CFString, from: window)
     }
 
-    private static func copyAttribute<Value>(
+    func title(of window: AXUIElement) -> String? {
+        copyAttribute(kAXTitleAttribute as CFString, from: window)
+    }
+
+    private func copyAttribute<Value>(
         _ attribute: CFString,
         from element: AXUIElement
     ) -> Value? {

@@ -10,10 +10,6 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
                 "compact width is not three-quarters"
             )
             try expect(CodexBarPanelLayout.detailWidth == 320, "hover detail width changed")
-            try expect(
-                CodexBarPanelLayout.maximumVisiblePlanSteps == 5,
-                "hover detail no longer fits the approved five plan steps"
-            )
             try expect(CodexBarPanelLayout.detailGap == 8, "hover detail gap changed")
             try expect(CodexBarPanelLayout.headerHeight == 28, "header height changed")
             try expect(CodexBarPanelLayout.rowHeight == 28, "row height changed")
@@ -47,31 +43,95 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
                 "a notice widened the persistent panel contract"
             )
         },
-        CodexBarTestCase(name: "sizes hover details from visible content") {
+        CodexBarTestCase(name: "expands the panel to show every task when the screen has room") {
             try expect(
-                CodexBarPanelLayout.detailHeight(visibleItemCount: 0) == 136,
-                "an empty hover detail did not use the compact one-line height"
+                CodexBarPanelLayout.height(
+                    taskCount: 12,
+                    noticeVisible: false,
+                    displayMode: .expanded
+                ) == 364,
+                "expanded mode still capped the task list at five rows"
             )
             try expect(
-                CodexBarPanelLayout.detailHeight(visibleItemCount: 1) == 136,
-                "one visible item changed the compact hover detail height"
+                CodexBarPanelLayout.height(
+                    taskCount: 12,
+                    noticeVisible: true,
+                    displayMode: .expanded
+                ) == 448,
+                "expanded mode did not reserve space for the notice"
             )
             try expect(
-                CodexBarPanelLayout.detailHeight(visibleItemCount: 3) == 176,
-                "three activity items did not grow the hover detail"
+                CodexBarPanelLayout.height(
+                    taskCount: 0,
+                    noticeVisible: false,
+                    displayMode: .expanded
+                ) == 84,
+                "expanded mode changed the empty state height"
+            )
+        },
+        CodexBarTestCase(name: "bounds both display modes by the available screen height") {
+            try expect(
+                CodexBarPanelLayout.height(
+                    taskCount: 100,
+                    noticeVisible: true,
+                    displayMode: .expanded,
+                    maximumHeight: 700
+                ) == 700,
+                "expanded mode overflowed the available screen height"
             )
             try expect(
-                CodexBarPanelLayout.detailHeight(visibleItemCount: 5) == 216,
-                "five plan steps did not fit the expanded hover detail"
+                CodexBarPanelLayout.height(
+                    taskCount: 100,
+                    noticeVisible: false,
+                    displayMode: .scrolling,
+                    maximumHeight: 700
+                ) == 168,
+                "scrolling mode no longer shows at most five rows"
             )
             try expect(
-                CodexBarPanelLayout.detailHeight(visibleItemCount: 99) == 216,
-                "hover detail height was not capped at five visible items"
+                CodexBarPanelLayout.height(
+                    taskCount: 5,
+                    noticeVisible: true,
+                    displayMode: .scrolling,
+                    maximumHeight: 200
+                ) == 200,
+                "scrolling mode overflowed a short screen"
             )
-            try expect(
-                CodexBarPanelLayout.detailHeight(visibleItemCount: -1) == 136,
-                "an invalid item count produced an invalid hover detail height"
+        },
+        CodexBarTestCase(name: "preserves the panel top edge while expanding when it fits") {
+            let frame = CodexBarPanelLayout.panelFrame(
+                currentFrame: CGRect(x: 900, y: 600, width: 126, height: 168),
+                taskCount: 12,
+                noticeVisible: false,
+                displayMode: .expanded,
+                visibleFrame: CGRect(x: 18, y: 42, width: 1164, height: 840)
             )
+            try expect(frame.maxY == 768, "expanding moved a valid top edge")
+            try expect(frame.height == 364, "expanding did not show all 12 tasks")
+            try expect(frame.minX == 900, "expanding moved a valid horizontal position")
+        },
+        CodexBarTestCase(name: "keeps an expanded panel visible after growth and screen changes") {
+            let screen = CGRect(x: 18, y: 42, width: 1164, height: 640)
+            let growingFrame = CodexBarPanelLayout.panelFrame(
+                currentFrame: CGRect(x: 900, y: 42, width: 126, height: 168),
+                taskCount: 12,
+                noticeVisible: true,
+                displayMode: .expanded,
+                visibleFrame: screen
+            )
+            try expect(growingFrame.minY == 42, "expanded tasks disappeared below the screen")
+            try expect(growingFrame.height == 448, "bottom-edge adjustment lost task rows")
+
+            let movedFrame = CodexBarPanelLayout.panelFrame(
+                currentFrame: CGRect(x: 2000, y: 900, width: 126, height: 1000),
+                taskCount: 100,
+                noticeVisible: false,
+                displayMode: .expanded,
+                visibleFrame: screen
+            )
+            try expect(movedFrame.height == 640, "panel did not shrink to the new screen")
+            try expect(movedFrame.maxX == screen.maxX, "panel stayed beyond the screen right edge")
+            try expect(movedFrame.minY == screen.minY, "panel did not stay within the new screen")
         },
         CodexBarTestCase(name: "places hover details beside the matching compact row") {
             let panelFrame = CGRect(
@@ -81,7 +141,7 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
                 height: 140
             )
             let visibleFrame = CGRect(x: 0, y: 0, width: 1200, height: 900)
-            let detailHeight = CodexBarPanelLayout.detailHeight(visibleItemCount: 1)
+            let detailHeight: CGFloat = 136
 
             let detailFrame = CodexBarPanelLayout.detailFrame(
                 panelFrame: panelFrame,
@@ -97,7 +157,7 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
         },
         CodexBarTestCase(name: "keeps hover details within the visible screen") {
             let visibleFrame = CGRect(x: 0, y: 24, width: 1200, height: 876)
-            let detailHeight = CodexBarPanelLayout.detailHeight(visibleItemCount: 5)
+            let detailHeight: CGFloat = 320
 
             let rightFrame = CodexBarPanelLayout.detailFrame(
                 panelFrame: CGRect(

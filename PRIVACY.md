@@ -10,7 +10,7 @@ Codex Hook 事件可能包含：
 
 - session ID 和 turn ID；
 - 当前工作目录的绝对路径；
-- `UserPromptSubmit`、`PreToolUse`、`PermissionRequest` 或 `Stop` 事件类型；
+- `UserPromptSubmit`、`PreToolUse`、`PermissionRequest`、`PostToolUse` 或 `Stop` 事件类型；
 - prompt 第一行的脱敏摘要，最多 80 个字符；
 - 工具名称；
 - 固定的来源标记（仅 `vscode`）；
@@ -21,9 +21,13 @@ CodexBar 不保存完整 prompt、完整 assistant message 或 transcript。assi
 
 来源标记来自 VS Code Codex Extension 启动 Hook 时提供的 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE=codex_vscode`。CodexBar 在读取 stdin 前进行精确匹配；值缺失、不同大小写、包含额外空白或来自其他客户端时都会静默退出，不读取或写入事件，也不会根据 cwd、进程名或 transcript 猜测来源。
 
-`PreToolUse` 的原始 `tool_input` 只在短生命周期 Hook 进程中解析，不会写入事件文件。CodexBar 只生成“读取 / 搜索 / 修改 / 测试 / 命令”分类，以及可安全展示的相对路径或文件名；不会保存原始命令、原始 tool-use ID、补丁正文、搜索词、MCP 参数或工具输出。为了跨进程交付，脱敏后的活动会短暂写入独立的 `Activity` 队列：全局最多 12 条，同一工作区的新 prompt 会删除旧队列，应用处理后立即删除且不进入 `Processed`。如果应用一直没有启动，最多 12 个脱敏事件会留到下次提交或应用处理。界面仅在内存中保留当前任务最近三个节点，下一次提交、删除任务或退出应用时即消失，也不会写入 `tasks.json`。
+`PreToolUse` 的原始 `tool_input` 只在短生命周期 Hook 进程中解析，不会写入事件文件。CodexBar 只生成“读取 / 搜索 / 修改 / 测试 / 命令 / 子任务协作”分类，以及可安全展示的相对路径或文件名；不会保存原始命令、原始 tool-use ID、补丁正文、搜索词、MCP 参数或工具输出。协作类别只由精确工具名确定，不读取委派的 prompt、message、description 或 agent ID；彩色图标表示协作类别，不编码代理身份。为了跨进程交付，脱敏后的活动会短暂写入独立的 `Activity` 队列：全局最多 12 条，同一工作区的新 prompt 会删除旧队列，应用处理后立即删除且不进入 `Processed`。如果应用一直没有启动，最多 12 个脱敏事件会留到下次提交或应用处理。界面仅在内存中保留当前任务最近三个节点，下一次提交、删除任务或退出应用时即消失，也不会写入 `tasks.json`。
 
 启动历史恢复最多扫描 500 条来源为 `vscode` 的未归档 thread 元数据，并且只保存唯一匹配到已打开 VS Code 窗口的必要字段。请求使用不加载 items 的模式，不会保存 transcript 或 items，也不会重新加入已被用户删除的 task ID。
+
+审批恢复使用独立的临时关联元数据：工具调用 ID 的 SHA-256 值，以及工具名称与必要输入的 SHA-256 指纹。shell / 编辑只使用命令或补丁输入；MCP 使用按键排序且去掉顶层审批说明 `description` 的输入。原始值只在 Hook 进程中处理，不写入事件文件或任务快照。指纹用于区分并行调用，不表示用户已批准，也不读取 `tool_response`。含关联元数据的工具开始与完成事件使用可靠的 `Inbox` 队列，不受普通活动的 12 条上限裁剪；处理后立即删除。审批事件归档前移除关联元数据。关联状态仅保留在应用内存中，任务结束、替换或应用重启后清除。
+
+实时审批状态通过当前用户已有的 Codex 本地 Unix socket 订阅，只跟随悬浮条可见任务的已知会话，不枚举其他会话，不启动 IPC 服务，也不发送执行或审批决定。该扩展内部接口没有只含状态的订阅选项，因此收到的临时帧可能包含完整会话正文。CodexBar 使用字段白名单提取会话、轮次、工作目录、版本及运行状态；正文不进入任务模型、日志或磁盘，帧处理后即释放。关闭对应窗口、删除任务或退出应用后取消跟随。跟随期间官方扩展可能保持该线程驻留；连接和状态变化由 socket、文件系统及窗口事件驱动，没有周期查询。接口版本不兼容或断线时保留 Hook 路径，刷新可以重新连接。
 
 App Server 查询失败时，CodexBar 最多每分钟向 macOS 统一日志写入一条固定诊断。该消息不包含 session/turn ID、cwd、项目名、prompt、状态或错误正文。
 

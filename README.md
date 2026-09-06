@@ -1,8 +1,11 @@
 # CodexBar
 
-CodexBar 是一个常驻桌面的 macOS 原生悬浮条，用来汇总多个 Visual Studio Code 窗口中的 Codex 任务状态。悬浮条默认只显示项目名；鼠标悬停或键盘聚焦时才显示任务摘要、状态和时间。
+> [!IMPORTANT]
+> **这是一个完全通过 Vibe Coding 完成的小插件。** 任何人都可以随意提交改善使用体验的 PR；只要 AI 说可以，我就会直接合并。
 
-点击项目后，CodexBar 只会尝试恢复并前置已经存在且唯一匹配的官方 VS Code 窗口，同时最小化其他标准 VS Code 窗口。它不会执行 `code -r`，也不会创建新窗口。
+CodexBar 是一个常驻桌面的 macOS 原生悬浮条，用来汇总 Visual Studio Code 与 Codex 桌面端中的本地 Codex 任务状态。悬浮条默认只显示项目名；鼠标悬停或键盘聚焦时才显示任务摘要、状态和时间。
+
+点击项目后，VS Code 任务会恢复并前置已经存在且唯一匹配的官方 VS Code 窗口，同时最小化其他标准 VS Code 窗口；Codex 桌面端任务会按精确 thread ID 打开对应会话。CodexBar 不会执行 `code -r`，也不会创建新的 VS Code 窗口。
 
 > CodexBar 是独立的社区工具，与 OpenAI 或 Microsoft 没有隶属或背书关系。Codex、OpenAI、Visual Studio Code 及相关标识归各自权利人所有。
 
@@ -24,11 +27,12 @@ CodexBar 是一个常驻桌面的 macOS 原生悬浮条，用来汇总多个 Vis
 
 - macOS 13 或更高版本；
 - 官方 Visual Studio Code Stable（bundle id `com.microsoft.VSCode`）；
+- 官方 Codex 桌面端（bundle id `com.openai.codex`）；
 - 官方 OpenAI Codex IDE Extension；
 - 本地 Codex turn；
 - 每个 VS Code 窗口对应一个主要项目，项目目录名基本唯一。
 
-暂不支持 Codex App、Cursor、Windsurf、VS Code Insiders、Windows、Linux、多 thread 精确定位或 multi-root workspace。Codex CLI 与 IDE 共用用户级 Hook 配置，而 Hook 事件目前没有稳定的来源字段；终端 CLI 事件可以进入 CodexBar，并可通过精确 session/turn 核对收口状态，但点击项目仍只负责切换已存在的 VS Code 窗口。
+暂不支持 Cursor、Windsurf、VS Code Insiders、Windows、Linux、终端窗口恢复或 multi-root workspace。Codex CLI 与 IDE 共用用户级 Hook 配置，而 Hook 事件目前没有公开稳定的客户端来源字段；终端 CLI 事件可以进入 CodexBar，并可通过精确 session/turn 核对收口状态，但 CodexBar 无法定位它原先所在的终端窗口。
 
 ## 工作方式
 
@@ -38,7 +42,7 @@ CodexBar 是一个常驻桌面的 macOS 原生悬浮条，用来汇总多个 Vis
 | `PermissionRequest` | `needsAttention` | 需要处理 |
 | `Stop` | `ready` | 可查看 |
 
-`Stop` 只表示当前 turn 已停止，因此界面不会写“已完成”。Hook 保存 session/turn 标识、cwd、脱敏后的 prompt 首行、事件类型、工具名称和时间；不会保存完整 assistant message 或 transcript。详细字段、保留期限和删除方式见 [PRIVACY.md](PRIVACY.md)。
+`Stop` 只表示当前 turn 已停止，因此界面不会写“已完成”。Hook 保存 session/turn 标识、cwd、脱敏后的 prompt 首行、事件类型、工具名称、受限的客户端目标和时间；不会保存完整 assistant message 或 transcript。详细字段、保留期限和删除方式见 [PRIVACY.md](PRIVACY.md)。
 
 启动恢复会通过官方 Extension 内置的 [Codex App Server](https://learn.chatgpt.com/docs/app-server) 查询来源为 `vscode` 的持久线程，并根据现有窗口保守恢复历史行。手动中断 turn 时，Codex 可能不派发 `Stop`；因此存在“执行中”或“需要处理”的行时，CodexBar 还会每五秒至多发起一次单飞查询，按已有任务的 session ID、turn ID 和 cwd 精确核对 `vscode` 与 `cli` thread，并将同一 turn 的 `completed`、`interrupted` 或 `failed` 状态映射为“可查看”。周期查询不依赖 VS Code 窗口，只允许更新查询开始时已经存在的活跃行，不会恢复用户已删除的行或覆盖更新的 Hook turn。
 
@@ -93,7 +97,7 @@ Probe 与正式 Inbox 的定义哈希不同，因此切换后需要重新 Reload
 open "$HOME/Applications/CodexBar.app"
 ```
 
-没有 Accessibility 权限时，悬浮条仍能显示任务。点击项目需要前往：
+没有 Accessibility 权限时，悬浮条仍能显示任务，Codex 桌面端任务也能正常打开。切换 VS Code 窗口需要前往：
 
 ```text
 System Settings → Privacy & Security → Accessibility → CodexBar

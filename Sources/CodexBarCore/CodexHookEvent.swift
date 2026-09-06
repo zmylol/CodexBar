@@ -1,10 +1,55 @@
+import CryptoKit
 import Foundation
 
 public enum CodexHookEventName: String, Codable, Equatable, Sendable {
     case userPromptSubmit = "UserPromptSubmit"
     case preToolUse = "PreToolUse"
+    case postToolUse = "PostToolUse"
     case permissionRequest = "PermissionRequest"
     case stop = "Stop"
+}
+
+public struct CodexHookToolExecution: Codable, Equatable, Sendable {
+    public let invocationID: String?
+    public let inputFingerprint: String
+
+    public init(invocationID: String?, inputFingerprint: String) {
+        self.invocationID = invocationID
+        self.inputFingerprint = inputFingerprint
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case invocationID
+        case inputFingerprint
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        invocationID = try container.decodeIfPresent(String.self, forKey: .invocationID)
+        inputFingerprint = try container.decode(String.self, forKey: .inputFingerprint)
+        guard isValid else {
+            throw CodexHookEventCodingError.inconsistentTransientPayload
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        guard isValid else {
+            throw CodexHookEventCodingError.inconsistentTransientPayload
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(invocationID, forKey: .invocationID)
+        try container.encode(inputFingerprint, forKey: .inputFingerprint)
+    }
+
+    fileprivate var isValid: Bool {
+        Self.isSHA256(inputFingerprint) && (invocationID.map(Self.isSHA256) ?? true)
+    }
+
+    private static func isSHA256(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy {
+            (48...57).contains($0) || (97...102).contains($0)
+        }
+    }
 }
 
 public struct CodexHookEvent: Codable, Equatable, Sendable {
@@ -17,6 +62,7 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
     public let toolName: String?
     public let activity: CodexHookActivitySummary?
     public let plan: CodexHookPlanSummary?
+    public let toolExecution: CodexHookToolExecution?
     public let timestamp: Date
     public let lastAssistantMessagePresent: Bool
     public let source: CodexHookSource
@@ -33,6 +79,7 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
         lastAssistantMessagePresent: Bool,
         activity: CodexHookActivitySummary? = nil,
         plan: CodexHookPlanSummary? = nil,
+        toolExecution: CodexHookToolExecution? = nil,
         source: CodexHookSource
     ) {
         self.id = id
@@ -44,6 +91,7 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
         self.toolName = toolName
         self.activity = activity
         self.plan = plan
+        self.toolExecution = toolExecution
         self.timestamp = timestamp
         self.lastAssistantMessagePresent = lastAssistantMessagePresent
         self.source = source
@@ -59,6 +107,7 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
         case toolName
         case activity
         case plan
+        case toolExecution
         case timestamp
         case lastAssistantMessagePresent
         case source
@@ -69,12 +118,16 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let hasActivityPayload: Bool
         let hasPlanPayload: Bool
+        let hasToolExecutionPayload: Bool
         do {
             hasActivityPayload = container.contains(.activity)
                 ? try !container.decodeNil(forKey: .activity)
                 : false
             hasPlanPayload = container.contains(.plan)
                 ? try !container.decodeNil(forKey: .plan)
+                : false
+            hasToolExecutionPayload = container.contains(.toolExecution)
+                ? try !container.decodeNil(forKey: .toolExecution)
                 : false
         } catch {
             throw CodexHookEventCodingError.inconsistentTransientPayload
@@ -105,11 +158,16 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
                 forKey: .promptSummary
             )
             let decodedToolName = try container.decodeIfPresent(String.self, forKey: .toolName)
+            let decodedToolExecution = try container.decodeIfPresent(
+                CodexHookToolExecution.self,
+                forKey: .toolExecution
+            )
             guard Self.hasConsistentTransientPayload(
                 name: decodedName,
                 toolName: decodedToolName,
                 hasActivity: hasActivityPayload,
-                hasPlan: hasPlanPayload
+                hasPlan: hasPlanPayload,
+                toolExecution: decodedToolExecution
             ) else {
                 throw CodexHookEventCodingError.inconsistentTransientPayload
             }
@@ -136,13 +194,14 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
             toolName = decodedToolName
             activity = decodedActivity
             plan = decodedPlan
+            toolExecution = decodedToolExecution
             timestamp = decodedTimestamp
             lastAssistantMessagePresent = decodedLastAssistantMessagePresent
             source = decodedSource
         } catch let error as CodexHookEventCodingError {
             throw error
         } catch {
-            if hasActivityPayload || hasPlanPayload {
+            if hasActivityPayload || hasPlanPayload || hasToolExecutionPayload {
                 throw CodexHookEventCodingError.inconsistentTransientPayload
             }
             throw error
@@ -150,6 +209,9 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
     }
 
     public func encode(to encoder: Encoder) throws {
+        guard toolExecution == nil || hasConsistentTransientPayload else {
+            throw CodexHookEventCodingError.inconsistentTransientPayload
+        }
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encodeIfPresent(sessionID, forKey: .sessionID)
@@ -160,6 +222,7 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
         try container.encodeIfPresent(toolName, forKey: .toolName)
         try container.encodeIfPresent(activity, forKey: .activity)
         try container.encodeIfPresent(plan, forKey: .plan)
+        try container.encodeIfPresent(toolExecution, forKey: .toolExecution)
         try container.encode(timestamp.timeIntervalSince1970, forKey: .timestamp)
         try container.encode(lastAssistantMessagePresent, forKey: .lastAssistantMessagePresent)
         try container.encode(source, forKey: .source)
@@ -170,7 +233,8 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
             name: name,
             toolName: toolName,
             hasActivity: activity != nil,
-            hasPlan: plan != nil
+            hasPlan: plan != nil,
+            toolExecution: toolExecution
         )
     }
 
@@ -178,11 +242,22 @@ public struct CodexHookEvent: Codable, Equatable, Sendable {
         name: CodexHookEventName?,
         toolName: String?,
         hasActivity: Bool,
-        hasPlan: Bool
+        hasPlan: Bool,
+        toolExecution: CodexHookToolExecution?
     ) -> Bool {
         let normalizedToolName = toolName?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+        if let toolExecution {
+            guard toolExecution.isValid,
+                  HookToolExecutionSummarizer.supports(normalizedToolName),
+                  name == .preToolUse || name == .postToolUse || name == .permissionRequest,
+                  name != .permissionRequest || toolExecution.invocationID == nil,
+                  !hasPlan
+            else {
+                return false
+            }
+        }
         if hasPlan {
             return name == .preToolUse
                 && normalizedToolName == "update_plan"
@@ -235,11 +310,20 @@ public struct CodexHookEventParser: Sendable {
         let plan = isPlanUpdate
             ? HookPlanSummarizer.summarize(toolInput: payload.toolInput)
             : nil
+        let toolExecution = HookToolExecutionSummarizer.summarize(
+            name: name,
+            toolName: toolName,
+            toolUseID: toolUseID,
+            toolInput: payload.toolInput,
+            mcpArguments: payload.mcpArguments
+        )
         let suppliedTimestamp = validatedTimestamp(payload.timestamp?.date, receivedAt: receivedAt)
-        let eventTimestamp = isPlanUpdate ? receivedAt : (suppliedTimestamp ?? receivedAt)
-
-        return CodexHookEvent(
-            id: StableEventID.make(from: StableEventIdentity(
+        let eventTimestamp = isPlanUpdate || toolExecution != nil
+            ? receivedAt
+            : (suppliedTimestamp ?? receivedAt)
+        let eventID = name == .permissionRequest
+            ? "event-\(UUID().uuidString.lowercased())"
+            : StableEventID.make(from: StableEventIdentity(
                 sessionID: sessionID,
                 turnID: turnID,
                 cwd: cwd,
@@ -249,9 +333,13 @@ public struct CodexHookEventParser: Sendable {
                 toolUseID: toolUseID,
                 activity: activity,
                 plan: plan,
+                toolExecution: toolExecution,
                 suppliedTimestamp: suppliedTimestamp,
                 lastAssistantMessagePresent: payload.lastAssistantMessagePresent
-            )),
+            ))
+
+        return CodexHookEvent(
+            id: eventID,
             sessionID: sessionID,
             turnID: turnID,
             cwd: cwd,
@@ -262,6 +350,7 @@ public struct CodexHookEventParser: Sendable {
             lastAssistantMessagePresent: payload.lastAssistantMessagePresent,
             activity: activity,
             plan: plan,
+            toolExecution: toolExecution,
             source: source
         )
     }
@@ -327,6 +416,7 @@ private struct HookPayload: Decodable {
     let toolName: String?
     let toolUseID: String?
     let toolInput: HookToolInput?
+    let mcpArguments: [String: HookJSONValue]?
     let timestamp: HookTimestamp?
 
     private enum CodingKeys: String, CodingKey {
@@ -352,6 +442,12 @@ private struct HookPayload: Decodable {
         toolName = try container.decodeIfPresent(String.self, forKey: .toolName)
         toolUseID = try container.decodeIfPresent(String.self, forKey: .toolUseID)
         toolInput = try? container.decode(HookToolInput.self, forKey: .toolInput)
+        if toolName?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased().hasPrefix("mcp__") == true {
+            mcpArguments = try? container.decode([String: HookJSONValue].self, forKey: .toolInput)
+        } else {
+            mcpArguments = nil
+        }
         timestamp = try container.decodeIfPresent(HookTimestamp.self, forKey: .timestamp)
         if container.contains(.lastAssistantMessage) {
             lastAssistantMessagePresent = try !container.decodeNil(forKey: .lastAssistantMessage)
@@ -414,6 +510,7 @@ private struct StableEventIdentity {
     let toolUseID: String?
     let activity: CodexHookActivitySummary?
     let plan: CodexHookPlanSummary?
+    let toolExecution: CodexHookToolExecution?
     let suppliedTimestamp: Date?
     let lastAssistantMessagePresent: Bool
 }
@@ -434,6 +531,7 @@ private enum StableEventID {
             identity.activity?.kind.rawValue,
             identity.activity?.safeSubject,
             planIdentity(identity.plan),
+            identity.toolExecution?.inputFingerprint,
             timestampBits,
             identity.lastAssistantMessagePresent ? "1" : "0"
         ]
@@ -463,6 +561,103 @@ private enum StableEventID {
         plan?.steps.map { step in
             "\(step.status.rawValue):\(step.title)"
         }.joined(separator: "\u{1F}")
+    }
+}
+
+private enum HookToolExecutionSummarizer {
+    static func supports(_ toolName: String?) -> Bool {
+        guard let toolName else { return false }
+        return toolName == "bash" || toolName == "apply_patch"
+            || toolName.range(of: "^mcp__.+__.+$", options: .regularExpression) != nil
+    }
+
+    static func summarize(
+        name: CodexHookEventName?,
+        toolName: String?,
+        toolUseID: String?,
+        toolInput: HookToolInput?,
+        mcpArguments: [String: HookJSONValue]?
+    ) -> CodexHookToolExecution? {
+        guard name == .preToolUse || name == .postToolUse || name == .permissionRequest,
+              let toolName = toolName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              supports(toolName.lowercased())
+        else {
+            return nil
+        }
+
+        let normalizedToolName = toolName.lowercased()
+        let input: HookJSONValue
+        if normalizedToolName == "bash" || normalizedToolName == "apply_patch" {
+            guard let command = toolInput?.command ?? toolInput?.patch else {
+                return nil
+            }
+            input = .string(command)
+        } else {
+            guard var arguments = mcpArguments else {
+                return nil
+            }
+            // PermissionRequest adds this presentation field outside the tool's arguments.
+            arguments.removeValue(forKey: "description")
+            input = .object(arguments)
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let identityToolName = normalizedToolName.hasPrefix("mcp__")
+            ? toolName
+            : normalizedToolName
+        guard let canonicalInput = try? encoder.encode([
+            "tool": HookJSONValue.string(identityToolName), "input": input
+        ]) else {
+            return nil
+        }
+        return CodexHookToolExecution(
+            invocationID: name == .permissionRequest ? nil : toolUseID.map {
+                sha256(Data($0.utf8))
+            },
+            inputFingerprint: sha256(canonicalInput)
+        )
+    }
+
+    private static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+private enum HookJSONValue: Codable {
+    case null
+    case bool(Bool)
+    case string(String)
+    case number(Decimal)
+    case array([HookJSONValue])
+    case object([String: HookJSONValue])
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode(Decimal.self) {
+            self = .number(value)
+        } else if let value = try? container.decode([HookJSONValue].self) {
+            self = .array(value)
+        } else {
+            self = .object(try container.decode([String: HookJSONValue].self))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .null: try container.encodeNil()
+        case .bool(let value): try container.encode(value)
+        case .string(let value): try container.encode(value)
+        case .number(let value): try container.encode(value)
+        case .array(let value): try container.encode(value)
+        case .object(let value): try container.encode(value)
+        }
     }
 }
 
@@ -560,6 +755,8 @@ private enum HookActivitySummarizer {
             )
         case "bash", "shell", "shell_command", "exec_command":
             return commandSummary(toolInput?.command)
+        case "spawn_agent", "send_input", "send_message", "wait_agent", "resume_agent", "close_agent", "followup_task", "interrupt_agent":
+            return CodexHookActivitySummary(kind: .agent, safeSubject: nil)
         default:
             return CodexHookActivitySummary(kind: .command, safeSubject: nil)
         }

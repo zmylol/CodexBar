@@ -1,0 +1,292 @@
+import Darwin
+import Foundation
+import CodexBarCore
+
+@MainActor
+func runtimeStatusMonitoringTests() -> [CodexBarTestCase] {
+    [
+        CodexBarTestCase(name: "runtime monitor follows only known sessions and validates owners without idle requests") {
+            let router = try RuntimeTestRouter()
+            defer { router.stop() }
+            let deliveries = RuntimeDeliveries()
+            let monitor = CodexRuntimeStatusMonitor(codexHome: router.home)
+            monitor.setSessions(["known"])
+            monitor.start(onChange: { deliveries.frames.append($0) }, onUnavailable: { deliveries.unavailable.formUnion($0) })
+            defer { monitor.stop() }
+            try await runtimeWait { router.following("known", value: true) == 1 }
+            try expect(router.messages.first?["method"] as? String == "initialize", "initial handshake missing")
+            let initialParameters = router.messages.first?["params"] as? [String: Any]
+            try expect(initialParameters?["clientType"] as? String == "codexbar", "monitor impersonated an official client")
+            let settled = router.messages.count
+            try await Task.sleep(for: .milliseconds(180))
+            try expect(router.messages.count == settled, "idle monitor issued periodic requests")
+
+            router.publishUnrelated()
+            router.publish(session: "unknown")
+            router.publish(session: "known", source: "other-owner")
+            router.publish(session: "known", target: "other-client")
+            router.publish(session: "known", split: true)
+            try await runtimeWait { deliveries.frames.count == 1 }
+            try expect(deliveries.frames.count == 1, "unowned, incompatible, or untargeted message reached projection")
+
+            monitor.requestSnapshot(sessionID: "known")
+            try await runtimeWait { router.following("known", value: true) == 2 }
+            monitor.setSessions([])
+            try await runtimeWait { deliveries.unavailable.contains("known") }
+            try await runtimeWait { router.disconnected }
+        },
+        CodexBarTestCase(name: "runtime monitor revokes incompatible streams without retrying on every Hook") {
+            let router = try RuntimeTestRouter()
+            defer { router.stop() }
+            let deliveries = RuntimeDeliveries()
+            let monitor = CodexRuntimeStatusMonitor(codexHome: router.home)
+            monitor.setSessions(["known"])
+            monitor.start(onChange: { deliveries.frames.append($0) }, onUnavailable: { deliveries.unavailable.formUnion($0) })
+            defer { monitor.stop() }
+            try await runtimeWait { router.following("known", value: true) == 1 }
+            router.publish(session: "known")
+            try await runtimeWait { deliveries.frames.count == 1 }
+            router.publish(session: "known", version: 12)
+            try await runtimeWait { deliveries.unavailable.contains("known") }
+            try await runtimeWait { router.following("known", value: false) == 1 }
+            monitor.retryDiscovery()
+            router.publish(session: "known")
+            try await Task.sleep(for: .milliseconds(100))
+            try expect(deliveries.frames.count == 1 && router.discoveryCount == 1,
+                       "incompatible owner was retried or retained authority")
+            monitor.refresh()
+            try await runtimeWait { router.following("known", value: true) == 2 }
+        },
+        CodexBarTestCase(name: "runtime monitor discovers new peers and invalidates disconnected owners") {
+            let router = try RuntimeTestRouter()
+            defer { router.stop() }
+            router.hasOwner = false
+            let deliveries = RuntimeDeliveries()
+            let monitor = CodexRuntimeStatusMonitor(codexHome: router.home)
+            monitor.setSessions(["known"])
+            monitor.start(onChange: { deliveries.frames.append($0) }, onUnavailable: { deliveries.unavailable.formUnion($0) })
+            defer { monitor.stop() }
+            try await runtimeWait { router.discoveryCount == 1 }
+            try await Task.sleep(for: .milliseconds(120))
+            try expect(router.discoveryCount == 1, "no-owner response caused a discovery loop")
+            router.hasOwner = true
+            router.peerStatus("connected")
+            try await runtimeWait { router.following("known", value: true) == 1 }
+            router.publish(session: "known")
+            try await runtimeWait { deliveries.frames.count == 1 }
+            router.hasOwner = false
+            router.peerStatus("disconnected")
+            try await runtimeWait { deliveries.unavailable.contains("known") }
+            router.publish(session: "known")
+            try await Task.sleep(for: .milliseconds(100))
+            try expect(deliveries.frames.count == 1, "disconnected owner remained trusted")
+        },
+        CodexBarTestCase(name: "runtime monitor connects when a secure socket appears and rejects exposed sockets") {
+            let router = try RuntimeTestRouter(startImmediately: false)
+            defer { router.stop() }
+            let monitor = CodexRuntimeStatusMonitor(codexHome: router.home)
+            monitor.setSessions(["known"])
+            monitor.start(onChange: { _ in })
+            defer { monitor.stop() }
+            try router.start(mode: 0o666)
+            try await Task.sleep(for: .milliseconds(160))
+            try expect(router.messages.isEmpty, "monitor connected to a world-accessible socket")
+            try expect(chmod(router.socketPath, 0o600) == 0, "could not secure fixture socket")
+            monitor.refresh()
+            try await runtimeWait { router.following("known", value: true) == 1 }
+        },
+        CodexBarTestCase(name: "runtime monitor reconnects on socket replacement and stops stale callbacks") {
+            let router = try RuntimeTestRouter()
+            defer { router.stop() }
+            let deliveries = RuntimeDeliveries()
+            let monitor = CodexRuntimeStatusMonitor(codexHome: router.home)
+            monitor.setSessions(["known"])
+            monitor.start(onChange: { deliveries.frames.append($0) }, onUnavailable: { deliveries.unavailable.formUnion($0) })
+            try await runtimeWait { router.following("known", value: true) == 1 }
+            router.closeListenerAndClient()
+            try await runtimeWait { deliveries.unavailable.contains("known") }
+            try router.start()
+            try await runtimeWait { router.following("known", value: true) == 2 }
+            monitor.stop()
+            router.publish(session: "known")
+            try await Task.sleep(for: .milliseconds(100))
+            try expect(deliveries.frames.isEmpty, "stopped monitor delivered a stale frame")
+        }
+    ]
+}
+
+@MainActor
+private final class RuntimeDeliveries {
+    var frames: [Data] = []
+    var unavailable: Set<String> = []
+}
+
+@MainActor
+private func runtimeWait(_ condition: () -> Bool) async throws {
+    let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+    while !condition() && ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    try expect(condition(), "runtime socket event did not arrive")
+}
+
+/// A synthetic router; every path and thread ID belongs to this fixture.
+@MainActor
+private final class RuntimeTestRouter {
+    let directory: URL
+    let home: URL
+    let socketPath: String
+    var messages: [[String: Any]] = []
+    var hasOwner = true
+    var disconnected = false
+    private var listener: Int32 = -1
+    private var client: Int32 = -1
+    private var acceptSource: (any DispatchSourceRead)?
+    private var readSource: (any DispatchSourceRead)?
+    private var buffer = Data()
+
+    var discoveryCount: Int { messages.filter { $0["method"] as? String == "thread-owner-discovery" }.count }
+
+    init(startImmediately: Bool = true) throws {
+        directory = URL(fileURLWithPath: "/tmp/cbr-\(UUID().uuidString.prefix(12))")
+        home = directory.appendingPathComponent("home")
+        socketPath = home.appendingPathComponent("ipc/ipc.sock").path
+        try FileManager.default.createDirectory(at: home.appendingPathComponent("ipc"), withIntermediateDirectories: true,
+                                               attributes: [.posixPermissions: 0o700])
+        if startImmediately { try start() }
+    }
+
+    func start(mode: mode_t = 0o600) throws {
+        listener = socket(AF_UNIX, SOCK_STREAM, 0)
+        try expect(listener >= 0, "fixture socket creation failed")
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let path = Array(socketPath.utf8) + [0]
+        withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: path) }
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        try expect(bound == 0, "fixture bind failed")
+        try expect(chmod(socketPath, mode) == 0 && listen(listener, 4) == 0, "fixture listen failed")
+        _ = fcntl(listener, F_SETFL, O_NONBLOCK)
+        let source = DispatchSource.makeReadSource(fileDescriptor: listener, queue: .main)
+        source.setEventHandler { [weak self] in
+            Task { @MainActor [weak self] in self?.acceptClient() }
+        }
+        let descriptor = listener
+        source.setCancelHandler { close(descriptor) }
+        acceptSource = source
+        source.activate()
+    }
+
+    func following(_ session: String, value: Bool) -> Int {
+        messages.filter {
+            let parameters = $0["params"] as? [String: Any]
+            return $0["method"] as? String == "thread-stream-following-changed"
+                && parameters?["conversationId"] as? String == session
+                && parameters?["following"] as? Bool == value
+        }.count
+    }
+
+    func publishUnrelated() {
+        send(["type": "broadcast", "method": "unrelated-notification", "version": 0,
+              "sourceClientId": "other-client", "params": ["status": ["type": "active"]]])
+    }
+
+    func peerStatus(_ status: String) {
+        send(["type": "broadcast", "method": "client-status-changed", "version": 0,
+              "sourceClientId": "owner", "params": ["clientId": "owner", "clientType": "vscode", "status": status]])
+    }
+
+    func publish(session: String, source: String = "owner", version: Int = 11, target: String = "fixture-client", split: Bool = false) {
+        send(["type": "broadcast", "method": "thread-stream-state-changed", "version": version,
+              "sourceClientId": source, "targetClientIds": [target],
+              "params": ["hostId": "local", "conversationId": session,
+                         "change": ["type": "snapshot", "revision": 1,
+                                    "conversationState": ["threadRuntimeStatus": ["type": "active", "activeFlags": []]]]]], split: split)
+    }
+
+    func closeListenerAndClient() {
+        acceptSource?.cancel()
+        acceptSource = nil
+        listener = -1
+        readSource?.cancel()
+        readSource = nil
+        client = -1
+        buffer.removeAll()
+        unlink(socketPath)
+    }
+
+    func stop() {
+        closeListenerAndClient()
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    private func acceptClient() {
+        guard listener >= 0 else { return }
+        let accepted = accept(listener, nil, nil)
+        guard accepted >= 0 else { return }
+        client = accepted
+        disconnected = false
+        _ = fcntl(client, F_SETFL, O_NONBLOCK)
+        var enabled: Int32 = 1
+        setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &enabled, socklen_t(MemoryLayout<Int32>.size))
+        let source = DispatchSource.makeReadSource(fileDescriptor: accepted, queue: .main)
+        source.setEventHandler { [weak self] in
+            Task { @MainActor [weak self] in self?.readMessages() }
+        }
+        source.setCancelHandler { close(accepted) }
+        readSource = source
+        source.activate()
+    }
+
+    private func readMessages() {
+        guard client >= 0 else { return }
+        var bytes = [UInt8](repeating: 0, count: 8192)
+        let count = recv(client, &bytes, bytes.count, 0)
+        if count == 0 {
+            disconnected = true
+            readSource?.cancel()
+            readSource = nil
+            client = -1
+            return
+        }
+        guard count > 0 else { return }
+        buffer.append(contentsOf: bytes.prefix(count))
+        while buffer.count >= 4 {
+            let length = buffer.prefix(4).enumerated().reduce(0) { $0 | (Int($1.element) << ($1.offset * 8)) }
+            guard buffer.count >= length + 4 else { return }
+            let data = Data(buffer.dropFirst(4).prefix(length))
+            buffer.removeFirst(length + 4)
+            guard let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            messages.append(message)
+            guard let requestID = message["requestId"] as? String else { continue }
+            if message["method"] as? String == "initialize" {
+                send(["type": "response", "requestId": requestID, "resultType": "success", "method": "initialize",
+                      "handledByClientId": "fixture-client", "result": ["clientId": "fixture-client"]])
+            } else if message["method"] as? String == "thread-owner-discovery" {
+                if hasOwner {
+                    send(["type": "response", "requestId": requestID, "resultType": "success", "method": "thread-owner-discovery",
+                          "handledByClientId": "owner", "result": ["supportsUntrustedAppInput": true]])
+                } else {
+                    send(["type": "response", "requestId": requestID, "resultType": "error", "error": "no-client-found"])
+                }
+            }
+        }
+    }
+
+    private func send(_ object: [String: Any], split: Bool = false) {
+        guard client >= 0, let data = try? JSONSerialization.data(withJSONObject: object) else { return }
+        var length = UInt32(data.count).littleEndian
+        var frame = withUnsafeBytes(of: &length) { Data($0) }
+        frame.append(data)
+        if split {
+            frame.prefix(2).withUnsafeBytes { _ = Darwin.send(client, $0.baseAddress, $0.count, 0) }
+            frame.dropFirst(2).withUnsafeBytes { _ = Darwin.send(client, $0.baseAddress, $0.count, 0) }
+        } else {
+            frame.withUnsafeBytes { _ = Darwin.send(client, $0.baseAddress, $0.count, 0) }
+        }
+    }
+}

@@ -7,6 +7,7 @@ public enum CodexTaskActivityKind: String, Codable, Equatable, Sendable {
     case edit
     case test
     case command
+    case agent
 }
 
 public struct CodexHookActivitySummary: Codable, Equatable, Sendable {
@@ -302,7 +303,7 @@ public final class LiveTaskActivityStore: ObservableObject {
             }
             return true
 
-        case .permissionRequest:
+        case .permissionRequest, .postToolUse:
             return true
 
         case .stop:
@@ -589,6 +590,8 @@ public final class LiveTaskActivityStore: ObservableObject {
             return activity.safeSubject.map { "运行 \($0) 测试" } ?? "运行测试"
         case .command:
             return "执行命令"
+        case .agent:
+            return "子任务协作"
         }
     }
 }

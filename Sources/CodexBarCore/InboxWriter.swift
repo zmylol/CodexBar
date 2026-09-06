@@ -26,7 +26,8 @@ public struct InboxWriter {
         let planMarker = event.plan == nil ? "" : ".plan"
         let stem = try filenameTimestamp(event.timestamp)
             + "_\(UUID().uuidString.lowercased())\(planMarker)"
-        let destination = event.name == .preToolUse ? paths.activity : paths.inbox
+        let isTransientActivity = event.name == .preToolUse && event.toolExecution == nil
+        let destination = isTransientActivity ? paths.activity : paths.inbox
         let temporaryURL = destination.appendingPathComponent(".\(stem).tmp")
         let finalURL = destination.appendingPathComponent("\(stem).json")
 
@@ -44,7 +45,7 @@ public struct InboxWriter {
             ofItemAtPath: temporaryURL.path
         )
         try fileManager.moveItem(at: temporaryURL, to: finalURL)
-        if event.name == .preToolUse {
+        if isTransientActivity {
             trimPendingActivity(preserving: finalURL)
         }
         return finalURL

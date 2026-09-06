@@ -215,7 +215,7 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
         try paths.prepareEventDirectories(fileManager: fileManager)
         var destinations: Set<URL> = []
         for pendingEvent in pendingEvents {
-            if pendingEvent.event.name == .preToolUse {
+            if pendingEvent.event.name == .preToolUse || pendingEvent.event.name == .postToolUse {
                 do {
                     try fileManager.removeItem(at: pendingEvent.sourceURL)
                 } catch {
@@ -229,7 +229,11 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
                 for: pendingEvent.sourceURL.lastPathComponent,
                 in: paths.processed
             )
-            try fileManager.moveItem(at: pendingEvent.sourceURL, to: destination)
+            if pendingEvent.event.toolExecution != nil {
+                try archiveWithoutExecutionMetadata(pendingEvent, to: destination)
+            } else {
+                try fileManager.moveItem(at: pendingEvent.sourceURL, to: destination)
+            }
             destinations.insert(destination)
         }
         guard !destinations.isEmpty else {
@@ -240,6 +244,38 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
             preserving: destinations,
             fileManager: fileManager
         )
+    }
+
+    private func archiveWithoutExecutionMetadata(
+        _ pendingEvent: PendingCodexEvent,
+        to destination: URL
+    ) throws {
+        let event = pendingEvent.event
+        let archiveEvent = CodexHookEvent(
+            id: event.id,
+            sessionID: event.sessionID,
+            turnID: event.turnID,
+            cwd: event.cwd,
+            name: event.name,
+            promptSummary: event.promptSummary,
+            toolName: event.toolName,
+            timestamp: event.timestamp,
+            lastAssistantMessagePresent: event.lastAssistantMessagePresent,
+            source: event.source
+        )
+        let data = try JSONEncoder.codexBar.encode(archiveEvent)
+        let temporaryURL = paths.processed.appendingPathComponent(".\(UUID().uuidString).tmp")
+        defer { try? fileManager.removeItem(at: temporaryURL) }
+        guard fileManager.createFile(
+            atPath: temporaryURL.path,
+            contents: data,
+            attributes: [.posixPermissions: NSNumber(value: 0o600)]
+        ) else {
+            throw CocoaError(.fileWriteUnknown, userInfo: [NSURLErrorKey: temporaryURL])
+        }
+        try fileManager.moveItem(at: temporaryURL, to: destination)
+        // Keep the original correlation data available until its redacted archive is written.
+        try fileManager.removeItem(at: pendingEvent.sourceURL)
     }
 
     private func uniqueDestinationURL(for filename: String, in directory: URL) -> URL {
