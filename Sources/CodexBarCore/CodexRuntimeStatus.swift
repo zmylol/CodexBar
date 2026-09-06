@@ -15,6 +15,8 @@ public struct CodexRuntimeStatusUpdate: Equatable, Sendable {
 }
 
 public struct CodexRuntimeStatusResult: Sendable {
+    /// Validated local envelope identity, including frames that leave task status unchanged.
+    public var sessionID: String?
     public var update: CodexRuntimeStatusUpdate?
     public var resnapshotSessionID: String?
     public var invalidatedSessionID: String?
@@ -56,7 +58,7 @@ public struct CodexRuntimeStatusReducer: Sendable {
         let sessionID = header.params.conversationId
         guard header.version == 11 else {
             reset(sessionID: sessionID)
-            return CodexRuntimeStatusResult(invalidatedSessionID: sessionID)
+            return CodexRuntimeStatusResult(sessionID: sessionID, invalidatedSessionID: sessionID)
         }
         let previous = states[sessionID]
         do {
@@ -65,7 +67,7 @@ public struct CodexRuntimeStatusReducer: Sendable {
             guard change.revision >= 0 else { throw RuntimeProjectionError.invalid }
             if let previous, previous.owner == header.sourceClientId,
                change.revision <= previous.revision {
-                return CodexRuntimeStatusResult()
+                return CodexRuntimeStatusResult(sessionID: sessionID)
             }
             var metadata: RuntimeMetadata
             switch change.type {
@@ -91,7 +93,7 @@ public struct CodexRuntimeStatusReducer: Sendable {
                   metadata["source"].string == "vscode"
             else {
                 reset(sessionID: sessionID)
-                return CodexRuntimeStatusResult(invalidatedSessionID: sessionID)
+                return CodexRuntimeStatusResult(sessionID: sessionID, invalidatedSessionID: sessionID)
             }
             awaitingSnapshots.remove(sessionID)
             let update = projectedUpdate(metadata, sessionID: sessionID)
@@ -100,6 +102,7 @@ public struct CodexRuntimeStatusReducer: Sendable {
                 metadata: metadata, update: update
             )
             return CodexRuntimeStatusResult(
+                sessionID: sessionID,
                 update: update == previous?.update ? nil : update,
                 invalidatedSessionID: update == nil && previous?.update != nil ? sessionID : nil
             )
@@ -110,6 +113,7 @@ public struct CodexRuntimeStatusReducer: Sendable {
                 && !awaitingSnapshots.contains(sessionID)
             if awaitingSnapshots.count < 128 { awaitingSnapshots.insert(sessionID) }
             return CodexRuntimeStatusResult(
+                sessionID: sessionID,
                 resnapshotSessionID: shouldRequestSnapshot ? sessionID : nil,
                 invalidatedSessionID: sessionID
             )

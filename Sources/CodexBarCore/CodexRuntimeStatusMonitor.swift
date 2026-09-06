@@ -12,7 +12,10 @@ public final class CodexRuntimeStatusMonitor {
             let clientId: String?
             let status: String?
         }
-        struct Result: Decodable, Sendable { let clientId: String? }
+        struct Result: Decodable, Sendable {
+            let clientId: String?
+            let revision: Int?
+        }
         let type: String
         let method: String?
         let version: Int?
@@ -42,13 +45,20 @@ public final class CodexRuntimeStatusMonitor {
             // Other router clients have unrelated payload schemas; do not decode their fields.
             params = method == "thread-stream-state-changed" || method == "client-status-changed"
                 ? try values.decodeIfPresent(Parameters.self, forKey: .params) : nil
-            result = type == "response" && method == "initialize"
+            result = type == "response" && (method == "initialize" || method == "thread-follower-load-complete-history")
                 ? try values.decodeIfPresent(Result.self, forKey: .result) : nil
         }
     }
 
     private struct PendingRequest {
         let sessionID: String?
+        let timeout: Task<Void, Never>
+    }
+
+    private struct HistoryRequest {
+        let sessionID: String
+        let owner: String
+        let completion: @MainActor @Sendable (Int?) -> Void
         let timeout: Task<Void, Never>
     }
 
@@ -68,6 +78,7 @@ public final class CodexRuntimeStatusMonitor {
     private var attemptedSessions: Set<String> = []
     private var incompatibleSessions: Set<String> = []
     private var pending: [String: PendingRequest] = [:]
+    private var historyRequests: [String: HistoryRequest] = [:]
     private var connection: NWConnection?
     private var connectionID: UUID?
     private var connectedSocket: (path: String, identity: FileIdentity)?
@@ -109,6 +120,7 @@ public final class CodexRuntimeStatusMonitor {
             request.timeout.cancel()
             pending.removeValue(forKey: requestID)
         }
+        finishHistoryRequests(sessions: removed)
         attemptedSessions.subtract(removed)
         incompatibleSessions.subtract(removed)
         self.sessions = sessions
@@ -166,6 +178,32 @@ public final class CodexRuntimeStatusMonitor {
         }
     }
 
+    /// Loads existing conversation history through its owner without starting or resuming a turn.
+    public func requestCompleteHistory(
+        sessionID: String,
+        completion: @escaping @MainActor @Sendable (Int?) -> Void
+    ) {
+        guard running, sessions.contains(sessionID), let owner = owners[sessionID], let clientID,
+              pending.count + historyRequests.count < Self.maximumPendingRequests,
+              !historyRequests.values.contains(where: { $0.sessionID == sessionID }) else {
+            completion(nil)
+            return
+        }
+        let requestID = UUID().uuidString
+        let timeout = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            guard let request = self?.historyRequests.removeValue(forKey: requestID) else { return }
+            request.completion(nil)
+        }
+        historyRequests[requestID] = HistoryRequest(
+            sessionID: sessionID, owner: owner, completion: completion, timeout: timeout
+        )
+        send(["type": "request", "requestId": requestID, "sourceClientId": clientID,
+              "targetClientId": owner, "hostId": "local", "version": 2,
+              "method": "thread-follower-load-complete-history", "params": ["conversationId": sessionID],
+              "timeoutMs": 30_000])
+    }
+
     public func stop() {
         for (sessionID, owner) in owners {
             sendFollowing(sessionID, owner: owner, following: false)
@@ -180,6 +218,7 @@ public final class CodexRuntimeStatusMonitor {
     deinit {
         connection?.cancel()
         for request in pending.values { request.timeout.cancel() }
+        for request in historyRequests.values { request.timeout.cancel() }
     }
 
     private func disconnect() {
@@ -195,7 +234,17 @@ public final class CodexRuntimeStatusMonitor {
         incompatibleSessions.removeAll()
         for request in pending.values { request.timeout.cancel() }
         pending.removeAll()
+        finishHistoryRequests(sessions: Set(historyRequests.values.map(\.sessionID)))
         if !unavailable.isEmpty { onUnavailable?(unavailable) }
+    }
+
+    private func finishHistoryRequests(sessions: Set<String>) {
+        let requests = historyRequests.filter { sessions.contains($0.value.sessionID) }
+        for (requestID, request) in requests {
+            historyRequests.removeValue(forKey: requestID)
+            request.timeout.cancel()
+            request.completion(nil)
+        }
     }
 
     private var socketPaths: [String] {
@@ -285,6 +334,16 @@ public final class CodexRuntimeStatusMonitor {
             return
         }
         if envelope.type == "response", let requestID = envelope.requestId,
+           let request = historyRequests.removeValue(forKey: requestID) {
+            request.timeout.cancel()
+            let valid = envelope.method == "thread-follower-load-complete-history"
+                && envelope.resultType == "success" && envelope.handledByClientId == request.owner
+                && owners[request.sessionID] == request.owner && sessions.contains(request.sessionID)
+            let revision = envelope.result?.revision
+            request.completion(valid && revision.map({ $0 >= 0 }) == true ? revision : nil)
+            return
+        }
+        if envelope.type == "response", let requestID = envelope.requestId,
            let request = pending.removeValue(forKey: requestID) {
             request.timeout.cancel()
             if let sessionID = request.sessionID {
@@ -311,6 +370,7 @@ public final class CodexRuntimeStatusMonitor {
             if envelope.params?.status == "disconnected" {
                 let unavailable = Set(owners.filter { $0.value == peerID }.keys)
                 for sessionID in unavailable { owners.removeValue(forKey: sessionID) }
+                finishHistoryRequests(sessions: unavailable)
                 if !unavailable.isEmpty { onUnavailable?(unavailable) }
             }
             if envelope.params?.status == "connected" || envelope.params?.status == "disconnected" {
@@ -326,6 +386,7 @@ public final class CodexRuntimeStatusMonitor {
         guard envelope.version == 11 else {
             // Stop trusting this stream until explicit refresh or a peer lifecycle change.
             sendFollowing(sessionID, owner: owner, following: false)
+            finishHistoryRequests(sessions: [sessionID])
             owners.removeValue(forKey: sessionID)
             incompatibleSessions.insert(sessionID)
             onUnavailable?([sessionID])
@@ -340,7 +401,7 @@ public final class CodexRuntimeStatusMonitor {
         for sessionID in sessions.sorted() where owners[sessionID] == nil
             && !attemptedSessions.contains(sessionID) && !incompatibleSessions.contains(sessionID)
             && !discovering.contains(sessionID) {
-            guard pending.count < Self.maximumPendingRequests else { break }
+            guard pending.count + historyRequests.count < Self.maximumPendingRequests else { break }
             attemptedSessions.insert(sessionID)
             sendRequest(method: "thread-owner-discovery", version: 1, sessionID: sessionID,
                         params: ["hostId": "local", "conversationId": sessionID])

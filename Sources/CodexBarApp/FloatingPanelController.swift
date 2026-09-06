@@ -52,7 +52,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     private var panelFrameUpdateTask: Task<Void, Never>?
     private var detailSelection = CodexBarDetailSelection()
     private var displayedDetailTarget: CodexBarDetailTarget?
-    private var detailTaskID: String?
+    private var detailSessionID: String?
     private var measuredDetailHeight: CGFloat?
     private var isDetailHovered = false
     private var isUpdatingPanelFrame = false
@@ -122,6 +122,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         panel.contentView = hostingView
 
         detailPanel.delegate = self
+        detailPanel.title = "CodexBar 会话预览"
         (detailPanel as? CodexBarDetailPanel)?.onDismiss = { [weak self] in
             self?.dismissTaskDetail()
         }
@@ -299,7 +300,8 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
 
     private func refreshTaskDetail() {
         let retainedTarget = isDetailHovered || detailPanel.isKeyWindow ? displayedDetailTarget : nil
-        guard let target = detailSelection.selected ?? retainedTarget else {
+        let target = detailPanel.isKeyWindow ? retainedTarget : detailSelection.selected ?? retainedTarget
+        guard let target else {
             hideTaskDetail(clearTriggers: false)
             return
         }
@@ -382,19 +384,24 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     private func showTaskDetail(_ task: CodexTask, rowMidY: CGFloat) {
         detailHideTask?.cancel()
         detailHideTask = nil
+        let retainsPreview = detailSessionID == task.sessionID && displayedDetailTarget?.cwd == task.cwd
         displayedDetailTarget = CodexBarDetailTarget(cwd: task.cwd, rowMidY: rowMidY)
-        let preferredHeight = detailTaskID == task.id
+        model.beginConversationPreview(task)
+        let preferredHeight = retainsPreview
             ? measuredDetailHeight ?? CodexBarPanelLayout.defaultDetailHeight
             : CodexBarPanelLayout.defaultDetailHeight
 
-        if detailTaskID != task.id {
+        if !retainsPreview {
             measuredDetailHeight = nil
-            detailTaskID = task.id
+            detailSessionID = task.sessionID
             let cwd = task.cwd
             let detailView = TaskHoverDetailView(
                 store: model.store,
                 activityStore: model.activityStore,
+                previewStore: model.previewStore,
                 cwd: cwd,
+                onRefreshPreview: { [weak self] in self?.model.refreshConversationPreview() },
+                onLoadHistory: { [weak self] in self?.model.loadConversationHistory() },
                 onOpen: { [weak self] in
                     guard let self,
                           let currentTask = model.visibleTasks.first(where: { $0.cwd == cwd })
@@ -408,7 +415,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
                     self?.detailHoverChanged(hovering)
                 },
                 onPreferredHeightChanged: { [weak self] preferredHeight in
-                    self?.detailHeightChanged(preferredHeight, cwd: cwd, taskID: task.id)
+                    self?.detailHeightChanged(preferredHeight, cwd: cwd, sessionID: task.sessionID)
                 },
                 onDismiss: { [weak self] in
                     self?.dismissTaskDetail()
@@ -423,12 +430,12 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         detailPanel.orderFrontRegardless()
     }
 
-    private func detailHeightChanged(_ preferredHeight: CGFloat, cwd: String, taskID: String) {
+    private func detailHeightChanged(_ preferredHeight: CGFloat, cwd: String, sessionID: String) {
         guard let target = displayedDetailTarget,
               target.cwd == cwd,
               let task = model.visibleTasks.first(where: { $0.cwd == cwd }),
-              detailTaskID == taskID,
-              task.id == taskID
+              detailSessionID == sessionID,
+              task.sessionID == sessionID
         else {
             return
         }
@@ -484,7 +491,8 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         taskListResponder = nil
         detailPanel.orderOut(nil)
         detailPanel.contentView = nil
-        detailTaskID = nil
+        model.endConversationPreview()
+        detailSessionID = nil
         measuredDetailHeight = nil
         isDetailHovered = false
         if clearTriggers {

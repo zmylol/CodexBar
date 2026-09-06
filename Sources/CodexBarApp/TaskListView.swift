@@ -313,11 +313,11 @@ private struct CompactTaskRow: View {
                         "\(task.isUnread ? "未读，" : "")\(accessibilityTimeText)"
                             + "，\(summary.accessibilitySummary)"
                     )
-                    .accessibilityHint("切换到对应的 VS Code 窗口，按右方向键查看进展详情")
+                    .accessibilityHint("切换到对应的 VS Code 窗口，按右方向键查看会话预览")
                     .accessibilityInputLabels([task.workspaceName, task.title])
 
                     Menu {
-                        Button("查看进展详情") { onDetailRequested(task, rowMidY) }
+                        Button("查看会话预览") { onDetailRequested(task, rowMidY) }
                         Button("删除任务", role: .destructive, action: deleteAction)
                     } label: {
                         Image(systemName: "ellipsis")
@@ -368,7 +368,7 @@ private struct CompactTaskRow: View {
                     if direction == .right { onDetailRequested(task, rowMidY) }
                 }
                 .contextMenu {
-                    Button("查看进展详情") { onDetailRequested(task, rowMidY) }
+                    Button("查看会话预览") { onDetailRequested(task, rowMidY) }
                     Button("删除任务", role: .destructive, action: deleteAction)
                 }
             }
@@ -388,19 +388,25 @@ private struct CompactTaskRow: View {
 struct TaskHoverDetailView: View {
     @ObservedObject private var store: TaskStore
     @ObservedObject private var activityStore: LiveTaskActivityStore
+    @ObservedObject private var previewStore: ConversationPreviewStore
 
     let cwd: String
     let onOpen: () -> Void
     let onHoverChanged: (Bool) -> Void
     let onPreferredHeightChanged: (CGFloat) -> Void
     let onDismiss: () -> Void
+    let onRefreshPreview: () -> Void
+    let onLoadHistory: () -> Void
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     init(
         store: TaskStore,
         activityStore: LiveTaskActivityStore,
+        previewStore: ConversationPreviewStore,
         cwd: String,
+        onRefreshPreview: @escaping () -> Void,
+        onLoadHistory: @escaping () -> Void,
         onOpen: @escaping () -> Void,
         onHoverChanged: @escaping (Bool) -> Void,
         onPreferredHeightChanged: @escaping (CGFloat) -> Void,
@@ -408,38 +414,45 @@ struct TaskHoverDetailView: View {
     ) {
         self.store = store
         self.activityStore = activityStore
+        self.previewStore = previewStore
         self.cwd = cwd
         self.onOpen = onOpen
         self.onHoverChanged = onHoverChanged
         self.onPreferredHeightChanged = onPreferredHeightChanged
         self.onDismiss = onDismiss
+        self.onRefreshPreview = onRefreshPreview
+        self.onLoadHistory = onLoadHistory
     }
 
     var body: some View {
-        ScrollView {
-            Group {
-                if let task = store.tasks.first(where: { $0.cwd == cwd }) {
-                    let summary = CodexTaskDetailSummary(
-                        task: task,
-                        plan: activityStore.plan(for: task),
-                        activities: activityStore.nodes(for: task)
-                    )
-                    TimelineView(.periodic(from: .now, by: 60)) { context in
-                        TaskDetailCard(task: task, summary: summary, date: context.date, onOpen: onOpen)
-                    }
-                } else {
-                    Color.clear.frame(height: 0)
+        Group {
+            if let task = store.tasks.first(where: { $0.cwd == cwd }) {
+                let summary = CodexTaskDetailSummary(
+                    task: task,
+                    plan: activityStore.plan(for: task),
+                    activities: activityStore.nodes(for: task)
+                )
+                let preview = previewStore.preview.flatMap { candidate in
+                    candidate.sessionID == task.sessionID && candidate.cwd == task.cwd ? candidate : nil
                 }
-            }
-            .frame(width: CodexBarPanelLayout.detailWidth, alignment: .topLeading)
-            .fixedSize(horizontal: false, vertical: true)
-            .background {
-                GeometryReader { geometry in
-                    Color.clear.preference(key: TaskDetailHeightKey.self, value: geometry.size.height)
-                }
+                TaskDetailCard(
+                    task: task,
+                    summary: summary,
+                    preview: preview,
+                    state: previewStore.state,
+                    message: previewStore.message,
+                    isLoadingHistory: previewStore.isLoadingHistory,
+                    onOpen: onOpen,
+                    onRefreshPreview: onRefreshPreview,
+                    onLoadHistory: onLoadHistory
+                )
+                .id(task.sessionID)
+            } else {
+                Color.clear
             }
         }
         .frame(width: CodexBarPanelLayout.detailWidth, alignment: .topLeading)
+        .frame(maxHeight: .infinity)
         .background {
             if reduceTransparency {
                 Color(nsColor: .windowBackgroundColor)
@@ -453,19 +466,10 @@ struct TaskHoverDetailView: View {
                 .stroke(Color.primary.opacity(0.10), lineWidth: 1)
         }
         .onHover(perform: onHoverChanged)
-        .onPreferenceChange(TaskDetailHeightKey.self) { height in
-            if height > 0 { onPreferredHeightChanged(height.rounded(.up)) }
-        }
+        .onAppear { onPreferredHeightChanged(520) }
         .onExitCommand(perform: onDismiss)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(store.tasks.first(where: { $0.cwd == cwd })?.workspaceName ?? "任务") 进展详情")
-    }
-}
-
-private struct TaskDetailHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
+        .accessibilityLabel("\(store.tasks.first(where: { $0.cwd == cwd })?.workspaceName ?? "任务") 会话预览")
     }
 }
 

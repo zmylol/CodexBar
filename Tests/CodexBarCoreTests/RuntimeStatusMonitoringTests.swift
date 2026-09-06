@@ -5,6 +5,65 @@ import CodexBarCore
 @MainActor
 func runtimeStatusMonitoringTests() -> [CodexBarTestCase] {
     [
+        CodexBarTestCase(name: "history loading targets the known owner and reports its snapshot revision") {
+            let router = try RuntimeTestRouter()
+            defer { router.stop() }
+            let monitor = CodexRuntimeStatusMonitor(codexHome: router.home)
+            monitor.setSessions(["known"])
+            monitor.start(onChange: { _ in })
+            defer { monitor.stop() }
+            try await runtimeWait { router.following("known", value: true) == 1 }
+            var completed = false
+            var revision: Int?
+            monitor.requestCompleteHistory(sessionID: "known") { value in
+                revision = value
+                completed = true
+            }
+            try await runtimeWait { completed }
+            let request = router.messages.last { $0["method"] as? String == "thread-follower-load-complete-history" }
+            try expect(revision == 3, "history completion lost the owner's revision")
+            try expect(request?["version"] as? Int == 2 && request?["hostId"] as? String == "local",
+                       "history request did not use the host-routed protocol")
+            try expect(request?["targetClientId"] as? String == "owner", "history request was not owner-targeted")
+            let parameters = request?["params"] as? [String: String]
+            try expect(parameters == ["conversationId": "known"], "history request included unrelated parameters")
+        },
+        CodexBarTestCase(name: "history loading rejects unowned tasks and releases callbacks on stop") {
+            let router = try RuntimeTestRouter()
+            router.repliesToHistory = false
+            defer { router.stop() }
+            let monitor = CodexRuntimeStatusMonitor(codexHome: router.home)
+            monitor.setSessions(["known"])
+            monitor.start(onChange: { _ in })
+            defer { monitor.stop() }
+            try await runtimeWait { router.following("known", value: true) == 1 }
+            var unknownCompleted = false
+            monitor.requestCompleteHistory(sessionID: "unknown") { value in unknownCompleted = value == nil }
+            try expect(unknownCompleted, "unknown task attempted a history request")
+            var stoppedCompleted = false
+            monitor.requestCompleteHistory(sessionID: "known") { value in stoppedCompleted = value == nil }
+            try await runtimeWait { router.messages.contains { $0["method"] as? String == "thread-follower-load-complete-history" } }
+            monitor.stop()
+            try expect(stoppedCompleted, "stop left a history request waiting")
+        },
+        CodexBarTestCase(name: "history loading rejects a reply from a different owner") {
+            let router = try RuntimeTestRouter()
+            router.historyReplyOwner = "different-owner"
+            defer { router.stop() }
+            let monitor = CodexRuntimeStatusMonitor(codexHome: router.home)
+            monitor.setSessions(["known"])
+            monitor.start(onChange: { _ in })
+            defer { monitor.stop() }
+            try await runtimeWait { router.following("known", value: true) == 1 }
+            var completed = false
+            var accepted = false
+            monitor.requestCompleteHistory(sessionID: "known") { value in
+                accepted = value != nil
+                completed = true
+            }
+            try await runtimeWait { completed }
+            try expect(!accepted, "an unrelated owner completed the history request")
+        },
         CodexBarTestCase(name: "runtime monitor follows only known sessions and validates owners without idle requests") {
             let router = try RuntimeTestRouter()
             defer { router.stop() }
@@ -138,6 +197,8 @@ private final class RuntimeTestRouter {
     let socketPath: String
     var messages: [[String: Any]] = []
     var hasOwner = true
+    var repliesToHistory = true
+    var historyReplyOwner = "owner"
     var disconnected = false
     private var listener: Int32 = -1
     private var client: Int32 = -1
@@ -273,6 +334,10 @@ private final class RuntimeTestRouter {
                 } else {
                     send(["type": "response", "requestId": requestID, "resultType": "error", "error": "no-client-found"])
                 }
+            } else if message["method"] as? String == "thread-follower-load-complete-history", repliesToHistory {
+                send(["type": "response", "requestId": requestID, "resultType": "success",
+                      "method": "thread-follower-load-complete-history", "handledByClientId": historyReplyOwner,
+                      "result": ["revision": 3]])
             }
         }
     }

@@ -40,6 +40,12 @@ StartupTaskReconciler → TaskStore
 
 `CodexRuntimeStatusMonitor` 只连接当前用户已有的 Codex IPC socket，为可见任务查找原会话 owner 并订阅 `thread-stream-state-changed` v11。`CodexRuntimeStatusReducer` 在后台按 revision 投影必要状态，缺失增量时重新请求快照；不保留聊天内容。原会话的审批等待标记决定三角形，恢复 active 后立即显示执行中，无须等待工具完成。实时状态仅更新 session、turn 和 cwd 精确匹配的既有行；Hook 批次处理后重新应用当前投影，避免延迟 Hook 覆盖实时状态。断线、owner 离开或取消跟随后丢弃投影，窗口/文件/客户端事件及手动刷新触发重连，无周期轮询。接口为扩展内部协议，升级时必须重新验证兼容性。
 
+会话预览使用同一条已校验 owner/目标的连接。`ConversationPreviewWorker` 在后台只为当前展开的 session/cwd 维护 `CodexConversationPreviewReducer`，合并 snapshot 和 Immer patch，再发布给独立的 `ConversationPreviewStore`。canonical 历史与 live turns 合并为有序条目；同 revision 的快照仍接收，因为未广播的命令输出可能已变化。缺少基准或 revision 不连续时请求快照；正文预算 32 MiB，结构或预算超限明确失效。展示目标带 generation，切换前已排队的帧不能更新新预览。关闭预览释放正文，状态订阅继续独立运行；断线保留最后可见内容并标记不可用。
+
+`TaskDetailCard` 使用 420×520 的首选尺寸并受屏幕可用范围限制，固定顶栏与底栏，中间只有一个原生 `NSScrollView`。正文支持基本 Markdown、文字选择、用户消息和工具展开。滚动位置由 AppKit 管理，阅读旧内容时暂停跟随，补入早期条目时补偿高度变化。点击加载历史只向当前 owner 发送 `thread-follower-load-complete-history` v2，并等待相应 revision，不执行任何 turn 操作。协议验证和已知输出限制见 [CONTENT_PREVIEW_VERIFICATION.md](CONTENT_PREVIEW_VERIFICATION.md)。
+
+长会话首次只排版末尾 30 条，上滚接近顶部或点击本地前文按钮时再加入一批；起始位置按 item ID 保留，尾部新增不会挤走正在阅读的内容。所有已收到的正文仍在当前会话 reducer 内，分批只限制界面排版。状态投影同时返回已解析的 session ID，其他会话帧不再进入选中预览的正文解析。`ConversationPreviewStore` 只在可见内容变化时发布，revision 单独推进历史请求进度，同 revision 的新工具输出仍然更新。可用 `scripts/test-preview-performance` 复跑合成首开/更新基准与原生阅读行为检查。
+
 ## Targets
 
 - `CodexBarCore`：事件解析、脱敏、Inbox、状态机、持久化、App Server 恢复与窗口匹配；
@@ -54,7 +60,7 @@ StartupTaskReconciler → TaskStore
 - Hook 只接受精确的 `codex_vscode` originator；其他客户端、缺失值和变体均在读取 stdin 前静默退出；
 - 原始 stdin 有大小上限，持久化前只保留必要且脱敏的字段；
 - `PreToolUse` 不保留原始命令、补丁、搜索词、计划解释、MCP 参数或工具输出；普通动作只生成受限分类和安全路径摘要，`update_plan` 只保留脱敏截断后的步骤文字与三个已知状态；计划标题同时受字素数和 UTF-8 字节数限制；
-- 普通实时活动队列独立于生命周期 Inbox、全局最多 12 条且生命周期事件优先；队列满时先淘汰普通动作、保留计划快照；每个任务最多保留三个普通动作和一份最多 20 步的最新计划。`CodexTaskDetailSummary` 按“已做 → 当前 → 后续计划”组织详情，用完整短句突出当前阶段，并按时间显示最多三条不重复的近期动态及类别图标；待处理时保留计划上下文并突出操作入口，停止后仅显示最后进展。工具开始事件不代表成功，计划完成也不代表整轮成功。视图与任务行的辅助功能使用同一概览；任务说明、阶段和动态完整换行，面板随实际内容增高，到达屏幕可用高度后才滚动。鼠标进入卡片或键盘聚焦详情后仍保留展示目标，继续响应内容高度变化；新 prompt 会替换旧进度，Stop 后冻结，应用重启不会恢复；普通活动不改变任务状态、不写入 `tasks.json`，处理后不进入归档；
+- 普通实时活动队列独立于生命周期 Inbox、全局最多 12 条且生命周期事件优先；队列满时先淘汰普通动作、保留计划快照；每个任务最多保留三个普通动作和一份最多 20 步的最新计划。`CodexTaskDetailSummary` 为任务行辅助功能和正文不可用时的简要提示提供概览。工具开始事件不代表成功，计划完成也不代表整轮成功；新 prompt 会替换旧进度，Stop 后冻结，应用重启不会恢复；普通活动不改变任务状态、不写入 `tasks.json`，处理后不进入归档；
 - 审批关联的 `PreToolUse` / `PostToolUse` 经可靠 Inbox 按顺序交付，处理即删。TaskStore 的内存关联器只用工具调用 ID 与必要输入的哈希匹配审批；对应工具完成且没有其他未解决审批时，才将已有任务从需要处理恢复执行中。无法唯一匹配、缺失事件、重启及超限均保守保留提示；关联器随持久化失败一起回滚，关联元数据不写入任务快照；
 - 事件目录和文件分别使用 0700 与 0600 权限；计划只允许出现在精确的 `PreToolUse + update_plan` 临时事件中，不一致事件会直接删除；崩溃遗留且超过五分钟的受管 `.tmp` 会在现有目录扫描中清理；
 - 事件文件读取、移动和归档轮转在后台 actor 中串行执行；每批事件只提交一次任务快照、执行一次归档轮转；

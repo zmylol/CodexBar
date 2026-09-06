@@ -10,6 +10,7 @@ struct CodexBarTestRunner {
         tests += eventTransitionTestCases()
         tests += runtimeStatusStoreTestCases()
         tests += runtimeStatusTestCases()
+        tests += conversationPreviewTestCases()
         tests += runtimeStatusMonitoringTests()
         tests += taskTimeFormatterTestCases()
         tests += panelLayoutTestCases()

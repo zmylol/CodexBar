@@ -7,7 +7,7 @@ public enum CodexBarPanelDisplayMode: String, CaseIterable {
 
 public enum CodexBarPanelLayout {
     public static let compactWidth: CGFloat = 126
-    public static let detailWidth: CGFloat = 320
+    public static let detailWidth: CGFloat = 420
     public static let detailGap: CGFloat = 8
     public static let headerHeight: CGFloat = 28
     public static let rowHeight: CGFloat = 28
@@ -15,7 +15,7 @@ public enum CodexBarPanelLayout {
     public static let emptyHeight: CGFloat = 56
     public static let noticeHeight: CGFloat = 84
     public static let maximumRows = 5
-    public static let defaultDetailHeight: CGFloat = 220
+    public static let defaultDetailHeight: CGFloat = 520
 
     public static func height(
         taskCount: Int,

@@ -22,6 +22,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
 
     let store: TaskStore
     let activityStore: LiveTaskActivityStore
+    let previewStore = ConversationPreviewStore()
     var visibleTasks: [CodexTask] { taskVisibility.visibleTasks(in: store.tasks) }
     var visibleSortedTasks: [CodexTask] { taskVisibility.visibleTasks(in: store.sortedTasks) }
     var hasNoOpenWindows: Bool { taskVisibility.hasNoOpenWindows }
@@ -41,6 +42,11 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     private var runtimeEventBytes = 0
     private var runtimeProcessingTask: Task<Void, Never>?
     private var runtimeProcessingID: UUID?
+    private var previewTarget: (sessionID: String, cwd: String)?
+    private var previewGeneration: UUID?
+    private var previewWorker: ConversationPreviewWorker?
+    private var previewWaitTask: Task<Void, Never>?
+    private var historyExpectedRevision: Int?
     private let oldTaskCleanupWorker = OldTaskCleanupWorker()
     private var isStarted = false
     private var inboxNeedsProcessing = false
@@ -90,7 +96,8 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         }
         startInboxMonitoring()
         runtimeMonitor.start(onChange: { [weak self] data in
-            self?.enqueueRuntimeEvent(.frame(data))
+            guard let self else { return }
+            enqueueRuntimeEvent(.frame(data, previewGeneration))
         }, onUnavailable: { [weak self] sessions in
             self?.enqueueRuntimeEvent(.unavailable(sessions))
         })
@@ -123,6 +130,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
 
     func stop() {
         isStarted = false
+        endConversationPreview()
         runtimeMonitor.stop()
         runtimeProcessingTask?.cancel()
         runtimeProcessingTask = nil
@@ -468,12 +476,125 @@ final class CodexBarAppModel: NSObject, ObservableObject {
 
     private func synchronizeRuntimeSessions() {
         guard isStarted else { return }
+        if let target = previewTarget,
+           !visibleTasks.contains(where: { $0.sessionID == target.sessionID && $0.cwd == target.cwd }) {
+            endConversationPreview()
+        }
         runtimeMonitor.setSessions(Set(visibleTasks.map(\.sessionID)))
+    }
+
+    func beginConversationPreview(_ task: CodexTask) {
+        guard isStarted else { return }
+        if previewTarget?.sessionID == task.sessionID && previewTarget?.cwd == task.cwd { return }
+        endConversationPreview()
+        previewTarget = (task.sessionID, task.cwd)
+        previewGeneration = UUID()
+        previewWorker = ConversationPreviewWorker(sessionID: task.sessionID, cwd: task.cwd)
+        refreshConversationPreview()
+    }
+
+    func endConversationPreview() {
+        previewGeneration = nil
+        previewTarget = nil
+        previewWorker = nil
+        previewWaitTask?.cancel()
+        previewWaitTask = nil
+        historyExpectedRevision = nil
+        previewStore.clear()
+    }
+
+    func refreshConversationPreview() {
+        guard let target = previewTarget else { return }
+        if previewStore.state == .unavailable {
+            previewWorker = ConversationPreviewWorker(sessionID: target.sessionID, cwd: target.cwd)
+        }
+        if previewStore.preview == nil { previewStore.state = .loading }
+        previewStore.message = nil
+        runtimeMonitor.requestSnapshot(sessionID: target.sessionID)
+        waitForConversationPreview()
+    }
+
+    func loadConversationHistory() {
+        guard let target = previewTarget, let generation = previewGeneration,
+              !previewStore.isLoadingHistory else { return }
+        previewStore.isLoadingHistory = true
+        previewStore.message = nil
+        runtimeMonitor.requestCompleteHistory(sessionID: target.sessionID) { [weak self] revision in
+            guard let self, previewGeneration == generation else { return }
+            guard let revision else {
+                previewStore.isLoadingHistory = false
+                previewStore.message = "暂时无法加载较早内容，可以重试或返回会话查看。"
+                return
+            }
+            if let receivedRevision = previewStore.latestRevision, receivedRevision >= revision {
+                previewStore.isLoadingHistory = false
+            } else {
+                historyExpectedRevision = revision
+                runtimeMonitor.requestSnapshot(sessionID: target.sessionID)
+                waitForConversationPreview()
+            }
+        }
+    }
+
+    private func waitForConversationPreview() {
+        previewWaitTask?.cancel()
+        let generation = previewGeneration
+        previewWaitTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(8)) } catch { return }
+            guard let self, previewGeneration == generation else { return }
+            previewStore.state = .unavailable
+            previewStore.isLoadingHistory = false
+            historyExpectedRevision = nil
+            previewStore.message = "暂时无法读取最新会话，可以重试或返回会话查看。"
+        }
+    }
+
+    private func invalidateConversationPreview() {
+        guard let target = previewTarget else { return }
+        previewWaitTask?.cancel()
+        previewWaitTask = nil
+        previewWorker = ConversationPreviewWorker(sessionID: target.sessionID, cwd: target.cwd)
+        historyExpectedRevision = nil
+        previewStore.isLoadingHistory = false
+        previewStore.state = .unavailable
+        previewStore.message = previewStore.preview == nil
+            ? "会话连接暂不可用，可以重试或返回会话查看。"
+            : "连接已中断，当前显示上次读取的内容。"
+    }
+
+    private func applyConversationPreview(_ result: CodexConversationPreviewResult) {
+        guard let target = previewTarget else { return }
+        if result.invalidated {
+            previewStore.state = .unavailable
+            previewStore.isLoadingHistory = false
+            historyExpectedRevision = nil
+            previewStore.message = "无法读取这份会话内容，可以重试或返回会话查看。"
+        }
+        if result.needsSnapshot {
+            runtimeMonitor.requestSnapshot(sessionID: target.sessionID)
+            waitForConversationPreview()
+        }
+        if let preview = result.preview,
+           preview.sessionID == target.sessionID, preview.cwd == target.cwd {
+            if historyExpectedRevision.map({ preview.revision >= $0 }) ?? true {
+                previewWaitTask?.cancel()
+                previewWaitTask = nil
+            }
+            previewStore.receive(preview)
+            if previewStore.state != .ready {
+                previewStore.message = nil
+                previewStore.state = .ready
+            }
+            if let expected = historyExpectedRevision, preview.revision >= expected {
+                historyExpectedRevision = nil
+                previewStore.isLoadingHistory = false
+            }
+        }
     }
 
     private func enqueueRuntimeEvent(_ event: RuntimeStatusEvent) {
         guard isStarted else { return }
-        if case .frame(let data) = event {
+        if case .frame(let data, _) = event {
             // Bound transient snapshots while the projection worker is busy.
             guard runtimeEventBytes + data.count <= 64 * 1024 * 1024,
                   runtimeEvents.count < 128 else {
@@ -484,6 +605,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 runtimeEventBytes = 0
                 runtimeStates.removeAll()
                 runtimeProjection = RuntimeStatusProjectionWorker()
+                invalidateConversationPreview()
                 runtimeMonitor.refresh()
                 return
             }
@@ -509,7 +631,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 let event = runtimeEvents.removeFirst()
                 var updatesToApply: [CodexRuntimeStatusUpdate] = []
                 switch event {
-                case .frame(let data):
+                case .frame(let data, let previewToken):
                     runtimeEventBytes -= data.count
                     let result = await projection.consume(data)
                     guard !Task.isCancelled, runtimeProcessingID == processingID else { return }
@@ -524,10 +646,21 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                         runtimeStates[update.sessionID] = update
                         updatesToApply = [update]
                     }
+                    if let previewToken, previewGeneration == previewToken,
+                       result.sessionID == previewTarget?.sessionID, let worker = previewWorker {
+                        let previewResult = await worker.consume(data)
+                        guard !Task.isCancelled, runtimeProcessingID == processingID else { return }
+                        if previewGeneration == previewToken, previewWorker === worker {
+                            applyConversationPreview(previewResult)
+                        }
+                    }
                 case .unavailable(let sessions):
                     for sessionID in sessions { runtimeStates.removeValue(forKey: sessionID) }
                     await projection.reset(sessions: sessions)
                     guard !Task.isCancelled, runtimeProcessingID == processingID else { return }
+                    if let target = previewTarget, sessions.contains(target.sessionID) {
+                        invalidateConversationPreview()
+                    }
                 case .reconcile:
                     updatesToApply = Array(runtimeStates.values)
                 }
@@ -827,7 +960,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
 }
 
 private enum RuntimeStatusEvent {
-    case frame(Data)
+    case frame(Data, UUID?)
     case unavailable(Set<String>)
     case reconcile
 }

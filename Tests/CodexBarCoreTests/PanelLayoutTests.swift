@@ -9,7 +9,8 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
                 CodexBarPanelLayout.compactWidth == 126,
                 "compact width is not three-quarters"
             )
-            try expect(CodexBarPanelLayout.detailWidth == 320, "hover detail width changed")
+            try expect(CodexBarPanelLayout.detailWidth == 420, "conversation preview needs a readable width")
+            try expect(CodexBarPanelLayout.defaultDetailHeight == 520, "conversation preview needs a stable reading height")
             try expect(CodexBarPanelLayout.detailGap == 8, "hover detail gap changed")
             try expect(CodexBarPanelLayout.headerHeight == 28, "header height changed")
             try expect(CodexBarPanelLayout.rowHeight == 28, "row height changed")
@@ -150,9 +151,9 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
                 detailHeight: detailHeight
             )
 
-            try expect(detailFrame.origin.x == 572, "hover detail was not placed to the left")
+            try expect(detailFrame.origin.x == 472, "hover detail was not placed to the left")
             try expect(detailFrame.origin.y == 730, "hover detail was not centered beside its row")
-            try expect(detailFrame.size.width == 320, "hover detail width changed")
+            try expect(detailFrame.size.width == 420, "hover detail width changed")
             try expect(detailFrame.size.height == 136, "hover detail ignored its content height")
         },
         CodexBarTestCase(name: "keeps hover details within the visible screen") {

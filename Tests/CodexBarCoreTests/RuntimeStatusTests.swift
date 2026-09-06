@@ -3,6 +3,27 @@ import CodexBarCore
 
 func runtimeStatusTestCases() -> [CodexBarTestCase] {
     [
+        CodexBarTestCase(name: "runtime routing preserves session identity without a status change") {
+            var reducer = CodexRuntimeStatusReducer()
+            let snapshot = try runtimeSnapshot()
+            try expect(reducer.consume(snapshot).sessionID == "session-A", "snapshot lost its routing identity")
+            let repeated = reducer.consume(snapshot)
+            try expect(repeated.update == nil, "same revision unexpectedly changed status")
+            try expect(repeated.sessionID == "session-A", "same revision snapshot cannot refresh conversation output")
+            let contentOnly = reducer.consume(try runtimePatches([
+                ["op": "replace", "path": ["turns", 0, "items"], "value": [["text": "new text"]]]
+            ]))
+            try expect(contentOnly.update == nil, "body text changed task status")
+            try expect(contentOnly.sessionID == "session-A", "body-only patch lost its routing identity")
+            try expect(reducer.consume(try runtimeSnapshot(session: "session-B")).sessionID == "session-B",
+                       "another conversation would be parsed as the selected preview")
+        },
+        CodexBarTestCase(name: "runtime routing excludes invalid or remote envelopes") {
+            var reducer = CodexRuntimeStatusReducer()
+            try expect(reducer.consume(Data("invalid".utf8)).sessionID == nil, "invalid data gained an identity")
+            try expect(reducer.consume(try runtimeSnapshot(host: "remote")).sessionID == nil,
+                       "remote conversation gained a local routing identity")
+        },
         CodexBarTestCase(name: "projects live approval resolution without waiting for tool completion") {
             var reducer = CodexRuntimeStatusReducer()
             let waiting = reducer.consume(try runtimeSnapshot(flags: ["waitingOnApproval"]))

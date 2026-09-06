@@ -19,7 +19,7 @@ CodexBar 是一个常驻桌面的 macOS 原生悬浮条，用来汇总 Visual St
 - 通过官方 Codex Hooks 在应用未运行时继续接收事件；
 - 启动时恢复已打开窗口中的历史任务，并对现有 VS Code 或终端 CLI 活跃任务通过官方 Codex App Server 补偿缺失的终止事件；
 - 验证 VS Code 的 bundle id 与 Microsoft Team 签名，并只在窗口候选唯一时执行前置和最小化；
-- 紧凑悬浮条只显示项目名，悬停时显示详细信息；
+- 紧凑悬浮条只显示项目名，悬停或按右方向键可阅读会话正文，展开命令和工具结果；
 - 本地事件使用私有目录和文件权限，并自动轮转原始事件归档；
 - 不包含第三方 Swift Package 依赖。
 
@@ -43,6 +43,8 @@ CodexBar 是一个常驻桌面的 macOS 原生悬浮条，用来汇总 Visual St
 | `Stop` | `ready` | 可查看 |
 
 `Stop` 只表示当前 turn 已停止，因此界面不会写“已完成”。Hook 保存 session/turn 标识、cwd、脱敏后的 prompt 首行、事件类型、工具名称、受限的客户端目标和时间；不会保存完整 assistant message 或 transcript。详细字段、保留期限和删除方式见 [PRIVACY.md](PRIVACY.md)。
+
+会话预览复用当前用户已有的 Codex 本地连接，读取当前展开会话的真实消息和工具结果；助手正文默认展开，用户长消息及工具条目可展开查看。首次只排版最近 30 条内容，向上翻阅时逐批显示旧消息，也可点击“显示较早内容”；已收到的正文不会因此截断。预览默认跟随最新内容，向上滚动后暂停，点击“回到最新”恢复。较早内容未加载时提供加载入口。正文仅保留在内存，关闭或切换预览即释放；不会为预览增加正文 Hook。此功能依赖当前扩展的内部接口，运行中工具输出可能在完成或刷新后补齐，附件和未支持的条目需返回原会话查看。
 
 启动恢复会通过官方 Extension 内置的 [Codex App Server](https://learn.chatgpt.com/docs/app-server) 查询来源为 `vscode` 的持久线程，并根据现有窗口保守恢复历史行。手动中断 turn 时，Codex 可能不派发 `Stop`；因此存在“执行中”或“需要处理”的行时，CodexBar 还会每五秒至多发起一次单飞查询，按已有任务的 session ID、turn ID 和 cwd 精确核对 `vscode` 与 `cli` thread，并将同一 turn 的 `completed`、`interrupted` 或 `failed` 状态映射为“可查看”。周期查询不依赖 VS Code 窗口，只允许更新查询开始时已经存在的活跃行，不会恢复用户已删除的行或覆盖更新的 Hook turn。
 
