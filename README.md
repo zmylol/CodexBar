@@ -1,176 +1,180 @@
 # CodexBar
 
-> [!IMPORTANT]
-> **这是一个完全通过 Vibe Coding 完成的小插件。** 任何人都可以随意提交改善使用体验的 PR；只要 AI 说可以，我就会直接合并。
+**少切窗口，多看进展。**
 
-CodexBar 是一个常驻桌面的 macOS 原生悬浮条，用来汇总 Visual Studio Code 与 Codex 桌面端中的本地 Codex 任务状态。悬浮条默认只显示项目名；鼠标悬停或键盘聚焦时才显示任务摘要、状态和时间。
+CodexBar 把多个 VS Code 项目的 Codex 任务收进一条 macOS 原生悬浮条。扫一眼，知道哪个项目还在执行、哪个需要你处理；悬停读回复和工具结果，点一下回到项目窗口。
 
-点击项目后，VS Code 任务会恢复并前置已经存在且唯一匹配的官方 VS Code 窗口，同时最小化其他标准 VS Code 窗口；Codex 桌面端任务会按精确 thread ID 打开对应会话。CodexBar 不会执行 `code -r`，也不会创建新的 VS Code 窗口。
+**macOS 13+ · Swift 6 · VS Code · MIT**
 
-> CodexBar 是独立的社区工具，与 OpenAI 或 Microsoft 没有隶属或背书关系。Codex、OpenAI、Visual Studio Code 及相关标识归各自权利人所有。
+[开始使用](#开始使用) · [日常操作](#日常操作) · [支持范围](#支持范围) · [隐私说明](PRIVACY.md) · [参与贡献](CONTRIBUTING.md)
 
-## 当前状态
+![CodexBar 界面示意：窄悬浮条汇总三个示例项目的状态，旁边的会话预览展示用户消息、Codex 回复和命令结果。](docs/images/overview.svg)
 
-仓库提供可从源码构建的早期版本，尚未提供 Developer ID 签名或 Apple 公证的正式二进制。`scripts/build-app` 生成的应用使用 ad-hoc 签名，仅适合本地开发和测试。
+*界面示意，使用虚构项目与示例内容；实际外观随 macOS 设置变化。*
 
-## 功能
+## 让进展留在视线里
 
-- 将 `UserPromptSubmit`、`PermissionRequest`、`Stop` 映射为“执行中”“需要处理”“可查看”；
-- 通过官方 Codex Hooks 在应用未运行时继续接收事件；
-- 启动时恢复已打开窗口中的历史任务，并对现有 VS Code 或终端 CLI 活跃任务通过官方 Codex App Server 补偿缺失的终止事件；
-- 验证 VS Code 的 bundle id 与 Microsoft Team 签名，并只在窗口候选唯一时执行前置和最小化；
-- 紧凑悬浮条只显示项目名，悬停或按右方向键可阅读会话正文，展开命令和工具结果；
-- 本地事件使用私有目录和文件权限，并自动轮转原始事件归档；
-- 不包含第三方 Swift Package 依赖。
+同时开着几个项目时，不必挨个切回 Codex 看它进行到哪一步。CodexBar 把这件事缩成三个动作：
 
-## 支持范围
+| 你想知道什么 | 在 CodexBar 里怎么做 |
+| --- | --- |
+| **谁还在跑，谁在等我？** | 看悬浮条上的状态图标。项目名常驻，详情按需出现。 |
+| **刚才具体做了什么？** | 悬停打开会话预览，直接读助手正文，展开命令与工具结果。 |
+| **现在需要我接手吗？** | 点击项目或“查看会话”，恢复并前置对应的 VS Code 窗口。 |
 
-- macOS 13 或更高版本；
-- 官方 Visual Studio Code Stable（bundle id `com.microsoft.VSCode`）；
-- 官方 Codex 桌面端（bundle id `com.openai.codex`）；
-- 官方 OpenAI Codex IDE Extension；
-- 本地 Codex turn；
-- 每个 VS Code 窗口对应一个主要项目，项目目录名基本唯一。
+预览支持 Markdown、代码块和文字选择。长会话先展示最近 30 条内容，向上翻阅时分批显示旧消息；新回复默认跟随到末尾，回看历史时保留你的阅读位置。
 
-暂不支持 Cursor、Windsurf、VS Code Insiders、Windows、Linux、终端窗口恢复或 multi-root workspace。Codex CLI 与 IDE 共用用户级 Hook 配置，而 Hook 事件目前没有公开稳定的客户端来源字段；终端 CLI 事件可以进入 CodexBar，并可通过精确 session/turn 核对收口状态，但 CodexBar 无法定位它原先所在的终端窗口。
+悬浮条可拖动，也可放到屏幕四角；任务多时选择固定高度滚动，或让列表自动展开。应用使用 SwiftUI 与 AppKit，没有第三方 Swift Package 依赖。
 
-## 工作方式
+## 开始使用
 
-| Codex Hook | 内部状态 | 界面文案 |
-| --- | --- | --- |
-| `UserPromptSubmit` | `running` | 执行中 |
-| `PermissionRequest` | `needsAttention` | 需要处理 |
-| `Stop` | `ready` | 可查看 |
+需要 **macOS 13+、Swift 6.0+、Xcode Command Line Tools**，以及官方 **Visual Studio Code Stable** 和支持 Hooks 的 **OpenAI Codex IDE Extension**。
 
-`Stop` 只表示当前 turn 已停止，因此界面不会写“已完成”。Hook 保存 session/turn 标识、cwd、脱敏后的 prompt 首行、事件类型、工具名称、受限的客户端目标和时间；不会保存完整 assistant message 或 transcript。详细字段、保留期限和删除方式见 [PRIVACY.md](PRIVACY.md)。
+当前按源码构建安装。构建产物使用本机架构和 ad-hoc 签名，适合本地使用与测试，未经过 Developer ID 签名及 Apple 公证。
 
-会话预览复用当前用户已有的 Codex 本地连接，读取当前展开会话的真实消息和工具结果；助手正文默认展开，用户长消息及工具条目可展开查看。首次只排版最近 30 条内容，向上翻阅时逐批显示旧消息，也可点击“显示较早内容”；已收到的正文不会因此截断。预览默认跟随最新内容，向上滚动后暂停，点击“回到最新”恢复。较早内容未加载时提供加载入口。正文仅保留在内存，关闭或切换预览即释放；不会为预览增加正文 Hook。此功能依赖当前扩展的内部接口，运行中工具输出可能在完成或刷新后补齐，附件和未支持的条目需返回原会话查看。
-
-启动恢复会通过官方 Extension 内置的 [Codex App Server](https://learn.chatgpt.com/docs/app-server) 查询来源为 `vscode` 的持久线程，并根据现有窗口保守恢复历史行。手动中断 turn 时，Codex 可能不派发 `Stop`；因此存在“执行中”或“需要处理”的行时，CodexBar 还会每五秒至多发起一次单飞查询，按已有任务的 session ID、turn ID 和 cwd 精确核对 `vscode` 与 `cli` thread，并将同一 turn 的 `completed`、`interrupted` 或 `failed` 状态映射为“可查看”。周期查询不依赖 VS Code 窗口，只允许更新查询开始时已经存在的活跃行，不会恢复用户已删除的行或覆盖更新的 Hook turn。
-
-CodexBar 只持久化启动时唯一匹配到现有窗口、或周期核对时精确匹配到已有任务的必要元数据；查询失败、超时或可执行文件签名不属于官方 OpenAI Team 时，会回退到 Hook 和本地任务存储，并向 macOS 统一日志写入不含任务字段的限频诊断。
-
-## 从源码安装
-
-需要 Swift 6.0 或更高版本以及 Xcode Command Line Tools。
+### 1. 构建并安装
 
 ```sh
-scripts/test
+git clone https://github.com/zmylol/CodexBar.git
+cd CodexBar
 scripts/install-app
-```
-
-应用安装到：
-
-```text
-~/Applications/CodexBar.app
-```
-
-Hook 可执行文件安装到：
-
-```text
-~/Library/Application Support/CodexBar/bin/codexbar-hook
-```
-
-### 1. Probe 验证
-
-先使用不影响正式任务列表的 Probe 模式验证当前 IDE Extension 是否真实派发 Hook：
-
-```sh
-scripts/install-hooks --probe
-```
-
-安装器会解析并备份现有 `~/.codex/hooks.json`，使用锁、文件指纹和原子替换合并三条 CodexBar handler。它只迁移或删除可执行路径精确匹配的 CodexBar handler，不会根据参数名称猜测第三方 Hook 的归属。
-
-Reload VS Code，然后在 Codex 侧栏进入 `Codex settings → Hooks`。必要时点击 `Reload hooks`，打开 `User config`，核对三条命令的绝对路径与 `--probe` 参数，再由你点击 Trust。
-
-IDE 聊天框里的 `/hooks` 不是可用命令。官方 [Hooks 文档](https://learn.chatgpt.com/docs/hooks)描述的 `/hooks` 是 CLI 审核入口；不要使用跳过 Hook 信任的参数，也不要修改 `chatgpt.cliExecutable`。
-
-按 [Hook 兼容性测试](docs/HOOK_COMPATIBILITY.md)确认两个窗口均收到真实事件后，切换正式模式：
-
-```sh
 scripts/install-hooks
 ```
 
-Probe 与正式 Inbox 的定义哈希不同，因此切换后需要重新 Reload hooks、审核定义并 Reload VS Code 窗口。
+应用会安装到 `~/Applications/CodexBar.app`，Hook 可执行文件安装到 `~/Library/Application Support/CodexBar/bin/codexbar-hook`。
 
-### 2. 启动与辅助功能权限
+Hook 安装器会备份并合并现有配置，保留第三方 handler。默认配置路径为 `~/.codex/hooks.json`；设置了 `CODEX_HOME` 时跟随该目录。
+
+### 2. 在 VS Code 中启用 Hooks
+
+重新加载 VS Code，在 Codex 侧栏打开 **Codex settings → Hooks**，必要时点击 **Reload hooks**。打开 **User config**，检查指向 `codexbar-hook` 的命令，再审核并点击 **Trust**。
+
+当前安装器覆盖五种事件：`UserPromptSubmit`、`PreToolUse`、`PermissionRequest`、`PostToolUse`、`Stop`。新增或修改的 Hook 定义需要重新审核后才能运行，详见 [OpenAI 官方 Hooks 文档](https://learn.chatgpt.com/docs/hooks)。
+
+这里使用 IDE 的 Hooks 设置页；CLI 文档中的 `/hooks` 不是 IDE 聊天命令。如果看不到该设置页，先更新扩展，再按 [Hook 兼容性说明](docs/HOOK_COMPATIBILITY.md)检查。
+
+### 3. 启动，允许窗口切换
 
 ```sh
 open "$HOME/Applications/CodexBar.app"
 ```
 
-没有 Accessibility 权限时，悬浮条仍能显示任务，Codex 桌面端任务也能正常打开。切换 VS Code 窗口需要前往：
+前往 **系统设置 → 隐私与安全性 → 辅助功能**，启用 **CodexBar**，用于同步、恢复和切换 VS Code 窗口。尚未授权时仍可接收和显示已知 Hook 任务，窗口相关功能需要授权后使用。
 
-```text
-System Settings → Privacy & Security → Accessibility → CodexBar
-```
+在已打开的 VS Code 项目里发起一个 Codex 任务，悬浮条就有了可以关注的进展。
 
-权限用于枚举、匹配、恢复、前置和最小化通过 Microsoft Team 签名验证的官方 VS Code 窗口。进程会在发现时和执行窗口操作前再次验证。CodexBar 不安装全局键盘监听，不记录其他应用的键盘输入。
+**更新已有安装：** 先从悬浮条菜单退出 CodexBar，再运行安装命令。Hook 定义变化后重新审核并加载；重新构建的 ad-hoc 应用也可能需要重新添加辅助功能授权。
 
-ad-hoc 签名会在重新构建后改变代码身份，macOS 可能要求重新添加 Accessibility 权限。稳定复用授权需要维护者使用固定 Developer ID 签名并完成公证。
+## 日常操作
 
-## 模拟任务状态
+| 操作 | 效果 |
+| --- | --- |
+| 悬停或键盘聚焦项目 | 打开会话预览 |
+| 右方向键 / 菜单“查看会话预览” | 把焦点移入预览，方便滚动和选择文字 |
+| 展开用户消息或工具条目 | 阅读收到的正文、命令与输出 |
+| 向上翻阅 / “显示较早内容” | 分批显示已接收的旧消息；需要补读时可点“加载较早内容” |
+| “回到最新” | 回到末尾并恢复自动跟随 |
+| 预览内方向键、Page Up / Down、Home / End | 滚动正文 |
+| Esc | 关闭预览；键盘进入时把焦点还给悬浮条 |
+| 点击项目 / “查看会话” | 前置对应的现有 VS Code 窗口，并最小化其他标准 VS Code 窗口 |
+| 顶部刷新按钮 | 重新扫描已打开窗口中的 Codex 任务 |
+| 顶部菜单 | 切换显示模式、移动悬浮条、清理任务或退出 |
 
-将路径换成已经在独立 VS Code 窗口打开的真实绝对路径：
+窗口切换要求项目与窗口**唯一匹配**，并保留目标窗口原本打开的页面；需要定位具体 Codex 对话时，在该窗口中继续选择。
+
+## 支持范围
+
+| 环境 | 当前支持情况 |
+| --- | --- |
+| macOS + 官方 VS Code Stable + Codex IDE Extension | 支持本地任务；窗口操作要求辅助功能权限 |
+| Codex 桌面端、终端 Codex CLI | 当前不接入，事件会被来源校验过滤 |
+| Cursor、Windsurf、VS Code Insiders | 暂不支持 |
+| Windows、Linux、远程任务 | 暂不支持 |
+| multi-root workspace、同名项目、同一项目多个窗口 | 不保证唯一匹配；有歧义时拒绝切换 |
+
+最适合的使用方式是：**每个 VS Code 窗口打开一个主要项目，项目目录名互不相同。** 成功同步窗口后，列表会隐藏已找不到对应窗口的任务。
+
+会话预览依赖 Codex 扩展的内部本地接口，兼容性会随扩展版本变化。已验证的版本组合、真实传输结果与验证边界见 [会话预览验证报告](docs/CONTENT_PREVIEW_VERIFICATION.md)。
+
+## 状态和正文从哪里来
+
+| 状态 | 含义 |
+| --- | --- |
+| 🔵 执行中 | 当前任务正在进行 |
+| 🔺 需要处理 | 会话等待审批或用户输入 |
+| ✅ 可查看 | 当前一轮已停止，可以回看结果；不代表任务一定成功 |
+
+**Hooks 接收任务事件。** 提交、审批请求和停止事件形成三种基本状态；工具开始与完成事件补充活动摘要和审批关联。应用未运行时，生命周期事件仍可进入本地队列。
+
+**本地连接同步当前进展。** CodexBar 跟随可见任务的已知会话，从原 VS Code 会话的 IPC 状态更新等待、恢复执行和停止，也为展开的预览读取消息与工具结果。状态、窗口和队列更新由事件驱动，不再每五秒查询 App Server。
+
+**历史恢复找回已打开的项目。** 启动、手动刷新或窗口变化时，通过官方扩展内置的 Codex App Server 查询 VS Code 线程元数据，只恢复能与现有窗口唯一匹配的任务。实时接口不可用时保留 Hook 路径；能匹配的工具完成事件可恢复执行状态，无法确认的审批保持保守状态。
+
+实现细节见 [架构说明](docs/ARCHITECTURE.md)。
+
+## 内容留在本机
+
+CodexBar 本身没有遥测、账号系统或主动上传数据的网络客户端。
+
+- **任务记录保持精简：** 保存必要的会话标识、项目路径、状态和脱敏后的 prompt 首行摘要；Hook 不归档完整对话。
+- **预览正文只放在内存：** 只为当前展开的一个会话保留预览状态，关闭、切换或退出后释放，不写入任务文件或日志。
+- **原文按原样展示：** 预览不经过 Hook 摘要的脱敏规则，可能包含会话中的敏感信息。
+
+官方 Codex 组件及服务的数据处理遵循其自身规则。数据字段、保留期限和删除方式见 [隐私说明](PRIVACY.md)。
+
+## 常见问题与边界
+
+**悬浮条没有出现任务？**
+
+先检查应用是否运行、VS Code 是否打开了项目，以及更新后的 Hooks 是否已审核并重新加载。点击顶部刷新可重新扫描窗口。需要验证扩展是否真的派发事件时，再使用可选的 `scripts/install-hooks --probe`，按 [Hook 兼容性测试](docs/HOOK_COMPATIBILITY.md)执行；Probe 不写入正式任务列表，验证后需要切回正式 Hooks 并重新审核。
+
+**预览里缺少内容？**
+
+助手正文和已收到的工具结果可以直接阅读；运行中工具输出可能在完成或刷新后补齐。较早历史需要按需加载，图片和未支持的附件请回原会话查看。预览设有 32 MiB 内容预算及结构上限，超限会提示无法读取；不承诺任意规模的全部内容实时镜像。断线时可保留本次已接收的内容，并提示重试。
+
+**为什么没有恢复某个旧任务？**
+
+历史恢复依赖现有窗口的项目匹配；同名或多窗口场景会保守处理。一次扫描超过 500 条未归档 VS Code 线程时会放弃该次恢复。这是历史恢复的保护上限，与预览消息条数无关。
+
+**如何模拟三种状态？**
+
+将路径换成已经在独立 VS Code 窗口中打开的真实项目路径：
 
 ```sh
-scripts/send-test-event running /path/to/project-alpha "Refactor authentication hooks"
+scripts/send-test-event running /path/to/project-alpha "检查登录流程"
 scripts/send-test-event attention /path/to/project-alpha
 scripts/send-test-event ready /path/to/project-alpha
 ```
 
-依次应看到“执行中”“需要处理”“可查看”。模拟事件只能验证本地链路，不能证明 IDE Extension 会真实触发 Hook。
+模拟事件用于验证本地处理链路；真实扩展派发和窗口操作仍需按 [人工验收清单](docs/MANUAL_TEST.md)检查。
+
+## 开发与贡献
+
+这是一个通过 **Vibe Coding** 做出来的小工具，起点很简单：同时让 Codex 处理几个项目时，想少切几次窗口。欢迎带着使用体验、问题复现或 PR 一起把它打磨得更顺手。
+
+| 命令 | 用途 |
+| --- | --- |
+| `scripts/test` | 完整测试：Swift 核心、Hook、模拟端到端、release bundle 与隔离安装 / 卸载 |
+| `scripts/test-preview-performance` | 独立的预览状态、原生滚动和性能检查，需要已登录的 macOS 图形会话 |
+| `scripts/build-app` | 只构建本机架构的应用 bundle |
+| `scripts/install-app` | 构建并安装应用与 Hook 可执行文件 |
+
+核心测试使用兼容独立 Xcode Command Line Tools 的 `codexbar-tests` 可执行目标，请使用 `scripts/test`，不要用 `swift test` 代替。
+
+[贡献指南](CONTRIBUTING.md) · [架构说明](docs/ARCHITECTURE.md) · [人工验收](docs/MANUAL_TEST.md) · [安全问题报告](SECURITY.md)
 
 ## 卸载
 
-默认卸载应用和 CodexBar 管理的 Hook，但保留本地任务、事件和备份：
-
 ```sh
+# 卸载应用和 CodexBar 管理的 Hooks，保留本地数据
 scripts/uninstall-app
-```
 
-明确需要同时删除 Application Support 数据时：
-
-```sh
+# 同时删除任务、事件及备份（不可恢复）
 scripts/uninstall-app --purge-data
 ```
 
-该操作不可恢复。窗口位置偏好和系统 Accessibility 授权由 macOS 分别管理；需要时可另外执行：
-
-```sh
-defaults delete com.codexbar.CodexBar
-tccutil reset Accessibility com.codexbar.CodexBar
-```
-
-如果只想移除 Hook，或者恢复安装前的完整 Hook 配置：
-
-```sh
-scripts/uninstall-hooks
-scripts/restore-hooks --force
-```
-
-`restore-hooks --force` 会覆盖当前配置，执行前仍会再做备份。
-
-## 开发与测试
-
-```sh
-scripts/test
-```
-
-完整入口会运行 Swift 核心测试、Hook CLI 与配置隔离测试、三状态模拟、运行中应用的模拟端到端流程、release 构建、应用 bundle 和隔离安装/卸载测试。核心套件是兼容独立 Xcode Command Line Tools 的 `codexbar-tests` 可执行目标，因此请使用 `scripts/test`，不要用 `swift test` 代替。贡献说明见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全问题请按 [SECURITY.md](SECURITY.md) 私密报告。
-
-## 已知限制
-
-- App Server 不提供 VS Code 窗口到当前 thread 的精确映射；只有启动历史恢复会根据 cwd 和窗口标题保守推断，现有活跃任务使用精确 session/turn 核对。
-- 启动扫描超过 500 条未归档 VS Code 历史时会放弃该次恢复，避免基于不完整结果猜测。
-- App Server 无法恢复一个仍在等待中的 `PermissionRequest`；`inProgress` 快照不会覆盖已有 Hook 的“需要处理”，但同一 turn 的终态会将其收口为“可查看”。
-- `PermissionRequest` 没有单独的“已处理”事件，状态可能保持到同一 turn 的 `Stop`、新 prompt，或下一次成功的 App Server 终态核对。
-- 同名项目、multi-root 或同一项目多窗口会被视为歧义并拒绝切换。
-- CodexBar 不定位具体 Codex thread，只保留目标 VS Code 窗口原本打开的页面。
-- Hook 输入上限为 4 MiB；超限时静默 fail-open，避免阻塞 Codex。
-- prompt 摘要脱敏是降低意外暴露的保护层，不是秘密扫描器；不要在 prompt 中粘贴凭证。
-- 当前构建脚本只生成本机架构的 ad-hoc 应用，不是正式 Release 流程。
+以上两种方式按需选择。只移除 Hooks 可运行 `scripts/uninstall-hooks`；窗口偏好、系统授权和完整配置恢复方式见 [隐私说明](PRIVACY.md#删除数据)。
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE)。CodexBar 是独立的社区工具，与 OpenAI 或 Microsoft 没有隶属或背书关系；相关商标归各自权利人所有。

@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" role="img" aria-labelledby="title description">
+  <title id="title">CodexBar：少切窗口，多看进展</title>
+  <desc id="description">功能界面示意，所有项目和对话均为虚构示例。窄小的桌面悬浮条显示 alpha-api 正在执行、docs-site 需要处理、desktop 可查看。悬停在 alpha-api 后，侧边会话预览展示用户消息、Codex 回复和可展开的命令条目，底部可跟随最新内容或查看会话。</desc>
+  <defs>
+    <linearGradient id="background" x2="1" y2="1">
+      <stop stop-color="#FAFAF7"/>
+      <stop offset="1" stop-color="#F0F2F0"/>
+    </linearGradient>
+    <radialGradient id="glow">
+      <stop stop-color="#E2EBF7"/>
+      <stop offset="1" stop-color="#E2EBF7" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-35%" y="-25%" width="170%" height="170%">
+      <feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#24354B" flood-opacity=".10"/>
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#24354B" flood-opacity=".05"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="640" rx="24" fill="url(#background)"/>
+  <ellipse cx="934" cy="291" rx="376" ry="356" fill="url(#glow)"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" fill="#202831">
+    <rect x="64" y="72" width="36" height="36" rx="11" fill="#202831"/>
+    <path d="m73 83 5 7-5 7m10 0h8" fill="none" stroke="#FFFFFF" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="113" y="100" font-size="29" font-weight="700" letter-spacing="-.8">CodexBar</text>
+    <text x="65" y="145" font-size="14" font-weight="600" letter-spacing="1.2" fill="#627183">macOS · VS Code Codex</text>
+    <text x="62" y="246" font-size="52" font-weight="750" letter-spacing="-1.5">少切窗口，</text>
+    <text x="62" y="313" font-size="52" font-weight="750" letter-spacing="-1.5">多看进展。</text>
+    <text x="65" y="366" font-size="18" fill="#586572">任务状态，留在桌面一角。</text>
+    <text x="65" y="397" font-size="18" fill="#586572">悬停一下，读到会话内容。</text>
+
+    <g transform="translate(65 456)" font-size="14" font-weight="500" fill="#4D5966">
+      <circle cx="6" cy="-5" r="5" fill="#377BDD"/>
+      <text x="21">执行中</text>
+      <path d="m112-12 8 14h-16z" fill="#B97115"/>
+      <path d="M112-7v4m0 2v.1" stroke="#FFFFFF" stroke-width="1.4" stroke-linecap="round"/>
+      <text x="129">需要处理</text>
+      <circle cx="258" cy="-5" r="8" fill="#2B8763"/>
+      <path d="m254-5 3 3 5-6" fill="none" stroke="#FFFFFF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="274">可查看</text>
+    </g>
+    <text x="65" y="569" font-size="13" fill="#6D7883">一个轻巧的浮窗，让多个项目的进度随时可见。</text>
+
+    <g filter="url(#shadow)">
+      <rect x="524" y="272" width="136" height="124" rx="12" fill="#FAFBFC" stroke="#D8DFE6"/>
+      <rect x="670" y="64" width="464" height="516" rx="14" fill="#FFFFFF" stroke="#D8DFE6"/>
+    </g>
+    <text x="525" y="246" font-size="13" font-weight="600" fill="#596B80">悬停，展开会话</text>
+    <text x="533" y="293" font-size="11" font-weight="650" fill="#657080">CodexBar</text>
+    <path d="M607 289h.1m4 0h.1m4 0h.1" stroke="#657080" stroke-width="2" stroke-linecap="round"/>
+    <path d="M642 286a5 5 0 1 0 0 6m0-9v4h-4" fill="none" stroke="#657080" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M525 303h134" stroke="#E1E6EC"/>
+    <rect x="529" y="308" width="126" height="27" rx="5" fill="#E8F0FD"/>
+    <circle cx="541" cy="321" r="4" fill="#377BDD"/>
+    <text x="553" y="326" font-size="12" font-weight="600">alpha-api</text>
+    <path d="m541 343 5.5 10h-11z" fill="#B97115"/>
+    <text x="553" y="353" font-size="12" font-weight="500">docs-site</text>
+    <circle cx="541" cy="376" r="5.5" fill="#2B8763"/>
+    <path d="m538 376 2 2 4-4" fill="none" stroke="#FFFFFF" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="553" y="380" font-size="12" font-weight="500">desktop</text>
+    <path d="m624 324 1 21 5-5 5 9 4-2-5-9h8z" fill="#263445" stroke="#FFFFFF" stroke-width="1.6" stroke-linejoin="round"/>
+
+    <text x="692" y="99" font-size="17" font-weight="650">alpha-api</text>
+    <text x="692" y="122" font-size="12" fill="#6A7581">会话预览</text>
+    <circle cx="1050" cy="104" r="4" fill="#377BDD"/>
+    <text x="1062" y="109" font-size="12" font-weight="550" fill="#377BDD">执行中</text>
+    <path d="M671 140h462" stroke="#E3E7EC"/>
+
+    <rect x="690" y="161" width="424" height="87" rx="9" fill="#F2F3F5"/>
+    <circle cx="709" cy="179" r="3" fill="none" stroke="#6A7581" stroke-width="1.3"/>
+    <path d="M704 188c0-7 10-7 10 0" fill="none" stroke="#6A7581" stroke-width="1.3" stroke-linecap="round"/>
+    <text x="722" y="185" font-size="12" font-weight="600" fill="#6A7581">你</text>
+    <path d="m1091 179 4 4 4-4" fill="none" stroke="#7D8792" stroke-width="1.3" stroke-linecap="round"/>
+    <text x="704" y="221" font-size="16">检查缓存逻辑，并补上边界测试。</text>
+
+    <path d="m699 270 2 6 6 2-6 2-2 6-2-6-6-2 6-2z" fill="#6A7581"/>
+    <text x="715" y="283" font-size="12" font-weight="600" fill="#6A7581">Codex</text>
+    <text x="691" y="316" font-size="17" font-weight="650">已找到重复请求的原因</text>
+    <text x="691" y="347" font-size="15" fill="#45515E">缓存键没有包含筛选条件。我正在修正它，</text>
+    <text x="691" y="373" font-size="15" fill="#45515E">并补上空结果与重复请求的测试。</text>
+
+    <rect x="691" y="395" width="421" height="53" rx="8" fill="#F7F8F9" stroke="#E2E6EB"/>
+    <rect x="704" y="411" width="19" height="15" rx="3" fill="none" stroke="#6A7581" stroke-width="1.3"/>
+    <path d="m708 415 3 3-3 3m7 0h4" fill="none" stroke="#6A7581" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="735" y="425" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="14" fill="#45515E">npm test -- cache</text>
+    <path d="m1088 418 4 4 4-4" fill="none" stroke="#7D8792" stroke-width="1.4" stroke-linecap="round"/>
+    <text x="692" y="480" font-size="12" fill="#6A7581">展开命令条目，查看已接收的输出</text>
+    <path d="M671 516h462" stroke="#E3E7EC"/>
+    <path d="M698 537v12m-4-4 4 4 4-4m-6 8h8" fill="none" stroke="#64717F" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="713" y="550" font-size="13" font-weight="500" fill="#64717F">跟随最新</text>
+    <rect x="1007" y="530" width="106" height="34" rx="7" fill="#F0F2F4"/>
+    <text x="1021" y="552" font-size="13" font-weight="600">查看会话</text>
+    <path d="m1085 548 9-9m-7 0h7v7" fill="none" stroke="#45515E" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="1133" y="608" text-anchor="end" font-size="12" fill="#6A7581">界面示意 · 示例内容</text>
+  </g>
+</svg>
