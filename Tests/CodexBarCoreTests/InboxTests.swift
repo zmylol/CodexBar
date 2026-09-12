@@ -173,6 +173,72 @@ func inboxTestCases() -> [CodexBarTestCase] {
             let pending = try CodexHookEventSource(paths: paths).pendingEvents()
             try expect(pending.map(\.event.name) == [.stop], "lock contention silently dropped the newest lifecycle event")
         },
+        CodexBarTestCase(name: "retries an existing inbox event after contention without a new filesystem event") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            _ = try InboxWriter(paths: paths).write(inboxEvent(.stop, timestamp: 100))
+            let holder = try InboxTestLockHolder(root: root)
+            try holder.lock()
+            holder.release(after: .milliseconds(350))
+            let store = TaskStore()
+            let processor = EventProcessor(source: CodexHookEventSource(paths: paths), store: store)
+
+            let count = try await processor.processPending()
+
+            try expect(count == 1 && store.tasks.first?.status == .ready, "one processing request did not recover the existing event")
+            try expect(try archiveFileCount(in: paths.inbox) == 0, "the recovered event remained in Inbox")
+        },
+        CodexBarTestCase(name: "retries archive contention after task state is durable") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            _ = try InboxWriter(paths: paths).write(inboxEvent(.stop, timestamp: 100))
+            let source = InboxArchiveContentionSource(paths: paths, holder: try InboxTestLockHolder(root: root))
+            let store = TaskStore()
+            let processor = EventProcessor(source: source, store: store)
+
+            let count = try await processor.processPending()
+
+            try expect(count == 1 && store.tasks.first?.status == .ready, "archive retry lost the durable task state")
+            try expect(try archiveFileCount(in: paths.inbox) == 0, "archive contention stranded an acknowledged task")
+            try expect(try archiveFileCount(in: paths.processed) == 1, "archive retry duplicated or lost the archived event")
+        },
+        CodexBarTestCase(name: "cancels inbox lock retries while retaining the pending event") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            _ = try InboxWriter(paths: paths).write(inboxEvent(.stop, timestamp: 100))
+            let holder = try InboxTestLockHolder(root: root)
+            try holder.lock()
+            defer { holder.unlock() }
+            let processor = EventProcessor(source: CodexHookEventSource(paths: paths), store: TaskStore())
+            let processing = Task { try await processor.processPending() }
+            try await Task.sleep(for: .milliseconds(30))
+            processing.cancel()
+            let result = await processing.result
+
+            guard case .failure(let error) = result else { throw TestFailure(description: "cancelled lock retry completed successfully") }
+            try expect(error is CancellationError, "cancellation was reported as an unrelated storage failure")
+            try expect(try archiveFileCount(in: paths.inbox) == 1, "cancelled processing discarded its pending event")
+        },
+        CodexBarTestCase(name: "bounds inbox lock retries and reports persistent contention") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            _ = try InboxWriter(paths: paths).write(inboxEvent(.stop, timestamp: 100))
+            let holder = try InboxTestLockHolder(root: root)
+            try holder.lock()
+            defer { holder.unlock() }
+            let processor = EventProcessor(source: CodexHookEventSource(paths: paths), store: TaskStore())
+            let start = ContinuousClock.now
+            var failed = false
+            do { _ = try await processor.processPending() } catch { failed = true }
+            let elapsed = start.duration(to: .now)
+
+            try expect(failed && elapsed >= .milliseconds(400) && elapsed < .seconds(2), "persistent contention was not retried within a finite budget")
+            try expect(try archiveFileCount(in: paths.inbox) == 1, "exhausting the retry budget removed the event")
+        },
         CodexBarTestCase(name: "writes inbox events atomically with private permissions") {
             let root = temporaryDirectory()
             defer { try? FileManager.default.removeItem(at: root) }
@@ -1170,6 +1236,59 @@ private final class BatchRecordingEventSource: CodexEventSource, @unchecked Send
 
 private enum BatchRecordingError: Error {
     case expectedFailure
+}
+
+private final class InboxTestLockHolder: @unchecked Sendable {
+    private let descriptor: Int32
+
+    init(root: URL) throws {
+        descriptor = open(root.appendingPathComponent(".inbox.lock").path, O_RDWR | O_CREAT, 0o600)
+        guard descriptor >= 0 else { throw POSIXError(.EACCES) }
+    }
+
+    deinit { close(descriptor) }
+
+    func lock() throws {
+        guard flock(descriptor, LOCK_EX) == 0 else { throw POSIXError(.EACCES) }
+    }
+
+    func unlock() { _ = flock(descriptor, LOCK_UN) }
+
+    func release(after delay: Duration) {
+        Task.detached { [self] in
+            try? await Task.sleep(for: delay)
+            unlock()
+        }
+    }
+}
+
+private final class InboxArchiveContentionSource: CodexEventSource, @unchecked Sendable {
+    private let source: CodexHookEventSource
+    private let holder: InboxTestLockHolder
+    private let lock = NSLock()
+    private var didContend = false
+
+    init(paths: CodexBarPaths, holder: InboxTestLockHolder) {
+        self.source = CodexHookEventSource(paths: paths)
+        self.holder = holder
+    }
+
+    func pendingEvents() throws -> [PendingCodexEvent] { try source.pendingEvents() }
+
+    func markProcessed(_ event: PendingCodexEvent) throws { try markProcessed([event]) }
+
+    func markProcessed(_ events: [PendingCodexEvent]) throws {
+        let shouldContend = lock.withLock {
+            guard !didContend else { return false }
+            didContend = true
+            return true
+        }
+        if shouldContend {
+            try holder.lock()
+            holder.release(after: .milliseconds(350))
+        }
+        try source.markProcessed(events)
+    }
 }
 
 private final class InboxCounterFailureFileManager: FileManager, @unchecked Sendable {
