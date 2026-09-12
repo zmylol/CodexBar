@@ -1,0 +1,142 @@
+<div id="obsidian-bar-concept" aria-label="CodexBar 知识库模式方案预览">
+  <style>
+    #obsidian-bar-concept { --ob-surface: light-dark(#ffffff, #26252b); --ob-subtle: light-dark(#f5f4f8, #302e37); --ob-text: light-dark(#252330, #f0edf6); --ob-muted: light-dark(#635d71, #c1bacd); --ob-line: light-dark(#e5e1eb, #49434f); --ob-accent: light-dark(#6441b9, #c2a7ff); --ob-selected: light-dark(#eee7fc, #433456); color: var(--ob-text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 14px 4px; }
+    #obsidian-bar-concept * { box-sizing: border-box; }
+    #obsidian-bar-concept button { font: inherit; color: inherit; cursor: pointer; }
+    #obsidian-bar-concept [hidden] { display: none !important; }
+    #obsidian-bar-concept .ob-label { text-align: center; color: var(--ob-muted); margin-bottom: 14px; }
+    #obsidian-bar-concept .ob-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px; width: fit-content; max-width: 100%; margin: 0 auto 15px; background: var(--ob-surface); border: 1px solid var(--ob-line); border-radius: 14px; padding: 10px 14px; box-shadow: 0 4px 14px light-dark(#24203012, #00000028); }
+    #obsidian-bar-concept .ob-bar-icon { color: var(--ob-accent); display: inline-flex; }
+    #obsidian-bar-concept .ob-ready { color: light-dark(#237248, #8bd9ac); }
+    #obsidian-bar-concept .ob-count { background: var(--ob-selected); color: var(--ob-accent); border-radius: 7px; padding: 2px 7px; font-variant-numeric: tabular-nums; }
+    #obsidian-bar-concept .ob-window { max-width: 600px; margin: auto; background: var(--ob-surface); border: 1px solid var(--ob-line); border-radius: 18px; box-shadow: 0 9px 25px light-dark(#24203014, #00000038); overflow: hidden; }
+    #obsidian-bar-concept .ob-heading { padding: 18px 18px 14px; display: flex; gap: 10px; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; }
+    #obsidian-bar-concept .ob-title { display: block; font-weight: 500; margin-bottom: 4px; }
+    #obsidian-bar-concept small { color: var(--ob-muted); }
+    #obsidian-bar-concept .ob-segments { display: flex; gap: 3px; border-radius: 9px; background: var(--ob-subtle); padding: 3px; }
+    #obsidian-bar-concept .ob-segments button { border: 0; background: transparent; padding: 5px 13px; border-radius: 7px; }
+    #obsidian-bar-concept .ob-segments button[aria-pressed="true"] { background: var(--ob-surface); box-shadow: 0 1px 3px light-dark(#00000018, #00000040); }
+    #obsidian-bar-concept .ob-summary { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; padding: 0 18px 14px; }
+    #obsidian-bar-concept .ob-content { border-top: 1px solid var(--ob-line); display: grid; grid-template-columns: 190px minmax(0, 1fr); }
+    #obsidian-bar-concept .ob-notes { margin: 0; padding: 8px; list-style: none; border-right: 1px solid var(--ob-line); }
+    #obsidian-bar-concept .ob-note { display: block; text-align: left; width: 100%; padding: 10px 9px; border: 0; border-radius: 9px; background: transparent; overflow-wrap: anywhere; }
+    #obsidian-bar-concept .ob-note[aria-pressed="true"] { background: var(--ob-selected); }
+    #obsidian-bar-concept .ob-note small { display: block; margin-top: 5px; }
+    #obsidian-bar-concept .ob-detail { padding: 17px 16px; min-width: 0; }
+    #obsidian-bar-concept .ob-path { display: block; margin: 4px 0 13px; overflow-wrap: anywhere; }
+    #obsidian-bar-concept .ob-diff { margin: 10px 0 16px; padding: 12px; background: var(--ob-subtle); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    #obsidian-bar-concept .ob-diff span { display: block; }
+    #obsidian-bar-concept .ob-added { color: light-dark(#237248, #99e0b6); }
+    #obsidian-bar-concept .ob-removed { color: light-dark(#a13044, #f0a5b1); }
+    #obsidian-bar-concept .ob-action { border: 1px solid var(--ob-line); border-radius: 8px; background: var(--ob-surface); padding: 7px 10px; }
+    #obsidian-bar-concept .ob-review[aria-pressed="true"] { background: var(--ob-selected); border-color: var(--ob-selected); }
+    #obsidian-bar-concept .ob-session { border-top: 1px solid var(--ob-line); padding: 18px; }
+    #obsidian-bar-concept .ob-message { margin: 9px 0 18px; padding: 12px; border-radius: 9px; background: var(--ob-subtle); }
+    #obsidian-bar-concept .ob-footer { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--ob-line); }
+    #obsidian-bar-concept .ob-primary { color: var(--ob-accent); }
+    #obsidian-bar-concept .ob-feedback { min-height: 1.5em; margin: 0; padding: 0 18px 13px; color: var(--ob-muted); overflow-wrap: anywhere; }
+    @media (max-width: 560px) { #obsidian-bar-concept .ob-content { grid-template-columns: minmax(0, 1fr); } #obsidian-bar-concept .ob-notes { border-right: 0; border-bottom: 1px solid var(--ob-line); } }
+    @media (pointer: coarse) { #obsidian-bar-concept button { min-height: 44px; } }
+  </style>
+  <div class="ob-label"><small>方案预览 · 示例数据</small></div>
+  <div class="ob-bar" aria-label="知识库状态条">
+    <span class="ob-bar-icon"><i data-lucide="notebook-text" aria-hidden="true"></i></span>
+    <span>我的知识库</span><small class="ob-ready">可查看</small><span class="ob-count" data-bar-count>3 待回看</span>
+  </div>
+  <section class="ob-window" aria-label="知识库变更详情">
+    <div class="ob-heading">
+      <div><span class="ob-title">这次整理，改了什么？</span><small>我的知识库 · 整理阅读笔记 · 任务已结束</small></div>
+      <div class="ob-segments" role="group" aria-label="详情视图">
+        <button type="button" data-view="changes" aria-pressed="true" aria-controls="ob-changes-panel">变更</button>
+        <button type="button" data-view="session" aria-pressed="false" aria-controls="ob-session-panel">会话</button>
+      </div>
+    </div>
+    <div class="ob-summary"><small>任务期间的文件变化 · 新增 1 / 更新 1 / 移动 1</small><small data-review-count>3 条待回看</small></div>
+    <div id="ob-changes-panel" class="ob-content" aria-label="文件变化">
+      <ul class="ob-notes" aria-label="本次变化的笔记">
+        <li><button type="button" class="ob-note" data-note="0" aria-pressed="false">渐进式总结<small>新增 · 待回看</small></button></li>
+        <li><button type="button" class="ob-note" data-note="1" aria-pressed="true">阅读工作流<small>更新 · 待回看</small></button></li>
+        <li><button type="button" class="ob-note" data-note="2" aria-pressed="false">注意力预算<small>移动 · 待回看</small></button></li>
+      </ul>
+      <div class="ob-detail">
+        <span class="ob-title" data-note-title>阅读工作流</span><small class="ob-path" data-note-path>方法 / 阅读工作流.md</small>
+        <small data-diff-label>Markdown 差异 · − 删除 / + 新增</small>
+        <pre class="ob-diff" aria-label="笔记变更内容" data-diff></pre>
+        <button type="button" class="ob-action ob-review" data-review aria-pressed="false">标记已回看</button>
+      </div>
+    </div>
+    <div id="ob-session-panel" class="ob-session" aria-label="示例会话" hidden>
+      <small>你 · 示例任务</small><div class="ob-message">把收件箱里的阅读笔记整理好，补上能复用的方法和关联。</div>
+      <small>Codex · 示例回复</small><div class="ob-message">已整理为方法笔记，补充「阅读工作流」，并将「注意力预算」移入主题目录。请回看新增段落是否符合你的意思。</div>
+      <small>文件变化单独记录，不等同于会话里的完成声明。</small>
+    </div>
+    <div class="ob-footer"><button type="button" class="ob-action ob-primary" data-open>在 Obsidian 打开笔记</button><button type="button" class="ob-action" data-codex>回到 Codex</button></div>
+    <p class="ob-feedback" role="status" aria-live="polite" data-feedback>演示：可以点选笔记并标记已回看。</p>
+  </section>
+  <script>
+    (() => {
+      const root = document.getElementById('obsidian-bar-concept');
+      const notes = [
+        { title: '渐进式总结', path: '方法 / 渐进式总结.md', kind: '新增', lines: ['+ # 渐进式总结', '+ 先保留原句，再提炼可以复用的观点。', '+ 关联：[[阅读工作流]]'] },
+        { title: '阅读工作流', path: '方法 / 阅读工作流.md', kind: '更新', lines: ['  ## 读完以后', '− 把摘录放进收件箱。', '+ 用自己的话写下一个结论。', '+ 关联到已有笔记：[[渐进式总结]]'] },
+        { title: '注意力预算', path: '主题 / 注意力预算.md', kind: '移动', lines: ['原位置：收件箱 / 注意力预算.md', '新位置：主题 / 注意力预算.md', '正文未变化'] }
+      ];
+      const state = { selected: 1, view: 'changes', reviewed: new Set(), showBarCount: true };
+      const find = selector => root.querySelector(selector);
+      const noteButtons = Array.from(root.querySelectorAll('[data-note]'));
+      const viewButtons = Array.from(root.querySelectorAll('[data-view]'));
+      const tell = message => { find('[data-feedback]').textContent = message; };
+      function render() {
+        const note = notes[state.selected];
+        const pending = notes.length - state.reviewed.size;
+        find('[data-bar-count]').textContent = `${pending} 待回看`;
+        find('[data-bar-count]').hidden = !state.showBarCount;
+        find('[data-review-count]').textContent = pending ? `${pending} 条待回看` : '全部已回看';
+        noteButtons.forEach((button, index) => {
+          button.setAttribute('aria-pressed', String(index === state.selected));
+          button.querySelector('small').textContent = `${notes[index].kind} · ${state.reviewed.has(index) ? '已回看' : '待回看'}`;
+        });
+        viewButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.view === state.view)));
+        find('#ob-changes-panel').hidden = state.view !== 'changes';
+        find('#ob-session-panel').hidden = state.view !== 'session';
+        find('[data-note-title]').textContent = note.title;
+        find('[data-note-path]').textContent = note.path;
+        find('[data-diff-label]').textContent = note.kind === '移动' ? '笔记移动 · 来源与去向' : 'Markdown 差异 · − 删除 / + 新增';
+        find('[data-diff]').replaceChildren(...note.lines.map(line => {
+          const span = document.createElement('span');
+          span.textContent = line;
+          if (line.startsWith('+')) span.className = 'ob-added';
+          if (line.startsWith('−')) span.className = 'ob-removed';
+          return span;
+        }));
+        const reviewed = state.reviewed.has(state.selected);
+        find('[data-review]').textContent = reviewed ? '已回看 · 取消标记' : '标记已回看';
+        find('[data-review]').setAttribute('aria-pressed', String(reviewed));
+        find('[data-open]').textContent = state.view === 'changes' ? '在 Obsidian 打开笔记' : '打开 Obsidian 知识库';
+      }
+      noteButtons.forEach(button => button.addEventListener('click', () => {
+        state.selected = Number(button.dataset.note);
+        render();
+        tell(`演示：正在查看「${notes[state.selected].title}」的${notes[state.selected].kind}。`);
+      }));
+      viewButtons.forEach(button => button.addEventListener('click', () => {
+        state.view = button.dataset.view;
+        render();
+        tell(state.view === 'changes' ? '演示：已切换到文件变更。' : '演示：已切换到示例会话。');
+      }));
+      find('[data-review]').addEventListener('click', () => {
+        if (state.reviewed.has(state.selected)) state.reviewed.delete(state.selected);
+        else state.reviewed.add(state.selected);
+        render();
+        tell(`演示：「${notes[state.selected].title}」${state.reviewed.has(state.selected) ? '已回看' : '已取消回看标记'}，还剩 ${notes.length - state.reviewed.size} 条待回看。`);
+      });
+      find('[data-open]').addEventListener('click', () => tell(state.view === 'changes' ? `演示：会在 Obsidian 中打开「${notes[state.selected].title}」。` : '演示：会打开 Obsidian 的「我的知识库」。'));
+      find('[data-codex]').addEventListener('click', () => tell('演示：会返回对应的 Codex 整理会话，不会发送新任务。'));
+      render();
+      if (globalThis.Tweak) {
+        const tweak = new Tweak({ container: root, onChange: render });
+        tweak.addToggle(state, 'showBarCount', { label: 'Bar 显示待回看数' });
+      }
+    })();
+  </script>
+</div>

@@ -253,7 +253,7 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                 "the compact header does not expose recovery progress and the final task count"
             )
         },
-        CodexBarTestCase(name: "header exposes a rightmost on-demand task refresh") {
+        CodexBarTestCase(name: "header exposes a permanent knowledge entry and on-demand task refresh") {
             let repositoryRoot = URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
@@ -294,10 +294,15 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             ).first ?? ""
 
             try expect(
-                headerSource.contains("Button(action: model.refreshOpenTasks)")
-                    && headerSource.contains("Image(systemName: \"arrow.clockwise\")")
+                headerSource.contains("action: model.refreshOpenTasks")
                     && headerSource.contains(".disabled(model.isRecoveringOpenTasks)"),
-                "the header has no disabled-while-syncing refresh control"
+                "the header menu has no disabled-while-syncing refresh control"
+            )
+            try expect(
+                headerSource.contains("Button(action: onKnowledgeRequested)")
+                    && headerSource.contains("Image(systemName: \"book.closed\")")
+                    && headerSource.contains(".accessibilityLabel(\"知识库\")"),
+                "the header has no permanent accessible knowledge entry"
             )
             try expect(
                 headerSource.contains("刷新已打开的 VS Code Codex 任务"),
@@ -315,17 +320,17 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             )
             try expect(
                 viewSource.contains(
-                    ".accessibilityValue(\"共 \\(model.visibleTasks.count) 个任务\")"
+                    ".accessibilityValue(\"\\(model.visibleTasks.count) 个任务\")"
                 ),
-                "hiding the visual task count also removed it from VoiceOver"
+                "the task bar does not expose its task count to VoiceOver"
             )
             if let menuPosition = headerSource.range(of: "Menu {")?.lowerBound,
-               let refreshPosition = headerSource.range(
-                   of: "Button(action: model.refreshOpenTasks)"
+               let knowledgePosition = headerSource.range(
+                   of: "Button(action: onKnowledgeRequested)"
                )?.lowerBound {
                 try expect(
-                    menuPosition < refreshPosition,
-                    "the refresh control is not the rightmost header action"
+                    menuPosition < knowledgePosition,
+                    "the knowledge entry is not the rightmost header action"
                 )
             } else {
                 throw TestFailure(description: "header action positions were not found")

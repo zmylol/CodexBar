@@ -1,0 +1,29 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+script_dir=${0:A:h}
+repo_root=${script_dir:h}
+cd "$repo_root"
+
+# Reuse an existing debug build; this standalone AppKit check never runs SwiftPM.
+build_dir="$repo_root/.build/debug"
+if [[ ! -d "$build_dir/CodexBarCore.build" || ! -d "$build_dir/CodexBarWindowing.build" ]]; then
+    print -u2 "Build CodexBar in debug mode before running this native check."
+    exit 1
+fi
+
+check_dir=$(mktemp -d "${TMPDIR:-/tmp}/codexbar-autohide-checks.XXXXXX")
+trap 'rm -rf "$check_dir"' EXIT
+app_sources=()
+for source in Sources/CodexBarApp/*.swift; do
+    [[ "$source" == "Sources/CodexBarApp/CodexBarApp.swift" ]] || app_sources+=("$source")
+done
+
+/usr/bin/swiftc -swift-version 6 -target "$(uname -m)-apple-macosx13.0" \
+    -parse-as-library -package-name codexbar \
+    -module-cache-path "$build_dir/ModuleCache" -I "$build_dir/Modules" \
+    "$build_dir"/CodexBarCore.build/*.o "$build_dir"/CodexBarWindowing.build/*.o \
+    "${app_sources[@]}" Tests/CodexBarAppTests/KnowledgeLibraryAutoHideChecks.swift \
+    -o "$check_dir/knowledge-autohide-check"
+"$check_dir/knowledge-autohide-check"

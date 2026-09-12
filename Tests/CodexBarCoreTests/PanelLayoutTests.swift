@@ -156,6 +156,40 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
             try expect(detailFrame.size.width == 420, "hover detail width changed")
             try expect(detailFrame.size.height == 136, "hover detail ignored its content height")
         },
+        CodexBarTestCase(name: "places a wide library beside the bar without changing conversation width") {
+            let frame = CodexBarPanelLayout.detailFrame(
+                panelFrame: CGRect(x: 900, y: 400, width: 126, height: 140),
+                rowMidYFromTop: 14,
+                visibleFrame: CGRect(x: 18, y: 42, width: 1164, height: 840),
+                detailHeight: 520,
+                detailWidth: 620
+            )
+            try expect(frame == CGRect(x: 272, y: 266, width: 620, height: 520),
+                       "the two-column library lost its width, alignment or gap")
+        },
+        CodexBarTestCase(name: "flips a wide library onto a display with negative coordinates") {
+            let screen = CGRect(x: -1280, y: 24, width: 1280, height: 776)
+            let frame = CodexBarPanelLayout.detailFrame(
+                panelFrame: CGRect(x: -1262, y: 620, width: 126, height: 140),
+                rowMidYFromTop: 14,
+                visibleFrame: screen,
+                detailHeight: 520,
+                detailWidth: 620
+            )
+            try expect(frame.minX == -1128 && frame.maxY == screen.maxY && frame.width == 620,
+                       "the library failed to flip right and stay below the display top")
+        },
+        CodexBarTestCase(name: "shrinks wide details to fit a smaller visible display") {
+            let screen = CGRect(x: 100, y: 24, width: 500, height: 400)
+            let frame = CodexBarPanelLayout.detailFrame(
+                panelFrame: CGRect(x: 110, y: 200, width: 126, height: 140),
+                rowMidYFromTop: 42,
+                visibleFrame: screen,
+                detailHeight: 520,
+                detailWidth: 620
+            )
+            try expect(frame == screen, "the library extended beyond the available display")
+        },
         CodexBarTestCase(name: "keeps hover details within the visible screen") {
             let visibleFrame = CGRect(x: 0, y: 24, width: 1200, height: 876)
             let detailHeight: CGFloat = 320

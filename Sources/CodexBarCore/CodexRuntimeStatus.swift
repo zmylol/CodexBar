@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 public struct CodexRuntimeStatusUpdate: Equatable, Sendable {
     public let sessionID: String
@@ -161,13 +162,13 @@ public struct CodexRuntimeStatusReducer: Sendable {
     ]
 }
 
-private func validRuntimeIdentifier(_ value: String) -> Bool {
+func validRuntimeIdentifier(_ value: String) -> Bool {
     !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && value.utf8.count <= 512
 }
 
-private enum RuntimeProjectionError: Error { case invalid }
+enum RuntimeProjectionError: Error { case invalid, limit }
 
-private struct RuntimeHeader: Decodable {
+struct RuntimeHeader: Decodable {
     let type: String
     let method: String
     let version: Int
@@ -189,12 +190,12 @@ private struct RuntimeHeader: Decodable {
     }
 }
 
-private struct RuntimeFrame: Decodable {
+struct RuntimeFrame: Decodable {
     let params: Parameters
     struct Parameters: Decodable { let change: RuntimeChange }
 }
 
-private struct RuntimeChange: Decodable {
+struct RuntimeChange: Decodable {
     let type: String
     let revision: Int
     let baseRevision: Int?
@@ -208,14 +209,14 @@ private struct RuntimeChange: Decodable {
         revision = try values.decode(Int.self, forKey: .revision)
         baseRevision = try values.decodeIfPresent(Int.self, forKey: .baseRevision)
         snapshot = type == "snapshot"
-            ? try RuntimeMetadata.decode(values.superDecoder(forKey: .conversationState), shape: .conversation)
+            ? try RuntimeMetadata.decode(values.superDecoder(forKey: .conversationState), shape: RuntimeShape.root(decoder))
             : nil
         patches = type == "patches" ? try values.decode([RuntimePatch].self, forKey: .patches) : nil
         guard patches?.count ?? 0 <= 10_000 else { throw RuntimeProjectionError.invalid }
     }
 }
 
-private enum RuntimePath: Decodable, Sendable {
+enum RuntimePath: Decodable, Sendable {
     case key(String)
     case index(Int)
     init(from decoder: Decoder) throws {
@@ -225,7 +226,7 @@ private enum RuntimePath: Decodable, Sendable {
     }
 }
 
-private struct RuntimePatch: Decodable {
+struct RuntimePatch: Decodable {
     let op: String
     let path: [RuntimePath]
     let shape: RuntimeShape?
@@ -237,7 +238,7 @@ private struct RuntimePatch: Decodable {
         op = try values.decode(String.self, forKey: .op)
         path = try values.decode([RuntimePath].self, forKey: .path)
         guard path.count <= 128 else { throw RuntimeProjectionError.invalid }
-        shape = path.reduce(Optional(RuntimeShape.conversation)) { $0?.child($1) }
+        shape = path.reduce(Optional(RuntimeShape.root(decoder))) { $0?.child($1) }
         if let shape, op != "remove" {
             value = try RuntimeMetadata.decode(values.superDecoder(forKey: .value), shape: shape)
         } else { value = nil }
@@ -245,9 +246,15 @@ private struct RuntimePatch: Decodable {
 }
 
 /// This whitelist applies equally to full snapshots and patch values.
-private indirect enum RuntimeShape {
+indirect enum RuntimeShape {
     case conversation, status, request, turn, turnHistory, history, island, entry, boundary
     case string, array(RuntimeShape), entities
+    case knowledgeConversation, knowledgeTurn, knowledgeTurnHistory, knowledgeHistory, knowledgeEntities
+    case knowledgeItem, fileChange, fileKind, pagination, result, bool, presence, diff
+
+    static func root(_ decoder: Decoder) -> RuntimeShape {
+        decoder.userInfo[RuntimeProjectionBudget.userInfoKey] == nil ? .conversation : .knowledgeConversation
+    }
 
     func child(_ path: RuntimePath) -> RuntimeShape? {
         if case let .array(element) = self, case .index = path { return element }
@@ -271,29 +278,118 @@ private indirect enum RuntimeShape {
         case .entry: return key == "value" ? .string : nil
         case .boundary: return key == "status" ? .string : nil
         case .entities: return validRuntimeIdentifier(key) ? .turn : nil
-        case .string, .array: return nil
+        case .knowledgeConversation:
+            switch key {
+            case "id", "sessionId", "cwd", "source", "resumeState": return .string
+            case "turns": return .array(.knowledgeTurn)
+            case "turnHistory": return .knowledgeTurnHistory
+            case "turnsPagination": return .pagination
+            default: return nil
+            }
+        case .knowledgeTurn:
+            switch key {
+            case "turnId": return .string
+            case "items": return .array(.knowledgeItem)
+            case "itemsPagination": return .pagination
+            default: return nil
+            }
+        case .knowledgeTurnHistory: return key == "kind" ? .string : key == "history" ? .knowledgeHistory : nil
+        case .knowledgeHistory:
+            switch key {
+            case "islands": return .array(.island)
+            case "entitiesByKey": return .knowledgeEntities
+            case "isComplete": return .bool
+            default: return nil
+            }
+        case .knowledgeEntities: return validRuntimeIdentifier(key) ? .knowledgeTurn : nil
+        case .knowledgeItem:
+            switch key {
+            case "id", "type", "status": return .string
+            case "changes": return .array(.fileChange)
+            case "success", "isError": return .bool
+            case "error": return .presence
+            case "result": return .result
+            default: return nil
+            }
+        case .fileChange:
+            switch key {
+            case "path": return .string
+            case "kind": return .fileKind
+            case "diff": return .diff
+            default: return nil
+            }
+        case .fileKind: return key == "type" || key == "move_path" ? .string : nil
+        case .pagination: return key == "hasLoadedOldest" ? .bool : key == "source" ? .string : nil
+        case .result: return key == "isError" ? .bool : nil
+        case .string, .array, .bool, .presence, .diff: return nil
         }
     }
 }
 
-private indirect enum RuntimeMetadata: Sendable {
+/// A decoding budget is opt-in; the original runtime projection keeps its existing whitelist and limits.
+/// Created for one synchronous decoder invocation and never shared across workers.
+final class RuntimeProjectionBudget: @unchecked Sendable {
+    static let userInfoKey = CodingUserInfoKey(rawValue: "CodexBarKnowledgeProjectionBudget")!
+    private var remaining: Int
+    var truncated = false
+
+    init(limit: Int) { remaining = limit }
+
+    func reserve(_ bytes: Int) throws {
+        guard bytes <= remaining else { throw RuntimeProjectionError.limit }
+        remaining -= bytes
+    }
+}
+
+indirect enum RuntimeMetadata: Sendable {
     case null
     case string(String)
+    case bool(Bool)
+    case fileDiff(text: String?, fingerprint: String)
     case array([RuntimeMetadata])
     case object([String: RuntimeMetadata])
 
     var string: String? { if case let .string(value) = self { return value }; return nil }
     var array: [RuntimeMetadata]? { if case let .array(value) = self { return value }; return nil }
+    var bool: Bool? { if case let .bool(value) = self { return value }; return nil }
+    var object: [String: RuntimeMetadata]? { if case let .object(value) = self { return value }; return nil }
+    var diffText: String? { if case let .fileDiff(text, _) = self { return text }; return nil }
+    var diffFingerprint: String? { if case let .fileDiff(_, fingerprint) = self { return fingerprint }; return nil }
+    var estimatedSize: Int {
+        switch self {
+        case .null, .bool: return 32
+        case let .string(value): return 32 + value.utf8.count
+        case let .fileDiff(text, fingerprint): return 64 + (text?.utf8.count ?? 0) + fingerprint.utf8.count
+        case let .array(values): return 32 + values.reduce(0) { $0 + $1.estimatedSize }
+        case let .object(values): return 32 + values.reduce(0) { $0 + 32 + $1.key.utf8.count + $1.value.estimatedSize }
+        }
+    }
     subscript(_ key: String) -> RuntimeMetadata {
         if case let .object(values) = self { return values[key] ?? .null }; return .null
     }
 
     static func decode(_ decoder: Decoder, shape: RuntimeShape) throws -> RuntimeMetadata {
+        let budget = decoder.userInfo[RuntimeProjectionBudget.userInfoKey] as? RuntimeProjectionBudget
+        try budget?.reserve(32)
         if try decoder.singleValueContainer().decodeNil() { return .null }
         switch shape {
+        case .presence: return .bool(true)
+        case .bool:
+            return (try? decoder.singleValueContainer().decode(Bool.self)).map(RuntimeMetadata.bool) ?? .null
+        case .diff:
+            guard let text = try? decoder.singleValueContainer().decode(String.self) else { return .null }
+            let fingerprint = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+            try budget?.reserve(32 + fingerprint.utf8.count)
+            guard text.utf8.count <= CodexKnowledgeChangesReducer.maximumDiffBytes else {
+                budget?.truncated = true
+                return .fileDiff(text: nil, fingerprint: fingerprint)
+            }
+            try budget?.reserve(text.utf8.count)
+            return .fileDiff(text: text, fingerprint: fingerprint)
         case .string:
             guard let text = try? decoder.singleValueContainer().decode(String.self) else { return .null }
             guard text.utf8.count <= 4_096 else { throw RuntimeProjectionError.invalid }
+            try budget?.reserve(text.utf8.count)
             return .string(text)
         case let .array(element):
             var values = try decoder.unkeyedContainer()
@@ -304,11 +400,21 @@ private indirect enum RuntimeMetadata: Sendable {
             }
             return .array(result)
         default:
+            if case .fileKind = shape, let text = try? decoder.singleValueContainer().decode(String.self) {
+                guard text.utf8.count <= 4_096 else { throw RuntimeProjectionError.invalid }
+                try budget?.reserve(text.utf8.count)
+                return .string(text)
+            }
             let values = try decoder.container(keyedBy: RuntimeKey.self)
             guard values.allKeys.count <= 10_000 else { throw RuntimeProjectionError.invalid }
             var result: [String: RuntimeMetadata] = [:]
             for key in values.allKeys {
                 guard let child = shape.child(.key(key.stringValue)) else { continue }
+                if case .knowledgeItem = shape,
+                   !["id", "type", "status"].contains(key.stringValue),
+                   let typeKey = RuntimeKey(stringValue: "type"),
+                   (try? values.decode(String.self, forKey: typeKey)) != "fileChange" { continue }
+                try budget?.reserve(32 + key.stringValue.utf8.count)
                 result[key.stringValue] = try decode(values.superDecoder(forKey: key), shape: child)
             }
             return .object(result)

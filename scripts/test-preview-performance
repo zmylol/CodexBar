@@ -32,7 +32,45 @@ core_objects=("$build_dir"/CodexBarCore.build/*.o)
     Sources/CodexBarApp/ConversationPreviewStore.swift \
     Sources/CodexBarApp/ConversationPreviewScrollView.swift \
     Sources/CodexBarApp/ConversationMarkdownView.swift \
+    Sources/CodexBarApp/KnowledgeChangesView.swift \
     Sources/CodexBarApp/TaskDetailCard.swift \
     Tests/CodexBarAppTests/PreviewPerformanceChecks.swift \
     -o "$check_dir/performance-check"
 "$check_dir/performance-check"
+
+/usr/bin/swiftc "${swift_flags[@]}" "${core_objects[@]}" \
+    Sources/CodexBarApp/ConversationPreviewStore.swift \
+    Sources/CodexBarApp/ConversationPreviewScrollView.swift \
+    Sources/CodexBarApp/ConversationMarkdownView.swift \
+    Sources/CodexBarApp/KnowledgeChangesView.swift \
+    Sources/CodexBarApp/TaskDetailCard.swift \
+    Tests/CodexBarAppTests/KnowledgeReviewViewChecks.swift \
+    -o "$check_dir/knowledge-view-check"
+"$check_dir/knowledge-view-check"
+
+/usr/bin/swiftc "${swift_flags[@]}" "${core_objects[@]}" \
+    Sources/CodexBarApp/ConversationPreviewStore.swift \
+    Sources/CodexBarApp/KnowledgeReviewStore.swift \
+    Tests/CodexBarAppTests/KnowledgeReviewStoreChecks.swift \
+    -o "$check_dir/knowledge-store-check"
+"$check_dir/knowledge-store-check"
+
+/usr/bin/swiftc "${swift_flags[@]}" "${core_objects[@]}" \
+    Sources/CodexBarApp/KnowledgeChangesView.swift \
+    Sources/CodexBarApp/VisualEffectBackground.swift \
+    Sources/CodexBarApp/KnowledgeLibraryView.swift \
+    Tests/CodexBarAppTests/KnowledgeLibraryViewChecks.swift \
+    -o "$check_dir/knowledge-library-view-check"
+"$check_dir/knowledge-library-view-check"
+
+/usr/bin/swiftc "${swift_flags[@]}" "${core_objects[@]}" \
+    Sources/CodexBarApp/KnowledgeLibraryModel.swift \
+    Tests/CodexBarAppTests/KnowledgeLibraryModelChecks.swift \
+    -o "$check_dir/knowledge-library-model-check"
+"$check_dir/knowledge-library-model-check"
+
+/usr/bin/swiftc "${swift_flags[@]}" "${core_objects[@]}" \
+    Sources/CodexBarApp/KnowledgeLibraryModel.swift \
+    Tests/CodexBarAppTests/KnowledgeLibraryPickerChecks.swift \
+    -o "$check_dir/knowledge-library-picker-check"
+"$check_dir/knowledge-library-picker-check"

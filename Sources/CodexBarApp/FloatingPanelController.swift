@@ -10,9 +10,15 @@ private final class CodexBarPanel: NSPanel {
 private final class CodexBarDetailPanel: NSPanel {
     var onDismiss: (() -> Void)?
     var onNavigate: ((NSEvent) -> Bool)?
+    var onKeyboardInteraction: (() -> Void)?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown { onKeyboardInteraction?() }
+        super.sendEvent(event)
+    }
 
     override func cancelOperation(_ sender: Any?) {
         onDismiss?()
@@ -37,6 +43,8 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     private enum Metrics {
         static let margin: CGFloat = 18
         static let detailDismissDelayNanoseconds: UInt64 = 180_000_000
+        static let knowledgeFadeDuration: TimeInterval = 0.5
+        static let knowledgeWidth: CGFloat = 600
     }
 
     private enum DefaultsKey {
@@ -47,8 +55,12 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     private let model: CodexBarAppModel
     private let panel: NSPanel
     private let detailPanel: NSPanel
+    private let knowledgePanel: NSPanel
     private let defaults: UserDefaults
     private var detailHideTask: Task<Void, Never>?
+    private var knowledgeHideGeneration = UUID()
+    private var isKnowledgeHovered = false
+    private var isKnowledgeKeyboardActive = false
     private var panelFrameUpdateTask: Task<Void, Never>?
     private var detailSelection = CodexBarDetailSelection()
     private var displayedDetailTarget: CodexBarDetailTarget?
@@ -90,6 +102,17 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
+        self.knowledgePanel = CodexBarDetailPanel(
+            contentRect: NSRect(
+                x: 0,
+                y: 0,
+                width: Metrics.knowledgeWidth,
+                height: CodexBarPanelLayout.defaultDetailHeight
+            ),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
         super.init()
 
         panel.delegate = self
@@ -116,13 +139,16 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
             },
             onDismissTaskDetail: { [weak self] in
                 self?.hideTaskDetail(clearTriggers: true)
+            },
+            onKnowledgeRequested: { [weak self] in
+                self?.showKnowledgeLibrary()
             }
         ))
         hostingView.sizingOptions = []
         panel.contentView = hostingView
 
         detailPanel.delegate = self
-        detailPanel.title = "CodexBar 会话预览"
+        detailPanel.title = "CodexBar 任务详情"
         (detailPanel as? CodexBarDetailPanel)?.onDismiss = { [weak self] in
             self?.dismissTaskDetail()
         }
@@ -137,6 +163,26 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         detailPanel.hasShadow = true
         detailPanel.becomesKeyOnlyIfNeeded = true
         detailPanel.animationBehavior = .none
+
+        knowledgePanel.delegate = self
+        knowledgePanel.title = "CodexBar 知识库"
+        // NSPanel starts with an empty NSView; clear it so the first open installs the library.
+        knowledgePanel.contentView = nil
+        knowledgePanel.level = .floating
+        knowledgePanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        knowledgePanel.hidesOnDeactivate = false
+        knowledgePanel.isOpaque = false
+        knowledgePanel.backgroundColor = .clear
+        knowledgePanel.hasShadow = true
+        knowledgePanel.becomesKeyOnlyIfNeeded = false
+        knowledgePanel.animationBehavior = .none
+        (knowledgePanel as? CodexBarDetailPanel)?.onDismiss = { [weak self] in
+            self?.hideKnowledgeLibrary()
+        }
+        (knowledgePanel as? CodexBarDetailPanel)?.onKeyboardInteraction = { [weak self] in
+            self?.isKnowledgeKeyboardActive = true
+            self?.cancelKnowledgeHide()
+        }
         restorePosition()
         updateHeight(
             taskCount: model.visibleTasks.count,
@@ -155,6 +201,110 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         panel.orderFrontRegardless()
     }
 
+    private func showKnowledgeLibrary() {
+        guard knowledgePanel.attachedSheet == nil else { return }
+        hideTaskDetail(clearTriggers: true)
+        cancelKnowledgeHide()
+        isKnowledgeKeyboardActive = NSApplication.shared.currentEvent?.type == .keyDown
+        if knowledgePanel.contentView == nil {
+            let hostingView = NSHostingView(rootView: KnowledgeLibraryView(
+                model: model.knowledgeLibrary,
+                onChooseVault: { [weak self] in
+                    guard let self else { return }
+                    cancelKnowledgeHide()
+                    model.knowledgeLibrary.chooseVault(in: knowledgePanel)
+                },
+                onHoverChanged: { [weak self] hovering in
+                    self?.knowledgeHoverChanged(hovering)
+                },
+                onClose: { [weak self] in self?.hideKnowledgeLibrary() }
+            ))
+            hostingView.sizingOptions = []
+            knowledgePanel.contentView = hostingView
+        }
+        updateKnowledgeFrame()
+        knowledgePanel.makeKeyAndOrderFront(nil)
+        if knowledgePanel.isVisible {
+            model.knowledgeLibrary.refreshToday()
+        }
+        if let contentView = knowledgePanel.contentView {
+            knowledgePanel.makeFirstResponder(contentView)
+            knowledgePanel.selectNextKeyView(nil)
+        }
+        isKnowledgeHovered = knowledgePanel.frame.contains(NSEvent.mouseLocation)
+    }
+
+    private func hideKnowledgeLibrary(restoreFocus: Bool = true) {
+        let shouldRestoreFocus = restoreFocus && knowledgePanel.isKeyWindow
+        knowledgePanel.orderOut(nil)
+        cancelKnowledgeHide()
+        isKnowledgeHovered = false
+        isKnowledgeKeyboardActive = false
+        if shouldRestoreFocus { panel.makeKeyAndOrderFront(nil) }
+    }
+
+    private func knowledgeHoverChanged(_ hovering: Bool) {
+        isKnowledgeKeyboardActive = false
+        isKnowledgeHovered = hovering
+        if hovering { cancelKnowledgeHide() }
+        else { scheduleKnowledgeHide() }
+    }
+
+    private func refreshKnowledgeHover() {
+        knowledgeHoverChanged(knowledgePanel.frame.contains(NSEvent.mouseLocation))
+    }
+
+    private var isKnowledgeActive: Bool { isKnowledgeHovered || isKnowledgeKeyboardActive }
+
+    private func cancelKnowledgeHide() {
+        knowledgeHideGeneration = UUID()
+        // Replace any in-flight fade so re-entry immediately restores the panel.
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            knowledgePanel.animator().alphaValue = 1
+        }
+    }
+
+    private func scheduleKnowledgeHide() {
+        cancelKnowledgeHide()
+        guard knowledgePanel.isVisible, !isKnowledgeActive, knowledgePanel.attachedSheet == nil else { return }
+        let generation = knowledgeHideGeneration
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : Metrics.knowledgeFadeDuration
+            knowledgePanel.animator().alphaValue = 0
+        } completionHandler: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, knowledgeHideGeneration == generation,
+                      !isKnowledgeActive, knowledgePanel.attachedSheet == nil else { return }
+                hideKnowledgeLibrary(restoreFocus: false)
+            }
+        }
+    }
+
+    func windowWillBeginSheet(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === knowledgePanel else { return }
+        cancelKnowledgeHide()
+    }
+
+    func windowDidEndSheet(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === knowledgePanel, knowledgePanel.isVisible else { return }
+        refreshKnowledgeHover()
+    }
+
+    private func updateKnowledgeFrame() {
+        let visibleFrame = (panel.screen ?? NSScreen.main)?.visibleFrame ?? panel.frame
+        let frame = CodexBarPanelLayout.detailFrame(
+            panelFrame: panel.frame,
+            rowMidYFromTop: panel.frame.height / 2,
+            visibleFrame: visibleFrame,
+            detailHeight: CodexBarPanelLayout.defaultDetailHeight,
+            detailWidth: Metrics.knowledgeWidth
+        )
+        if frame != knowledgePanel.frame {
+            knowledgePanel.setFrame(frame, display: true)
+        }
+    }
+
     func updateHeight(taskCount: Int, noticeVisible: Bool, animated: Bool) {
         let visibleFrame = ((panel.screen ?? NSScreen.main)?.visibleFrame ?? panel.frame)
             .insetBy(dx: Metrics.margin, dy: Metrics.margin)
@@ -166,6 +316,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
             visibleFrame: visibleFrame
         )
         guard frame != panel.frame else {
+            if knowledgePanel.isVisible { updateKnowledgeFrame() }
             if detailPanel.isVisible {
                 refreshTaskDetail()
             }
@@ -244,6 +395,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         isUpdatingPanelFrame = false
         hideTaskDetail(clearTriggers: true)
         persistPanelOrigin()
+        if knowledgePanel.isVisible { updateKnowledgeFrame() }
     }
 
     func windowDidChangeScreen(_ notification: Notification) {
@@ -252,6 +404,11 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
+        if (notification.object as? NSWindow) === knowledgePanel {
+            isKnowledgeKeyboardActive = false
+            scheduleKnowledgeHide()
+            return
+        }
         guard (notification.object as? NSWindow) === detailPanel, displayedDetailTarget != nil else { return }
         scheduleTaskDetailHide()
     }
@@ -269,6 +426,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         rowMidY: CGFloat,
         hovering: Bool
     ) {
+        guard !knowledgePanel.isVisible, knowledgePanel.attachedSheet == nil else { return }
         detailSelection.updateHover(
             cwd: task.cwd,
             rowMidY: rowMidY,
@@ -286,6 +444,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         rowMidY: CGFloat,
         focused: Bool
     ) {
+        guard !knowledgePanel.isVisible, knowledgePanel.attachedSheet == nil else { return }
         detailSelection.updateFocus(
             cwd: task.cwd,
             rowMidY: rowMidY,
@@ -299,6 +458,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     }
 
     private func refreshTaskDetail() {
+        guard !knowledgePanel.isVisible else { return }
         let retainedTarget = isDetailHovered || detailPanel.isKeyWindow ? displayedDetailTarget : nil
         let target = detailPanel.isKeyWindow ? retainedTarget : detailSelection.selected ?? retainedTarget
         guard let target else {
@@ -314,6 +474,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     }
 
     private func focusTaskDetail(_ task: CodexTask, rowMidY: CGFloat) {
+        guard !knowledgePanel.isVisible, knowledgePanel.attachedSheet == nil else { return }
         guard let currentTask = model.visibleTasks.first(where: { $0.id == task.id }) else { return }
         if !detailPanel.isKeyWindow {
             taskListResponder = panel.firstResponder
@@ -322,29 +483,38 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         detailPanel.makeKeyAndOrderFront(nil)
         if let contentView = detailPanel.contentView {
             contentView.layoutSubtreeIfNeeded()
-            let responder = detailScrollView(in: contentView) ?? contentView
+            let responder = singleDetailScrollView(in: contentView) ?? contentView
             if !detailPanel.makeFirstResponder(responder) {
                 detailPanel.makeFirstResponder(detailPanel)
             }
+            if responder === contentView { detailPanel.selectNextKeyView(nil) }
         }
     }
 
-    private func detailScrollView(in view: NSView) -> NSScrollView? {
-        if let scrollView = view as? NSScrollView { return scrollView }
-        for child in view.subviews {
-            if let scrollView = detailScrollView(in: child) { return scrollView }
-        }
-        return nil
+    private func singleDetailScrollView(in view: NSView) -> NSScrollView? {
+        let scrollViews = detailScrollViews(in: view)
+        return scrollViews.count == 1 ? scrollViews.first : nil
+    }
+
+    private func detailScrollViews(in view: NSView) -> [NSScrollView] {
+        if let scrollView = view as? NSScrollView { return [scrollView] }
+        return view.subviews.flatMap { detailScrollViews(in: $0) }
     }
 
     private func navigateTaskDetail(_ event: NSEvent) -> Bool {
         guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
               let key = event.charactersIgnoringModifiers?.unicodeScalars.first?.value,
-              let contentView = detailPanel.contentView,
-              let scrollView = detailScrollView(in: contentView)
+              let contentView = detailPanel.contentView
         else {
             return false
         }
+        // A knowledge preview has separate list and diff scrollers. Preserve the
+        // native control's keys instead of sending every arrow to the first one.
+        let responder = detailPanel.firstResponder as? NSView
+        if responder is NSTextView { return false }
+        let scrollView = (responder as? NSScrollView) ?? responder?.enclosingScrollView
+            ?? (responder == nil || responder === contentView ? singleDetailScrollView(in: contentView) : nil)
+        guard let scrollView, scrollView.isDescendant(of: contentView) else { return false }
         let clipView = scrollView.contentView
         var bounds = clipView.bounds
         let direction: CGFloat = clipView.isFlipped ? 1 : -1
@@ -399,9 +569,16 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
                 store: model.store,
                 activityStore: model.activityStore,
                 previewStore: model.previewStore,
+                knowledgeStore: model.knowledgeStore,
                 cwd: cwd,
                 onRefreshPreview: { [weak self] in self?.model.refreshConversationPreview() },
                 onLoadHistory: { [weak self] in self?.model.loadConversationHistory() },
+                onToggleReview: { [weak self] note, currentTask in
+                    self?.model.toggleKnowledgeReview(note, for: currentTask)
+                },
+                onOpenNote: { [weak self] note, currentTask in
+                    self?.model.openObsidianNote(note, for: currentTask)
+                },
                 onOpen: { [weak self] in
                     guard let self,
                           let currentTask = model.visibleTasks.first(where: { $0.cwd == cwd })
@@ -504,6 +681,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         panelFrameUpdateTask = nil
         isUpdatingPanelFrame = false
         persistPanelOrigin()
+        if knowledgePanel.isVisible { updateKnowledgeFrame() }
         if detailPanel.isVisible {
             refreshTaskDetail()
         }

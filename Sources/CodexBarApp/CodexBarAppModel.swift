@@ -23,6 +23,8 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     let store: TaskStore
     let activityStore: LiveTaskActivityStore
     let previewStore = ConversationPreviewStore()
+    let knowledgeStore = KnowledgeReviewStore()
+    let knowledgeLibrary = KnowledgeLibraryModel()
     var visibleTasks: [CodexTask] { taskVisibility.visibleTasks(in: store.tasks) }
     var visibleSortedTasks: [CodexTask] { taskVisibility.visibleTasks(in: store.sortedTasks) }
     var hasNoOpenWindows: Bool { taskVisibility.hasNoOpenWindows }
@@ -37,6 +39,10 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     private let windowMonitor: VSCodeWindowMonitor
     private let runtimeMonitor = CodexRuntimeStatusMonitor()
     private var runtimeProjection = RuntimeStatusProjectionWorker()
+    private var knowledgeWorker = KnowledgeReviewWorker()
+    private var knowledgeSynchronizationTask: Task<Void, Never>?
+    private var knowledgeSessions: [String: String] = [:]
+    private var knowledgeSynchronizationID: UUID?
     private var runtimeStates: [String: CodexRuntimeStatusUpdate] = [:]
     private var runtimeEvents: [RuntimeStatusEvent] = []
     private var runtimeEventBytes = 0
@@ -86,11 +92,13 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         self.inboxMonitor = inboxMonitor
         self.windowMonitor = windowMonitor
         self.threadSnapshotLoader = threadSnapshotLoader
+        super.init()
     }
 
     func start() {
         stop()
         isStarted = true
+        knowledgeLibrary.start()
         if store.recoverySnapshotURL != nil {
             showNotice(message: "任务状态文件损坏，已隔离并重建。")
         }
@@ -130,6 +138,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
 
     func stop() {
         isStarted = false
+        knowledgeLibrary.stop()
         endConversationPreview()
         runtimeMonitor.stop()
         runtimeProcessingTask?.cancel()
@@ -139,6 +148,12 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         runtimeEventBytes = 0
         runtimeStates.removeAll()
         runtimeProjection = RuntimeStatusProjectionWorker()
+        knowledgeSynchronizationTask?.cancel()
+        knowledgeSynchronizationTask = nil
+        knowledgeSynchronizationID = nil
+        knowledgeSessions.removeAll()
+        knowledgeWorker = KnowledgeReviewWorker()
+        knowledgeStore.receive([:])
         inboxMonitor.stop()
         windowMonitor.stop()
         windowMonitor.onStatusChange = nil
@@ -233,6 +248,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     func refreshOpenTasks() {
         startInboxMonitoring()
         runtimeMonitor.refresh()
+        synchronizeKnowledgeSessions(refresh: true)
         processInbox()
         windowMonitor.refreshObservers()
         guard AccessibilityAuthorization.isTrusted else {
@@ -481,6 +497,58 @@ final class CodexBarAppModel: NSObject, ObservableObject {
             endConversationPreview()
         }
         runtimeMonitor.setSessions(Set(visibleTasks.map(\.sessionID)))
+        synchronizeKnowledgeSessions()
+    }
+
+    private func synchronizeKnowledgeSessions(refresh: Bool = false) {
+        let tasks = visibleTasks
+        let sessions = Dictionary(tasks.map { ($0.sessionID, $0.cwd) }, uniquingKeysWith: { _, latest in latest })
+        guard refresh || sessions != knowledgeSessions else { return }
+        knowledgeSessions = sessions
+        knowledgeSynchronizationTask?.cancel()
+        let synchronizationID = UUID()
+        knowledgeSynchronizationID = synchronizationID
+        let worker = knowledgeWorker
+        knowledgeSynchronizationTask = Task { [weak self] in
+            let update = await worker.synchronize(tasks: tasks, refresh: refresh)
+            guard let self, isStarted, !Task.isCancelled,
+                  knowledgeSynchronizationID == synchronizationID, knowledgeWorker === worker else { return }
+            applyKnowledgeReview(update)
+            // A missing owner must not leave an endless loading indicator.
+            do { try await Task.sleep(for: .seconds(8)) } catch { return }
+            let expired = await worker.expireLoading()
+            guard !Task.isCancelled, knowledgeSynchronizationID == synchronizationID else { return }
+            applyKnowledgeReview(expired)
+        }
+    }
+
+    private func applyKnowledgeReview(_ update: KnowledgeReviewUpdate) {
+        knowledgeStore.receive(update.reviews, revision: update.revision)
+        for sessionID in update.requestedSnapshots { runtimeMonitor.requestSnapshot(sessionID: sessionID) }
+    }
+
+    func toggleKnowledgeReview(_ note: KnowledgeNoteChange, for task: CodexTask) {
+        let worker = knowledgeWorker
+        Task { [weak self] in
+            let update = await worker.toggleReview(noteID: note.id, sessionID: task.sessionID, expectedVersion: note.version)
+            guard let self, isStarted, knowledgeWorker === worker else { return }
+            applyKnowledgeReview(update)
+        }
+    }
+
+    func openObsidianNote(_ note: KnowledgeNoteChange, for task: CodexTask) {
+        let worker = knowledgeWorker
+        Task { [weak self] in
+            let url = await worker.openURL(noteID: note.id, sessionID: task.sessionID)
+            guard let self, isStarted, knowledgeWorker === worker else { return }
+            guard let url else {
+                showNotice(message: "这篇笔记已移动、删除或不在当前知识库中，无法打开。")
+                return
+            }
+            if !NSWorkspace.shared.open(url) {
+                showNotice(message: "无法打开 Obsidian，请确认已安装并打开过这个知识库。")
+            }
+        }
     }
 
     func beginConversationPreview(_ task: CodexTask) {
@@ -606,6 +674,13 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 runtimeStates.removeAll()
                 runtimeProjection = RuntimeStatusProjectionWorker()
                 invalidateConversationPreview()
+                let worker = knowledgeWorker
+                Task { [weak self] in
+                    guard let self else { return }
+                    let update = await worker.unavailable(Set(knowledgeSessions.keys))
+                    guard isStarted, knowledgeWorker === worker else { return }
+                    applyKnowledgeReview(update)
+                }
                 runtimeMonitor.refresh()
                 return
             }
@@ -646,6 +721,12 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                         runtimeStates[update.sessionID] = update
                         updatesToApply = [update]
                     }
+                    if let sessionID = result.sessionID, knowledgeStore.reviews[sessionID] != nil {
+                        let knowledge = knowledgeWorker
+                        let knowledgeUpdate = await knowledge.consume(data)
+                        guard !Task.isCancelled, runtimeProcessingID == processingID else { return }
+                        if knowledgeWorker === knowledge { applyKnowledgeReview(knowledgeUpdate) }
+                    }
                     if let previewToken, previewGeneration == previewToken,
                        result.sessionID == previewTarget?.sessionID, let worker = previewWorker {
                         let previewResult = await worker.consume(data)
@@ -657,7 +738,10 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 case .unavailable(let sessions):
                     for sessionID in sessions { runtimeStates.removeValue(forKey: sessionID) }
                     await projection.reset(sessions: sessions)
+                    let knowledge = knowledgeWorker
+                    let knowledgeUpdate = await knowledge.unavailable(sessions)
                     guard !Task.isCancelled, runtimeProcessingID == processingID else { return }
+                    if knowledgeWorker === knowledge { applyKnowledgeReview(knowledgeUpdate) }
                     if let target = previewTarget, sessions.contains(target.sessionID) {
                         invalidateConversationPreview()
                     }

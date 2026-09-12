@@ -12,7 +12,12 @@ struct TaskDetailCard: View {
     let onOpen: () -> Void
     let onRefreshPreview: () -> Void
     let onLoadHistory: () -> Void
+    var knowledge: KnowledgeVaultReview? = nil
+    var onToggleReview: (KnowledgeNoteChange) -> Void = { _ in }
+    var onOpenNote: (KnowledgeNoteChange) -> Void = { _ in }
 
+    @State private var showsConversation = false
+    @State private var selectedNoteID: String?
     @State private var isFollowingLatest = true
     @State private var firstVisibleItemID: String?
     @State private var requestedHistoryAnchorID: String?
@@ -24,6 +29,43 @@ struct TaskDetailCard: View {
         VStack(spacing: 0) {
             header
             Divider().opacity(0.4)
+            if let knowledge {
+                knowledgeTabs
+                Divider().opacity(0.4)
+                if !showsConversation {
+                    KnowledgeChangesView(
+                        review: knowledge,
+                        selectedNoteID: $selectedNoteID,
+                        onToggleReview: onToggleReview,
+                        onOpenNote: onOpenNote,
+                        onOpenConversation: onOpen
+                    )
+                } else {
+                    conversationContent
+                    Divider().opacity(0.4)
+                    footer
+                }
+            } else {
+                conversationContent
+                Divider().opacity(0.4)
+                footer
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: ConversationHistoryUpdate(
+            itemIDs: preview?.items.map(\.id) ?? [], isLoading: isLoadingHistory
+        )) { update in
+            if update.isLoading, !historyWasLoading, requestedHistoryAnchorID == nil {
+                requestedHistoryAnchorID = update.itemIDs.first
+            }
+            historyWasLoading = update.isLoading
+            revealRequestedHistory(itemIDs: update.itemIDs)
+            if !update.isLoading { requestedHistoryAnchorID = nil }
+        }
+    }
+
+    @ViewBuilder
+    private var conversationContent: some View {
             if let preview, !preview.items.isEmpty {
                 let firstIndex = firstVisibleIndex(in: preview)
                 ConversationPreviewScrollView(
@@ -73,20 +115,35 @@ struct TaskDetailCard: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .padding(16)
             }
-            Divider().opacity(0.4)
-            footer
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onChange(of: ConversationHistoryUpdate(
-            itemIDs: preview?.items.map(\.id) ?? [], isLoading: isLoadingHistory
-        )) { update in
-            if update.isLoading, !historyWasLoading, requestedHistoryAnchorID == nil {
-                requestedHistoryAnchorID = update.itemIDs.first
+    }
+
+    private var knowledgeTabs: some View {
+        HStack(spacing: 4) {
+            knowledgeTab("变更", conversation: false)
+            knowledgeTab("会话", conversation: true)
+            Spacer(minLength: 4)
+            if let knowledge {
+                Text(knowledge.pendingCount == 0 ? "全部已回看" : "\(knowledge.pendingCount) 条待回看")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("knowledge-pending-count")
             }
-            historyWasLoading = update.isLoading
-            revealRequestedHistory(itemIDs: update.itemIDs)
-            if !update.isLoading { requestedHistoryAnchorID = nil }
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+    }
+
+    private func knowledgeTab(_ label: String, conversation: Bool) -> some View {
+        Button { showsConversation = conversation } label: {
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .padding(.horizontal, 12)
+                .frame(minHeight: 26)
+                .background(showsConversation == conversation ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(showsConversation == conversation ? "已选中" : "未选中")
+        .accessibilityIdentifier(conversation ? "knowledge-tab-conversation" : "knowledge-tab-changes")
     }
 
     private func firstVisibleIndex(in preview: CodexConversationPreview) -> Int {
@@ -115,10 +172,10 @@ struct TaskDetailCard: View {
     private var header: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(task.workspaceName)
+                Text(knowledge?.vault.name ?? task.workspaceName)
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
-                Text("会话预览")
+                Text(knowledge == nil ? "会话预览" : "知识库 · 已识别变更")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
@@ -223,6 +280,7 @@ struct TaskDetailCard: View {
             }
             .buttonStyle(.plain)
             .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+            .accessibilityIdentifier("knowledge-open-conversation")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)

@@ -58,11 +58,13 @@ public enum CodexBarPanelLayout {
         panelFrame: CGRect,
         rowMidYFromTop: CGFloat,
         visibleFrame: CGRect,
-        detailHeight: CGFloat
+        detailHeight: CGFloat,
+        detailWidth: CGFloat = CodexBarPanelLayout.detailWidth
     ) -> CGRect {
-        let leftX = panelFrame.minX - detailGap - detailWidth
+        let boundedDetailWidth = min(max(detailWidth, 0), max(visibleFrame.width, 0))
+        let leftX = panelFrame.minX - detailGap - boundedDetailWidth
         let rightX = panelFrame.maxX + detailGap
-        let maximumX = max(visibleFrame.minX, visibleFrame.maxX - detailWidth)
+        let maximumX = max(visibleFrame.minX, visibleFrame.maxX - boundedDetailWidth)
         let x: CGFloat
         if leftX >= visibleFrame.minX {
             x = min(leftX, maximumX)
@@ -79,6 +81,6 @@ public enum CodexBarPanelLayout {
         let maximumY = max(visibleFrame.minY, visibleFrame.maxY - boundedDetailHeight)
         let y = min(max(proposedY, visibleFrame.minY), maximumY)
 
-        return CGRect(x: x, y: y, width: detailWidth, height: boundedDetailHeight)
+        return CGRect(x: x, y: y, width: boundedDetailWidth, height: boundedDetailHeight)
     }
 }

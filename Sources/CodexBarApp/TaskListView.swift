@@ -8,28 +8,35 @@ struct TaskListView: View {
     @ObservedObject var model: CodexBarAppModel
     @ObservedObject private var store: TaskStore
     @ObservedObject private var activityStore: LiveTaskActivityStore
+    @ObservedObject private var knowledgeStore: KnowledgeReviewStore
+    @ObservedObject private var library: KnowledgeLibraryModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
-    private let onTaskHoverChanged: (CodexTask, CGFloat, Bool) -> Void
-    private let onTaskFocusChanged: (CodexTask, CGFloat, Bool) -> Void
-    private let onTaskDetailRequested: (CodexTask, CGFloat) -> Void
+    let onTaskHoverChanged: (CodexTask, CGFloat, Bool) -> Void
+    let onTaskFocusChanged: (CodexTask, CGFloat, Bool) -> Void
+    let onTaskDetailRequested: (CodexTask, CGFloat) -> Void
     private let onDismissTaskDetail: () -> Void
+    let onKnowledgeRequested: () -> Void
 
     init(
         model: CodexBarAppModel,
         onTaskHoverChanged: @escaping (CodexTask, CGFloat, Bool) -> Void = { _, _, _ in },
         onTaskFocusChanged: @escaping (CodexTask, CGFloat, Bool) -> Void = { _, _, _ in },
         onTaskDetailRequested: @escaping (CodexTask, CGFloat) -> Void = { _, _ in },
-        onDismissTaskDetail: @escaping () -> Void = {}
+        onDismissTaskDetail: @escaping () -> Void = {},
+        onKnowledgeRequested: @escaping () -> Void = {}
     ) {
         self.model = model
         self.store = model.store
         self.activityStore = model.activityStore
+        self.knowledgeStore = model.knowledgeStore
+        self.library = model.knowledgeLibrary
         self.onTaskHoverChanged = onTaskHoverChanged
         self.onTaskFocusChanged = onTaskFocusChanged
         self.onTaskDetailRequested = onTaskDetailRequested
         self.onDismissTaskDetail = onDismissTaskDetail
+        self.onKnowledgeRequested = onKnowledgeRequested
     }
 
     var body: some View {
@@ -68,8 +75,8 @@ struct TaskListView: View {
         .onExitCommand(perform: onDismissTaskDetail)
         .onDisappear(perform: onDismissTaskDetail)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("CodexBar VS Code Codex 任务")
-        .accessibilityValue("共 \(model.visibleTasks.count) 个任务")
+        .accessibilityLabel("CodexBar VS Code 任务")
+        .accessibilityValue("\(model.visibleTasks.count) 个任务")
     }
 
     private var header: some View {
@@ -86,6 +93,12 @@ struct TaskListView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             Menu {
+                Button("知识库…", action: onKnowledgeRequested)
+                Button(model.isRecoveringOpenTasks ? "正在刷新任务…" : "刷新 VS Code 任务", action: model.refreshOpenTasks)
+                    .disabled(model.isRecoveringOpenTasks)
+                    .accessibilityLabel("刷新已打开的 VS Code Codex 任务")
+                    .accessibilityValue(model.isRecoveringOpenTasks ? "正在同步已打开的 VS Code Codex 任务" : "就绪")
+                Divider()
                 Button("清除已读", action: model.clearRead)
                     .disabled(!model.visibleTasks.contains { $0.status == .ready && !$0.isUnread })
                 Button("清除 7 天前不可匹配任务", action: model.clearOldUnmatchedTasks)
@@ -107,41 +120,38 @@ struct TaskListView: View {
                 Button("退出 CodexBar", action: model.quit)
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 10, weight: .semibold))
-                    .frame(width: 24, height: 24)
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(width: 24, height: 24, alignment: .center)
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
             .accessibilityLabel("CodexBar 菜单")
-            Button(action: model.refreshOpenTasks) {
-                ZStack {
-                    if model.isRecoveringOpenTasks {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .accessibilityHidden(true)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 10, weight: .semibold))
-                            .accessibilityHidden(true)
+            Button(action: onKnowledgeRequested) {
+                Image(systemName: "book.closed")
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(width: 24, height: 24, alignment: .center)
+                    .overlay(alignment: .topTrailing) {
+                        if library.unseenChangeCount > 0 {
+                            Circle()
+                                .fill(Color.accentColor)
+                                .frame(width: 6, height: 6)
+                                .padding(2)
+                                .accessibilityHidden(true)
+                                .allowsHitTesting(false)
+                        }
                     }
-                }
-                .frame(width: 24, height: 24)
-                .contentShape(Rectangle())
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
             .fixedSize()
-            .disabled(model.isRecoveringOpenTasks)
-            .accessibilityLabel("刷新已打开的 VS Code Codex 任务")
-            .accessibilityValue(model.isRecoveringOpenTasks
-                ? "正在同步已打开的 VS Code Codex 任务"
-                : "就绪")
-            .accessibilityHint(model.isRecoveringOpenTasks
-                ? "刷新完成后可再次使用"
-                : "重新扫描所有已打开的 VS Code 窗口并更新任务列表")
-            .accessibilityInputLabels(["刷新任务", "刷新"])
-            .help("刷新已打开的 VS Code Codex 任务")
+            .accessibilityLabel("知识库")
+            .accessibilityValue("\(library.unseenChangeCount) 篇今日新增文章未查看")
+            .accessibilityHint("打开知识库列表，点击某个知识库查看文章并清除该库提醒")
+            .accessibilityInputLabels(["知识库", "打开知识库"])
+            .accessibilityIdentifier("knowledge-library-open")
+            .help(library.unseenChangeCount > 0 ? "\(library.unseenChangeCount) 篇今日新增文章，点击查看" : "知识库 · 今日新增")
         }
         .padding(.leading, 6)
         .padding(.trailing, 4)
@@ -151,6 +161,7 @@ struct TaskListView: View {
     @ViewBuilder
     private var content: some View {
         let sortedTasks = model.visibleSortedTasks
+        let rowCount = sortedTasks.count
         VStack(spacing: 0) {
             if let notice = model.notice {
                 noticeView(notice)
@@ -159,15 +170,22 @@ struct TaskListView: View {
                     }
             }
 
-            if sortedTasks.isEmpty {
-                Text(model.hasNoOpenWindows ? "当前没有打开的 VS Code 窗口" : "等待 VS Code Codex 事件")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if rowCount == 0 {
+                VStack(spacing: 2) {
+                    Text(model.hasNoOpenWindows ? "未打开 VS Code" : "等待 Codex 任务")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Button("打开知识库", action: onKnowledgeRequested)
+                        .font(.system(size: 11, weight: .medium))
+                        .buttonStyle(.link)
+                        .frame(minHeight: 24)
+                        .accessibilityIdentifier("knowledge-library-empty-open")
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 GeometryReader { geometry in
                     if model.panelDisplayMode == .expanded,
-                       CGFloat(sortedTasks.count) * CodexBarPanelLayout.rowHeight <= geometry.size.height {
+                       CGFloat(rowCount) * CodexBarPanelLayout.rowHeight <= geometry.size.height {
                         VStack(spacing: 0) {
                             taskRows(sortedTasks)
                         }
@@ -190,6 +208,7 @@ struct TaskListView: View {
                 task: task,
                 activities: activityStore.nodes(for: task),
                 plan: activityStore.plan(for: task),
+                knowledgePendingCount: knowledgeStore.pendingCounts[task.sessionID] ?? 0,
                 coordinateSpaceName: Self.coordinateSpaceName,
                 action: { model.activate(task) },
                 deleteAction: { model.remove(task) },
@@ -260,6 +279,7 @@ private struct CompactTaskRow: View {
     let task: CodexTask
     let activities: [CodexTaskActivity]
     let plan: CodexTaskPlan?
+    let knowledgePendingCount: Int
     let coordinateSpaceName: String
     let action: () -> Void
     let deleteAction: () -> Void
@@ -298,6 +318,15 @@ private struct CompactTaskRow: View {
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                             Spacer(minLength: 2)
+                            if knowledgePendingCount > 0 {
+                                Text("\(knowledgePendingCount) 待回看")
+                                    .font(.system(size: 9, weight: .medium))
+                                    .foregroundStyle(Color.accentColor)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 4))
+                                    .fixedSize()
+                            }
                         }
                         .padding(.leading, 10)
                         .padding(.trailing, 4)
@@ -312,12 +341,13 @@ private struct CompactTaskRow: View {
                     .accessibilityValue(
                         "\(task.isUnread ? "未读，" : "")\(accessibilityTimeText)"
                             + "，\(summary.accessibilitySummary)"
+                            + (knowledgePendingCount > 0 ? "，\(knowledgePendingCount) 篇笔记待回看" : "")
                     )
-                    .accessibilityHint("切换到对应的 VS Code 窗口，按右方向键查看会话预览")
+                    .accessibilityHint("切换到对应的 VS Code 窗口，按右方向键查看任务详情")
                     .accessibilityInputLabels([task.workspaceName, task.title])
 
                     Menu {
-                        Button("查看会话预览") { onDetailRequested(task, rowMidY) }
+                        Button("查看任务详情") { onDetailRequested(task, rowMidY) }
                         Button("删除任务", role: .destructive, action: deleteAction)
                     } label: {
                         Image(systemName: "ellipsis")
@@ -368,7 +398,7 @@ private struct CompactTaskRow: View {
                     if direction == .right { onDetailRequested(task, rowMidY) }
                 }
                 .contextMenu {
-                    Button("查看会话预览") { onDetailRequested(task, rowMidY) }
+                    Button("查看任务详情") { onDetailRequested(task, rowMidY) }
                     Button("删除任务", role: .destructive, action: deleteAction)
                 }
             }
@@ -389,6 +419,7 @@ struct TaskHoverDetailView: View {
     @ObservedObject private var store: TaskStore
     @ObservedObject private var activityStore: LiveTaskActivityStore
     @ObservedObject private var previewStore: ConversationPreviewStore
+    @ObservedObject private var knowledgeStore: KnowledgeReviewStore
 
     let cwd: String
     let onOpen: () -> Void
@@ -397,6 +428,8 @@ struct TaskHoverDetailView: View {
     let onDismiss: () -> Void
     let onRefreshPreview: () -> Void
     let onLoadHistory: () -> Void
+    let onToggleReview: (KnowledgeNoteChange, CodexTask) -> Void
+    let onOpenNote: (KnowledgeNoteChange, CodexTask) -> Void
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -404,9 +437,12 @@ struct TaskHoverDetailView: View {
         store: TaskStore,
         activityStore: LiveTaskActivityStore,
         previewStore: ConversationPreviewStore,
+        knowledgeStore: KnowledgeReviewStore,
         cwd: String,
         onRefreshPreview: @escaping () -> Void,
         onLoadHistory: @escaping () -> Void,
+        onToggleReview: @escaping (KnowledgeNoteChange, CodexTask) -> Void,
+        onOpenNote: @escaping (KnowledgeNoteChange, CodexTask) -> Void,
         onOpen: @escaping () -> Void,
         onHoverChanged: @escaping (Bool) -> Void,
         onPreferredHeightChanged: @escaping (CGFloat) -> Void,
@@ -415,6 +451,7 @@ struct TaskHoverDetailView: View {
         self.store = store
         self.activityStore = activityStore
         self.previewStore = previewStore
+        self.knowledgeStore = knowledgeStore
         self.cwd = cwd
         self.onOpen = onOpen
         self.onHoverChanged = onHoverChanged
@@ -422,6 +459,8 @@ struct TaskHoverDetailView: View {
         self.onDismiss = onDismiss
         self.onRefreshPreview = onRefreshPreview
         self.onLoadHistory = onLoadHistory
+        self.onToggleReview = onToggleReview
+        self.onOpenNote = onOpenNote
     }
 
     var body: some View {
@@ -444,7 +483,10 @@ struct TaskHoverDetailView: View {
                     isLoadingHistory: previewStore.isLoadingHistory,
                     onOpen: onOpen,
                     onRefreshPreview: onRefreshPreview,
-                    onLoadHistory: onLoadHistory
+                    onLoadHistory: onLoadHistory,
+                    knowledge: knowledgeStore.review(for: task),
+                    onToggleReview: { onToggleReview($0, task) },
+                    onOpenNote: { onOpenNote($0, task) }
                 )
                 .id(task.sessionID)
             } else {
@@ -469,7 +511,7 @@ struct TaskHoverDetailView: View {
         .onAppear { onPreferredHeightChanged(520) }
         .onExitCommand(perform: onDismiss)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(store.tasks.first(where: { $0.cwd == cwd })?.workspaceName ?? "任务") 会话预览")
+        .accessibilityLabel("\(store.tasks.first(where: { $0.cwd == cwd })?.workspaceName ?? "任务") 任务详情")
     }
 }
 
@@ -525,16 +567,4 @@ extension CodexTaskStatus {
             return .green
         }
     }
-}
-
-private struct VisualEffectBackground: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .hudWindow
-        view.blendingMode = .behindWindow
-        view.state = .active
-        return view
-    }
-
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }
