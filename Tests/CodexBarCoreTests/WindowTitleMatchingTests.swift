@@ -61,6 +61,44 @@ func windowTitleMatchingTestCases() -> [CodexBarTestCase] {
                 "ordinary window switching would minimize other windows"
             )
         },
+        CodexBarTestCase(name: "explicit project focus plans to minimize every other VS Code window") {
+            let windows = [
+                VSCodeWindowDescriptor(id: 1, title: "project-alpha — Visual Studio Code"),
+                VSCodeWindowDescriptor(id: 2, title: "reference — Visual Studio Code"),
+                VSCodeWindowDescriptor(id: 3, title: "notes — Visual Studio Code")
+            ]
+
+            try expect(
+                VSCodeWindowMatcher().focusPlan(
+                    cwd: "/work/project-alpha", windows: windows, minimizeOtherWindows: true
+                ) == .planned(VSCodeWindowFocusPlan(
+                    target: windows[0], windowsToMinimize: [windows[1], windows[2]]
+                )),
+                "explicit project focus did not retain the other-window minimization plan"
+            )
+        },
+        CodexBarTestCase(name: "both window actions refuse missing and ambiguous targets") {
+            let windows = [
+                VSCodeWindowDescriptor(id: 1, title: "project-alpha — Visual Studio Code"),
+                VSCodeWindowDescriptor(id: 2, title: "main.swift — project-alpha — Visual Studio Code")
+            ]
+            for minimizeOtherWindows in [false, true] {
+                try expect(
+                    VSCodeWindowMatcher().focusPlan(
+                        cwd: "/work/project-alpha", windows: windows,
+                        minimizeOtherWindows: minimizeOtherWindows
+                    ) == .ambiguous(windows),
+                    "window action accepted an ambiguous target"
+                )
+                try expect(
+                    VSCodeWindowMatcher().focusPlan(
+                        cwd: "/work/missing", windows: windows,
+                        minimizeOtherWindows: minimizeOtherWindows
+                    ) == .notFound,
+                    "window action accepted a missing target"
+                )
+            }
+        },
         CodexBarTestCase(name: "never matches empty or root cwd") {
             let windows = [VSCodeWindowDescriptor(id: 1, title: "Visual Studio Code")]
 

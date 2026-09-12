@@ -33,6 +33,33 @@ func windowActivationSequencingTestCases() -> [CodexBarTestCase] {
                 "ordinary switching changed another window's minimized state"
             )
         },
+        CodexBarTestCase(name: "explicit project focus minimizes visible peers and leaves minimized peers alone") {
+            let windows = [
+                VSCodeWindowDescriptor(id: 1, title: "project-alpha — Visual Studio Code"),
+                VSCodeWindowDescriptor(id: 2, title: "reference — Visual Studio Code"),
+                VSCodeWindowDescriptor(id: 3, title: "notes — Visual Studio Code")
+            ]
+            guard case let .planned(plan) = VSCodeWindowMatcher().focusPlan(
+                cwd: "/work/project-alpha", windows: windows, minimizeOtherWindows: true
+            ) else {
+                throw TestFailure(description: "target window was not matched")
+            }
+            let operations = FakeWindowActivationOperations()
+            operations.minimizedWindowIDs = [3]
+
+            let result = VSCodeWindowActivationSequencer().activate(
+                otherWindows: plan.windowsToMinimize, using: operations
+            )
+
+            try expect(result == .activated, "explicit project focus failed")
+            try expect(
+                operations.calls == [
+                    "targetMinimizedState", "makeApplicationFrontmost", "makeTargetMain", "raiseTarget",
+                    "isMinimized:2", "minimize:2", "isMinimized:3", "focusTarget", "raiseTarget"
+                ],
+                "explicit project focus did not preserve the existing minimization behavior"
+            )
+        },
         CodexBarTestCase(name: "uses AXFrontmost before minimizing other windows") {
             let otherWindows = [
                 VSCodeWindowDescriptor(id: 2, title: "Codexbar — Visual Studio Code"),

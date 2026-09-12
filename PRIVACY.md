@@ -79,12 +79,12 @@ CodexBar 管理的目录设置为 0700，事件、任务和 Hook 配置备份设
 
 ## Accessibility 权限
 
-CodexBar 在用户明确点击项目时使用 Accessibility：
+CodexBar 在用户明确点击项目、预览底部“切到项目”或项目右侧靶心图标“专注此项目”时使用 Accessibility：
 
 - 验证 VS Code Stable 的 bundle id 与 Microsoft Team 签名，并枚举其标准窗口和标题；
 - 唯一匹配目标项目；
 - 恢复并前置目标窗口；
-- 最小化其他标准 VS Code 窗口。
+- 普通切换保留其他窗口的最小化状态；仅“专注此项目”会最小化其他标准 VS Code 窗口。
 
 应用启动恢复也会使用窗口标题来匹配已打开项目；执行窗口操作前会再次验证进程身份。CodexBar 不安装全局键盘监听，不读取或记录其他应用的键盘输入。
 

@@ -272,7 +272,7 @@ struct TaskDetailCard: View {
             .accessibilityHint(isFollowingLatest ? "暂停自动滚动，保留当前阅读位置" : "滚动到最新内容并恢复自动跟随")
             Spacer(minLength: 4)
             Button(action: onOpen) {
-                Label("查看会话", systemImage: "arrow.up.forward")
+                Label("切到项目", systemImage: "arrow.up.forward")
                     .font(.system(size: 11, weight: .semibold))
                     .padding(.horizontal, 10)
                     .frame(minHeight: 28)

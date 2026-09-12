@@ -74,7 +74,7 @@ StartupTaskReconciler → TaskStore
 - VS Code 实时进程在发现和动作前都必须通过 Microsoft Team 签名要求；
 - 不执行 `code -r`，不创建窗口，不猜测歧义目标；
 - App Server 有可执行文件签名、symlink、响应大小、消息数和超时限制；
-- App Server 恢复只读查询 thread/turn 元数据且不加载 items；启动、系统窗口事件和手动刷新可枚举现有窗口，只有用户明确点击后才会前置或最小化窗口；
+- App Server 恢复只读查询 thread/turn 元数据且不加载 items；启动、系统窗口事件和手动刷新可枚举现有窗口，只有用户明确点击后才会前置窗口；普通切换保留其他窗口的最小化状态，仅项目行右侧靶心图标“专注此项目”会最小化其他标准 VS Code 窗口；
 - 动态计划不监听其他客户端的 App Server，也不轮询完整 thread items 或 transcript；它只由 VS Code Hook 在 `update_plan` 发生时推送，并用独立的同步 matcher 与本地高精度到达时间保证连续快照顺序；
 - App Server 失败日志使用固定、无任务字段的消息，并以一分钟为最小间隔。
 

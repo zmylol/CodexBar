@@ -211,6 +211,7 @@ struct TaskListView: View {
                 knowledgePendingCount: knowledgeStore.pendingCounts[task.sessionID] ?? 0,
                 coordinateSpaceName: Self.coordinateSpaceName,
                 action: { model.activate(task) },
+                focusAction: { model.activate(task, minimizeOtherWindows: true) },
                 deleteAction: { model.remove(task) },
                 onHoverChanged: onTaskHoverChanged,
                 onFocusChanged: onTaskFocusChanged,
@@ -273,6 +274,7 @@ private final class PanelDragHandleView: NSView {
 private struct CompactTaskRow: View {
     private enum FocusedControl: Hashable {
         case task
+        case focusProject
         case menu
     }
 
@@ -282,6 +284,7 @@ private struct CompactTaskRow: View {
     let knowledgePendingCount: Int
     let coordinateSpaceName: String
     let action: () -> Void
+    let focusAction: () -> Void
     let deleteAction: () -> Void
     let onHoverChanged: (CodexTask, CGFloat, Bool) -> Void
     let onFocusChanged: (CodexTask, CGFloat, Bool) -> Void
@@ -345,6 +348,29 @@ private struct CompactTaskRow: View {
                     )
                     .accessibilityHint("切换到对应的 VS Code 窗口，按右方向键查看任务详情")
                     .accessibilityInputLabels([task.workspaceName, task.title])
+
+                    Button(action: focusAction) {
+                        Image(systemName: "scope")
+                            .font(.system(size: 11, weight: .medium))
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                            .overlay {
+                                if focusedControl == .focusProject {
+                                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                        .stroke(Color.accentColor, lineWidth: 1.5)
+                                        .padding(2)
+                                        .allowsHitTesting(false)
+                                }
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+                    .focused($focusedControl, equals: .focusProject)
+                    .accessibilityLabel("\(task.workspaceName)，专注此项目")
+                    .accessibilityHint("切换到此项目并最小化其他 VS Code 窗口")
+                    .accessibilityIdentifier("task-focus-project-\(task.sessionID)")
+                    .help("专注此项目：最小化其他 VS Code 窗口")
 
                     Menu {
                         Button("查看任务详情") { onDetailRequested(task, rowMidY) }

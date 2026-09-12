@@ -75,7 +75,8 @@ public struct VSCodeWindowMatcher: Sendable {
 
     package func focusPlan(
         cwd: String,
-        windows: [VSCodeWindowDescriptor]
+        windows: [VSCodeWindowDescriptor],
+        minimizeOtherWindows: Bool = false
     ) -> VSCodeWindowFocusPlanResult {
         switch match(cwd: cwd, windows: windows) {
         case .notFound:
@@ -85,7 +86,7 @@ public struct VSCodeWindowMatcher: Sendable {
         case let .matched(target):
             return .planned(VSCodeWindowFocusPlan(
                 target: target,
-                windowsToMinimize: windows.filter { $0.id != target.id }
+                windowsToMinimize: minimizeOtherWindows ? windows.filter { $0.id != target.id } : []
             ))
         }
     }

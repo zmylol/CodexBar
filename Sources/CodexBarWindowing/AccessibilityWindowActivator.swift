@@ -91,12 +91,13 @@ public final class AccessibilityWindowActivator {
         return snapshot
     }
 
-    /// Raises an existing VS Code Stable window matching `cwd` and minimizes
-    /// the other standard VS Code windows.
+    /// Raises an existing VS Code Stable window matching `cwd`, preserving other
+    /// windows unless explicitly asked to minimize them for project focus.
     /// This method never opens a workspace or creates a new VS Code window.
     public func activateWindow(
         forCWD cwd: String,
-        promptForAccessibility: Bool = false
+        promptForAccessibility: Bool = false,
+        minimizeOtherWindows: Bool = false
     ) async -> VSCodeWindowActivationResult {
         guard PathNormalizer.normalize(cwd) != nil else {
             return .windowNotFound
@@ -113,7 +114,8 @@ public final class AccessibilityWindowActivator {
 
         return await activationWorker.activateWindow(
             forCWD: cwd,
-            applicationIdentities: applicationIdentities
+            applicationIdentities: applicationIdentities,
+            minimizeOtherWindows: minimizeOtherWindows
         )
     }
 
@@ -190,7 +192,8 @@ private actor AccessibilityWindowActivationWorker {
 
     func activateWindow(
         forCWD cwd: String,
-        applicationIdentities: [VSCodeApplicationIdentity]
+        applicationIdentities: [VSCodeApplicationIdentity],
+        minimizeOtherWindows: Bool
     ) -> VSCodeWindowActivationResult {
         guard AccessibilityAuthorization.isTrusted else {
             return .accessibilityPermissionRequired
@@ -220,7 +223,11 @@ private actor AccessibilityWindowActivationWorker {
             return .windowNotFound
         }
 
-        switch matcher.focusPlan(cwd: cwd, windows: refreshedWindows.map(\.descriptor)) {
+        switch matcher.focusPlan(
+            cwd: cwd,
+            windows: refreshedWindows.map(\.descriptor),
+            minimizeOtherWindows: minimizeOtherWindows
+        ) {
         case .notFound:
             return .windowNotFound
         case let .ambiguous(candidates):

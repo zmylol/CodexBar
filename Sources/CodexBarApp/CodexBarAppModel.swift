@@ -186,7 +186,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         }
     }
 
-    func activate(_ task: CodexTask) {
+    func activate(_ task: CodexTask, minimizeOtherWindows: Bool = false) {
         windowActivationTask?.cancel()
         windowActivationTask = Task { [weak self] in
             guard let self else {
@@ -194,7 +194,8 @@ final class CodexBarAppModel: NSObject, ObservableObject {
             }
             let result = await activator.activateWindow(
                 forCWD: task.cwd,
-                promptForAccessibility: false
+                promptForAccessibility: false,
+                minimizeOtherWindows: minimizeOtherWindows
             )
             guard !Task.isCancelled else {
                 return

@@ -44,7 +44,7 @@ enum PanelPlacement { case topLeft, topRight, bottomLeft, bottomRight }
     var visibleTasks: [CodexTask] { store.tasks }
     var visibleSortedTasks: [CodexTask] { store.tasks }
 
-    func activate(_ task: CodexTask) { onActivate() }
+    func activate(_ task: CodexTask, minimizeOtherWindows: Bool = false) { onActivate() }
     func remove(_ task: CodexTask) {}
     func refreshOpenTasks() {}
     func clearRead() {}
