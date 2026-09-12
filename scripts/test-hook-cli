@@ -38,7 +38,7 @@ unknown_output=$(CODEX_INTERNAL_ORIGINATOR_OVERRIDE=future-client \
     "$hook_binary" --codexbar-managed \
     < "$repo_root/Tests/CodexBarCoreTests/Fixtures/user-prompt-submit.json" 2>&1)
 [[ -z "$unknown_output" ]]
-missing_output=$("$hook_binary" --codexbar-managed \
+missing_output=$(/usr/bin/env -u CODEX_INTERNAL_ORIGINATOR_OVERRIDE "$hook_binary" --codexbar-managed \
     < "$repo_root/Tests/CodexBarCoreTests/Fixtures/user-prompt-submit.json" 2>&1)
 [[ -z "$missing_output" ]]
 unsupported_files=("$CODEXBAR_SUPPORT_ROOT/Inbox"/*.json(N))

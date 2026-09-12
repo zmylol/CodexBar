@@ -11,6 +11,7 @@ cd "$repo_root"
 /usr/bin/swift build --product codexbar-hook
 /usr/bin/swift run codexbar-tests
 
+"$script_dir/test-app-models"
 CODEX_INTERNAL_ORIGINATOR_OVERRIDE=codex_vscode "$script_dir/test-hook-cli"
 "$script_dir/test-hook-config"
 "$script_dir/test-send-test-event"

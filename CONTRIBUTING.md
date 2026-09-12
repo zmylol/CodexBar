@@ -16,7 +16,9 @@
 scripts/test
 ```
 
-这是项目的权威测试入口，包含 Swift 核心测试、Hook 配置测试、模拟端到端流程、release 构建、应用 bundle 和隔离安装测试。核心套件采用不依赖 XCTest 的 `codexbar-tests` 可执行目标，以兼容只安装 Xcode Command Line Tools 的开发环境；不要用 `swift test` 代替。测试必须使用临时目录，不得修改开发者真实的 `~/.codex/hooks.json`、`~/Applications` 或 Application Support 数据。
+这是项目的权威测试入口，包含 Swift 核心测试、应用 Model/Store 检查、Hook 配置测试、模拟端到端流程、release 构建、应用 bundle 和隔离安装测试。核心套件采用不依赖 XCTest 的 `codexbar-tests` 可执行目标，以兼容只安装 Xcode Command Line Tools 的开发环境；不要用 `swift test` 代替。测试必须使用临时目录，不得修改开发者真实的 `~/.codex/hooks.json`、`~/Applications` 或 Application Support 数据。
+
+`scripts/test-app-models` 可单独运行预览状态、知识库审核和知识库模型检查，已由上述入口纳入 CI。它不需要图形桌面，但知识库模型检查需要访问 macOS 文件事件服务。`scripts/test-preview-performance` 还会运行滚动、SwiftUI 界面、原生交互和目录选择器检查，需在已登录的 macOS 图形桌面中执行；修改这些界面或准备发布时应运行该入口。
 
 ## 修改原则
 
