@@ -41,7 +41,7 @@ func windowTitleMatchingTestCases() -> [CodexBarTestCase] {
                 "ambiguous windows did not fail closed"
             )
         },
-        CodexBarTestCase(name: "plans to focus one workspace and minimize every other VS Code window") {
+        CodexBarTestCase(name: "ordinary window switching leaves other VS Code windows unchanged") {
             let windows = [
                 VSCodeWindowDescriptor(id: 1, title: "project-alpha — Visual Studio Code"),
                 VSCodeWindowDescriptor(id: 2, title: "pi — Visual Studio Code"),
@@ -56,9 +56,9 @@ func windowTitleMatchingTestCases() -> [CodexBarTestCase] {
             try expect(
                 result == .planned(VSCodeWindowFocusPlan(
                     target: windows[0],
-                    windowsToMinimize: [windows[1], windows[2]]
+                    windowsToMinimize: []
                 )),
-                "focus plan did not keep the target and minimize every other window"
+                "ordinary window switching would minimize other windows"
             )
         },
         CodexBarTestCase(name: "never matches empty or root cwd") {

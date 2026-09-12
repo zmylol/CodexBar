@@ -5,6 +5,34 @@ import CodexBarWindowing
 @MainActor
 func windowActivationSequencingTestCases() -> [CodexBarTestCase] {
     [
+        CodexBarTestCase(name: "ordinary switching restores only its target and preserves other window states") {
+            let windows = [
+                VSCodeWindowDescriptor(id: 1, title: "project-alpha — Visual Studio Code"),
+                VSCodeWindowDescriptor(id: 2, title: "reference — Visual Studio Code"),
+                VSCodeWindowDescriptor(id: 3, title: "notes — Visual Studio Code")
+            ]
+            guard case let .planned(plan) = VSCodeWindowMatcher().focusPlan(
+                cwd: "/work/project-alpha", windows: windows
+            ) else {
+                throw TestFailure(description: "target window was not matched")
+            }
+            let operations = FakeWindowActivationOperations()
+            operations.targetMinimizedStateResult = true
+            operations.minimizedWindowIDs = [3]
+
+            let result = VSCodeWindowActivationSequencer().activate(
+                otherWindows: plan.windowsToMinimize, using: operations
+            )
+
+            try expect(result == .activated, "ordinary window switching failed")
+            try expect(
+                operations.calls == [
+                    "targetMinimizedState", "makeApplicationFrontmost", "restoreTarget",
+                    "makeTargetMain", "raiseTarget", "focusTarget", "raiseTarget"
+                ],
+                "ordinary switching changed another window's minimized state"
+            )
+        },
         CodexBarTestCase(name: "uses AXFrontmost before minimizing other windows") {
             let otherWindows = [
                 VSCodeWindowDescriptor(id: 2, title: "Codexbar — Visual Studio Code"),
