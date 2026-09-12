@@ -30,6 +30,35 @@ func windowTitleMatchingTestCases() -> [CodexBarTestCase] {
                 "substring inside another word should not match"
             )
         },
+        CodexBarTestCase(name: "never treats the VS Code product name as a workspace") {
+            let matcher = VSCodeWindowMatcher()
+            for title in [
+                "unrelated — Visual Studio Code",
+                "unrelated – Visual Studio Code",
+                "unrelated - Visual Studio Code",
+                "Visual Studio Code"
+            ] {
+                let windows = [VSCodeWindowDescriptor(id: 1, title: title)]
+                for name in ["Code", "Visual", "Studio", "Visual Studio Code"] {
+                    try expect(
+                        matcher.match(cwd: "/work/\(name)", windows: windows) == .notFound,
+                        "product name in \(title) incorrectly matched workspace \(name)"
+                    )
+                }
+            }
+        },
+        CodexBarTestCase(name: "preserves real workspaces named after the VS Code product") {
+            for name in ["Code", "Visual", "Studio", "Visual Studio Code"] {
+                let windows = [
+                    VSCodeWindowDescriptor(id: 1, title: "unrelated — Visual Studio Code"),
+                    VSCodeWindowDescriptor(id: 2, title: "README.md — \(name) — Visual Studio Code")
+                ]
+                try expect(
+                    VSCodeWindowMatcher().match(cwd: "/work/\(name)", windows: windows) == .matched(windows[1]),
+                    "real workspace \(name) was hidden or confused with the product suffix"
+                )
+            }
+        },
         CodexBarTestCase(name: "refuses ambiguous window candidates") {
             let windows = [
                 VSCodeWindowDescriptor(id: 1, title: "project-alpha — Visual Studio Code"),
