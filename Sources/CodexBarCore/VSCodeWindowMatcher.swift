@@ -60,7 +60,7 @@ public struct VSCodeWindowMatcher: Sendable {
         }
 
         let candidates = windows.filter {
-            title($0.title, containsWorkspaceNameAtBoundary: workspaceName)
+            title(workspaceTitle($0.title), containsWorkspaceNameAtBoundary: workspaceName)
         }
 
         switch candidates.count {
@@ -89,6 +89,21 @@ public struct VSCodeWindowMatcher: Sendable {
                 windowsToMinimize: minimizeOtherWindows ? windows.filter { $0.id != target.id } : []
             ))
         }
+    }
+
+    private func workspaceTitle(_ title: String) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let productName = "Visual Studio Code"
+        guard trimmed.caseInsensitiveCompare(productName) != .orderedSame else { return "" }
+        for separator in [" — ", " – ", " - "] {
+            if let suffix = trimmed.range(
+                of: separator + productName,
+                options: [.backwards, .anchored, .caseInsensitive]
+            ) {
+                return String(trimmed[..<suffix.lowerBound])
+            }
+        }
+        return trimmed
     }
 
     private func title(
