@@ -3,6 +3,27 @@ import CodexBarCore
 
 func runtimeStatusTestCases() -> [CodexBarTestCase] {
     [
+        CodexBarTestCase(name: "synthetic v11 fixture keeps runtime and preview snapshot patches compatible") {
+            let url = try require(Bundle.module.url(forResource: "runtime-v11-synthetic", withExtension: "json", subdirectory: "Fixtures"),
+                                  "synthetic runtime fixture is missing")
+            let frames = try require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]],
+                                     "synthetic runtime fixture is malformed")
+            var status = CodexRuntimeStatusReducer()
+            var preview = CodexConversationPreviewReducer(sessionID: "fixture-session", cwd: "/tmp/fixture-project")
+            var states: [CodexTaskStatus] = []
+            var bodies: [String] = []
+            for frame in frames {
+                let data = try JSONSerialization.data(withJSONObject: frame)
+                let projected = status.consume(data)
+                if let update = projected.update { states.append(update.status) }
+                let content = try require(preview.consume(data).preview, "supported fixture lost preview")
+                try expect(projected.sessionID == content.sessionID, "runtime and content routing diverged")
+                bodies.append(content.items.first?.text ?? "")
+            }
+            try expect(states == [.needsAttention, .running], "v11 status snapshot/patch interpretation changed")
+            try expect(bodies == ["Synthetic initial response.", "Synthetic completed response."],
+                       "v11 content snapshot/patch interpretation changed")
+        },
         CodexBarTestCase(name: "runtime routing preserves session identity without a status change") {
             var reducer = CodexRuntimeStatusReducer()
             let snapshot = try runtimeSnapshot()

@@ -1,0 +1,87 @@
+[
+  {
+    "type": "broadcast",
+    "method": "thread-stream-state-changed",
+    "version": 11,
+    "sourceClientId": "fixture-owner",
+    "targetClientIds": [
+      "fixture-client"
+    ],
+    "params": {
+      "hostId": "local",
+      "conversationId": "fixture-session",
+      "change": {
+        "type": "snapshot",
+        "revision": 1,
+        "conversationState": {
+          "id": "fixture-session",
+          "sessionId": "fixture-session",
+          "cwd": "/tmp/fixture-project",
+          "source": "vscode",
+          "resumeState": "resumed",
+          "threadRuntimeStatus": {
+            "type": "active",
+            "activeFlags": [
+              "waitingOnApproval"
+            ]
+          },
+          "requests": [],
+          "turnsPagination": {
+            "hasLoadedOldest": true
+          },
+          "turns": [
+            {
+              "turnId": "fixture-turn",
+              "items": [
+                {
+                  "id": "fixture-message",
+                  "type": "agentMessage",
+                  "text": "Synthetic initial response."
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "type": "broadcast",
+    "method": "thread-stream-state-changed",
+    "version": 11,
+    "sourceClientId": "fixture-owner",
+    "targetClientIds": [
+      "fixture-client"
+    ],
+    "params": {
+      "hostId": "local",
+      "conversationId": "fixture-session",
+      "change": {
+        "type": "patches",
+        "baseRevision": 1,
+        "revision": 2,
+        "patches": [
+          {
+            "op": "replace",
+            "path": [
+              "threadRuntimeStatus",
+              "activeFlags"
+            ],
+            "value": []
+          },
+          {
+            "op": "replace",
+            "path": [
+              "turns",
+              0,
+              "items",
+              0,
+              "text"
+            ],
+            "value": "Synthetic completed response."
+          }
+        ]
+      }
+    }
+  }
+]

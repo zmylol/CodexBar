@@ -70,7 +70,7 @@ func runtimeStatusMonitoringTests() -> [CodexBarTestCase] {
             let deliveries = RuntimeDeliveries()
             let monitor = CodexRuntimeStatusMonitor(codexHome: router.home)
             monitor.setSessions(["known"])
-            monitor.start(onChange: { deliveries.frames.append($0) }, onUnavailable: { deliveries.unavailable.formUnion($0) })
+            monitor.start(onChange: { deliveries.frames.append($0) }, onUnavailable: { deliveries.unavailable.merge($0) { _, latest in latest } })
             defer { monitor.stop() }
             try await runtimeWait { router.following("known", value: true) == 1 }
             try expect(router.messages.first?["method"] as? String == "initialize", "initial handshake missing")
@@ -91,7 +91,7 @@ func runtimeStatusMonitoringTests() -> [CodexBarTestCase] {
             monitor.requestSnapshot(sessionID: "known")
             try await runtimeWait { router.following("known", value: true) == 2 }
             monitor.setSessions([])
-            try await runtimeWait { deliveries.unavailable.contains("known") }
+            try await runtimeWait { deliveries.unavailable["known"] != nil }
             try await runtimeWait { router.disconnected }
         },
         CodexBarTestCase(name: "runtime monitor revokes incompatible streams without retrying on every Hook") {
@@ -100,14 +100,17 @@ func runtimeStatusMonitoringTests() -> [CodexBarTestCase] {
             let deliveries = RuntimeDeliveries()
             let monitor = CodexRuntimeStatusMonitor(codexHome: router.home)
             monitor.setSessions(["known"])
-            monitor.start(onChange: { deliveries.frames.append($0) }, onUnavailable: { deliveries.unavailable.formUnion($0) })
+            monitor.start(onChange: { deliveries.frames.append($0) }, onUnavailable: { deliveries.unavailable.merge($0) { _, latest in latest } })
             defer { monitor.stop() }
             try await runtimeWait { router.following("known", value: true) == 1 }
             router.publish(session: "known")
             try await runtimeWait { deliveries.frames.count == 1 }
             router.publish(session: "known", version: 12)
-            try await runtimeWait { deliveries.unavailable.contains("known") }
+            try await runtimeWait { deliveries.unavailable["known"] != nil }
             try await runtimeWait { router.following("known", value: false) == 1 }
+            let unsupported = CodexRuntimeUnavailableReason.unsupportedProtocol(expected: 11, received: 12)
+            try expect(deliveries.unavailable["known"] == unsupported, "incompatible stream was reported as a connection failure")
+            try expect(monitor.unavailableReason(for: "known") == unsupported, "late preview cannot query incompatibility")
             monitor.retryDiscovery()
             router.publish(session: "known")
             try await Task.sleep(for: .milliseconds(100))
@@ -115,6 +118,36 @@ func runtimeStatusMonitoringTests() -> [CodexBarTestCase] {
                        "incompatible owner was retried or retained authority")
             monitor.refresh()
             try await runtimeWait { router.following("known", value: true) == 2 }
+            try expect(monitor.unavailableReason(for: "known") == unsupported, "refresh hid incompatibility before supported data arrived")
+            router.hasOwner = false
+            router.peerStatus("disconnected")
+            try await Task.sleep(for: .milliseconds(100))
+            try expect(monitor.unavailableReason(for: "known") == unsupported, "disconnect obscured known incompatibility")
+            router.hasOwner = true
+            router.peerStatus("connected")
+            try await runtimeWait { router.following("known", value: true) == 3 }
+            router.publish(session: "known")
+            try await runtimeWait { deliveries.frames.count == 2 }
+            try expect(monitor.unavailableReason(for: "known") == nil, "supported stream did not clear incompatibility")
+        },
+        CodexBarTestCase(name: "snapshot retry explicitly renegotiates an incompatible selected session") {
+            let router = try RuntimeTestRouter()
+            defer { router.stop() }
+            let monitor = CodexRuntimeStatusMonitor(codexHome: router.home)
+            monitor.setSessions(["known"])
+            monitor.start(onChange: { _ in })
+            defer { monitor.stop() }
+            try await runtimeWait { router.following("known", value: true) == 1 }
+            router.publish(session: "known", version: 12)
+            try await runtimeWait { monitor.unavailableReason(for: "known") != nil }
+            monitor.requestSnapshot(sessionID: "known")
+            try await Task.sleep(for: .milliseconds(80))
+            try expect(router.discoveryCount == 1, "ordinary snapshot bypassed incompatible stream suppression")
+            monitor.requestSnapshot(sessionID: "known", retryIncompatible: true)
+            try await runtimeWait { router.following("known", value: true) == 2 }
+            try expect(monitor.unavailableReason(for: "known") != nil, "retry cleared reason before receiving a supported frame")
+            monitor.setSessions([])
+            try expect(monitor.unavailableReason(for: "known") == nil, "removed session retained unavailable metadata")
         },
         CodexBarTestCase(name: "runtime monitor discovers new peers and invalidates disconnected owners") {
             let router = try RuntimeTestRouter()
@@ -123,7 +156,7 @@ func runtimeStatusMonitoringTests() -> [CodexBarTestCase] {
             let deliveries = RuntimeDeliveries()
             let monitor = CodexRuntimeStatusMonitor(codexHome: router.home)
             monitor.setSessions(["known"])
-            monitor.start(onChange: { deliveries.frames.append($0) }, onUnavailable: { deliveries.unavailable.formUnion($0) })
+            monitor.start(onChange: { deliveries.frames.append($0) }, onUnavailable: { deliveries.unavailable.merge($0) { _, latest in latest } })
             defer { monitor.stop() }
             try await runtimeWait { router.discoveryCount == 1 }
             try await Task.sleep(for: .milliseconds(120))
@@ -135,7 +168,8 @@ func runtimeStatusMonitoringTests() -> [CodexBarTestCase] {
             try await runtimeWait { deliveries.frames.count == 1 }
             router.hasOwner = false
             router.peerStatus("disconnected")
-            try await runtimeWait { deliveries.unavailable.contains("known") }
+            try await runtimeWait { deliveries.unavailable["known"] != nil }
+            try expect(deliveries.unavailable["known"] == .connectionUnavailable, "ordinary disconnect has no distinct reason")
             router.publish(session: "known")
             try await Task.sleep(for: .milliseconds(100))
             try expect(deliveries.frames.count == 1, "disconnected owner remained trusted")
@@ -160,10 +194,10 @@ func runtimeStatusMonitoringTests() -> [CodexBarTestCase] {
             let deliveries = RuntimeDeliveries()
             let monitor = CodexRuntimeStatusMonitor(codexHome: router.home)
             monitor.setSessions(["known"])
-            monitor.start(onChange: { deliveries.frames.append($0) }, onUnavailable: { deliveries.unavailable.formUnion($0) })
+            monitor.start(onChange: { deliveries.frames.append($0) }, onUnavailable: { deliveries.unavailable.merge($0) { _, latest in latest } })
             try await runtimeWait { router.following("known", value: true) == 1 }
             router.closeListenerAndClient()
-            try await runtimeWait { deliveries.unavailable.contains("known") }
+            try await runtimeWait { deliveries.unavailable["known"] != nil }
             try router.start()
             try await runtimeWait { router.following("known", value: true) == 2 }
             monitor.stop()
@@ -177,7 +211,7 @@ func runtimeStatusMonitoringTests() -> [CodexBarTestCase] {
 @MainActor
 private final class RuntimeDeliveries {
     var frames: [Data] = []
-    var unavailable: Set<String> = []
+    var unavailable: [String: CodexRuntimeUnavailableReason] = [:]
 }
 
 @MainActor
