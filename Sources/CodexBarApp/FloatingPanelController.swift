@@ -274,9 +274,9 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
             knowledgePanel.animator().alphaValue = 0
         } completionHandler: { [weak self] in
             Task { @MainActor [weak self] in
-                guard let self, knowledgeHideGeneration == generation,
-                      !isKnowledgeActive, knowledgePanel.attachedSheet == nil else { return }
-                hideKnowledgeLibrary(restoreFocus: false)
+                guard let self, self.knowledgeHideGeneration == generation,
+                      !self.isKnowledgeActive, self.knowledgePanel.attachedSheet == nil else { return }
+                self.hideKnowledgeLibrary(restoreFocus: false)
             }
         }
     }
