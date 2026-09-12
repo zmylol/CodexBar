@@ -36,8 +36,10 @@ func runtimeStatusMonitoringTests() -> [CodexBarTestCase] {
                 codexHome: router.home, reconnectDelays: [.milliseconds(20), .milliseconds(40), .milliseconds(80)]
             )
             var attempts: [Int] = []
-            monitor.onConnectionStateChange = { state in
+            monitor.onConnectionStateChange = { [weak monitor] state in
                 if case let .retrying(attempt) = state { attempts.append(attempt) }
+                // Presentation changes may synchronize the same visible sessions again.
+                monitor?.setSessions(["known"])
             }
             monitor.setSessions(["known"])
             monitor.start(onChange: { _ in })
