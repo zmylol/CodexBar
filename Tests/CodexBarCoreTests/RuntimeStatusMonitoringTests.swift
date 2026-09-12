@@ -5,6 +5,79 @@ import CodexBarCore
 @MainActor
 func runtimeStatusMonitoringTests() -> [CodexBarTestCase] {
     [
+        CodexBarTestCase(name: "runtime monitor reconnects after EOF without replacing its socket") {
+            let router = try RuntimeTestRouter()
+            defer { router.stop() }
+            let deliveries = RuntimeDeliveries()
+            let monitor = CodexRuntimeStatusMonitor(
+                codexHome: router.home, reconnectDelays: [.milliseconds(30), .milliseconds(60)]
+            )
+            var states: [CodexRuntimeConnectionState] = []
+            monitor.onConnectionStateChange = { states.append($0) }
+            monitor.setSessions(["known"])
+            monitor.start(onChange: { deliveries.frames.append($0) })
+            defer { monitor.stop() }
+            try await runtimeWait { router.following("known", value: true) == 1 }
+            try expect(monitor.connectionState == .connected, "initialized connection was not reported")
+            router.closeClient()
+            try await runtimeWait { router.following("known", value: true) == 2 }
+            try expect(states.contains(.retrying(attempt: 1)), "connection interruption was not reported as retrying")
+            try expect(monitor.connectionState == .connected, "reconnected monitor did not recover its state")
+            router.publish(session: "known", source: "other-owner")
+            router.publish(session: "known", target: "other-client")
+            router.publish(session: "known")
+            try await runtimeWait { deliveries.frames.count == 1 }
+            try expect(router.acceptedConnections == 2, "reconnection created extra clients")
+        },
+        CodexBarTestCase(name: "runtime monitor bounds failed reconnects and explicit refresh restarts recovery") {
+            let router = try RuntimeTestRouter()
+            defer { router.stop() }
+            let monitor = CodexRuntimeStatusMonitor(
+                codexHome: router.home, reconnectDelays: [.milliseconds(20), .milliseconds(40), .milliseconds(80)]
+            )
+            var attempts: [Int] = []
+            monitor.onConnectionStateChange = { state in
+                if case let .retrying(attempt) = state { attempts.append(attempt) }
+            }
+            monitor.setSessions(["known"])
+            monitor.start(onChange: { _ in })
+            defer { monitor.stop() }
+            try await runtimeWait { router.following("known", value: true) == 1 }
+            router.rejectsInitialization = true
+            router.closeClient()
+            try await runtimeWait { monitor.connectionState == .exhausted }
+            try expect(attempts == [1, 2, 3], "retry budget was not bounded")
+            let settled = router.acceptedConnections
+            try await Task.sleep(for: .milliseconds(180))
+            try expect(settled == 4 && router.acceptedConnections == settled, "exhausted monitor kept reconnecting")
+            router.rejectsInitialization = false
+            monitor.refresh()
+            try await runtimeWait { router.following("known", value: true) == 2 }
+            try expect(monitor.connectionState == .connected, "manual refresh could not recover an exhausted connection")
+        },
+        CodexBarTestCase(name: "runtime monitor cancels scheduled reconnects on stop or empty sessions") {
+            for clearsSessions in [false, true] {
+                let router = try RuntimeTestRouter()
+                defer { router.stop() }
+                let monitor = CodexRuntimeStatusMonitor(
+                    codexHome: router.home, reconnectDelays: [.milliseconds(100), .milliseconds(200)]
+                )
+                var states: [CodexRuntimeConnectionState] = []
+                monitor.onConnectionStateChange = { states.append($0) }
+                monitor.setSessions(["known"])
+                monitor.start(onChange: { _ in })
+                defer { monitor.stop() }
+                try await runtimeWait { router.following("known", value: true) == 1 }
+                router.closeClient()
+                try await runtimeWait { monitor.connectionState == .retrying(attempt: 1) }
+                if clearsSessions { monitor.setSessions([]) } else { monitor.stop() }
+                try expect(monitor.connectionState == .idle, "inactive monitor did not become idle")
+                let settled = states.count
+                try await Task.sleep(for: .milliseconds(180))
+                try expect(router.acceptedConnections == 1 && states.count == settled,
+                           "cancelled retry reconnected or delivered a stale state callback")
+            }
+        },
         CodexBarTestCase(name: "history loading targets the known owner and reports its snapshot revision") {
             let router = try RuntimeTestRouter()
             defer { router.stop() }
@@ -111,11 +184,13 @@ func runtimeStatusMonitoringTests() -> [CodexBarTestCase] {
             let unsupported = CodexRuntimeUnavailableReason.unsupportedProtocol(expected: 11, received: 12)
             try expect(deliveries.unavailable["known"] == unsupported, "incompatible stream was reported as a connection failure")
             try expect(monitor.unavailableReason(for: "known") == unsupported, "late preview cannot query incompatibility")
+            try expect(monitor.connectionState == .incompatible, "connection state hid stream incompatibility")
             monitor.retryDiscovery()
             router.publish(session: "known")
             try await Task.sleep(for: .milliseconds(100))
             try expect(deliveries.frames.count == 1 && router.discoveryCount == 1,
                        "incompatible owner was retried or retained authority")
+            try expect(router.acceptedConnections == 1, "protocol incompatibility triggered transport reconnects")
             monitor.refresh()
             try await runtimeWait { router.following("known", value: true) == 2 }
             try expect(monitor.unavailableReason(for: "known") == unsupported, "refresh hid incompatibility before supported data arrived")
@@ -129,6 +204,7 @@ func runtimeStatusMonitoringTests() -> [CodexBarTestCase] {
             router.publish(session: "known")
             try await runtimeWait { deliveries.frames.count == 2 }
             try expect(monitor.unavailableReason(for: "known") == nil, "supported stream did not clear incompatibility")
+            try expect(monitor.connectionState == .connected, "supported stream did not restore connected state")
         },
         CodexBarTestCase(name: "snapshot retry explicitly renegotiates an incompatible selected session") {
             let router = try RuntimeTestRouter()
@@ -234,6 +310,8 @@ private final class RuntimeTestRouter {
     var repliesToHistory = true
     var historyReplyOwner = "owner"
     var disconnected = false
+    var rejectsInitialization = false
+    private(set) var acceptedConnections = 0
     private var listener: Int32 = -1
     private var client: Int32 = -1
     private var acceptSource: (any DispatchSourceRead)?
@@ -303,14 +381,19 @@ private final class RuntimeTestRouter {
                                     "conversationState": ["threadRuntimeStatus": ["type": "active", "activeFlags": []]]]]], split: split)
     }
 
-    func closeListenerAndClient() {
-        acceptSource?.cancel()
-        acceptSource = nil
-        listener = -1
+    func closeClient() {
+        if client >= 0 { shutdown(client, SHUT_RDWR) }
         readSource?.cancel()
         readSource = nil
         client = -1
         buffer.removeAll()
+    }
+
+    func closeListenerAndClient() {
+        acceptSource?.cancel()
+        acceptSource = nil
+        listener = -1
+        closeClient()
         unlink(socketPath)
     }
 
@@ -323,6 +406,7 @@ private final class RuntimeTestRouter {
         guard listener >= 0 else { return }
         let accepted = accept(listener, nil, nil)
         guard accepted >= 0 else { return }
+        acceptedConnections += 1
         client = accepted
         disconnected = false
         _ = fcntl(client, F_SETFL, O_NONBLOCK)
@@ -359,6 +443,10 @@ private final class RuntimeTestRouter {
             messages.append(message)
             guard let requestID = message["requestId"] as? String else { continue }
             if message["method"] as? String == "initialize" {
+                if rejectsInitialization {
+                    closeClient()
+                    return
+                }
                 send(["type": "response", "requestId": requestID, "resultType": "success", "method": "initialize",
                       "handledByClientId": "fixture-client", "result": ["clientId": "fixture-client"]])
             } else if message["method"] as? String == "thread-owner-discovery" {

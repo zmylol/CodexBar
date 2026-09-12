@@ -1,0 +1,237 @@
+#!/usr/bin/env python3
+"""Exercise release gates with isolated fake Apple tools; never contact Apple."""
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+REPO = Path(__file__).resolve().parent.parent
+IDENTITY = "Developer ID Application: Fixture Developer (TESTTEAM01)"
+SCENARIOS = (
+    "app_launch", "hook_task_lifecycle", "approval_required", "window_focus",
+    "conversation_preview", "knowledge_arrival",
+)
+
+STUB = r'''#!/usr/bin/env python3
+import json, os, pathlib, plistlib, shutil, sys, zipfile
+name = pathlib.Path(sys.argv[0]).name
+args = sys.argv[1:]
+with open(os.environ["RELEASE_TEST_LOG"], "a") as log:
+    log.write(json.dumps([name] + args) + "\n")
+if name == "security":
+    if not os.environ.get("RELEASE_TEST_NO_IDENTITY"):
+        print('1) ' + 'A' * 40 + ' "Developer ID Application: Fixture Developer (TESTTEAM01)"')
+elif name == "codesign":
+    if "--display" in args or "-d" in args:
+        print("Authority=Developer ID Application: Fixture Developer (TESTTEAM01)\nTeamIdentifier=TESTTEAM01\nCodeDirectory flags=0x10000(runtime)\nTimestamp=Sep 13, 2026", file=sys.stderr)
+    if "--sign" in args:
+        target = pathlib.Path(args[-1])
+        if target.is_dir():
+            (target / "Contents" / "signature").write_text("signed")
+elif name == "lipo":
+    print(os.environ.get("RELEASE_TEST_ARCH", "arm64"))
+elif name == "ditto":
+    source, destination = map(pathlib.Path, args[-2:])
+    if "-c" in args:
+        with zipfile.ZipFile(destination, "w") as archive:
+            for item in sorted(source.rglob("*")):
+                if item.is_file():
+                    archive.write(item, item.relative_to(source.parent))
+    else:
+        shutil.copytree(source, destination)
+elif name == "xcrun":
+    if args[:2] == ["notarytool", "submit"]:
+        print(json.dumps({"id": "fixture-submission", "status": os.environ.get("RELEASE_TEST_NOTARY_STATUS", "Accepted")}))
+    elif args[:2] == ["stapler", "staple"]:
+        (pathlib.Path(args[-1]) / "Contents" / "ticket").write_text("stapled")
+    elif args[:2] == ["stapler", "validate"] and os.environ.get("RELEASE_TEST_BAD_STAPLE"):
+        sys.exit(1)
+elif name == "spctl" and os.environ.get("RELEASE_TEST_BAD_GATEKEEPER"):
+    sys.exit(1)
+'''
+
+BUILD_STUB = '''#!/usr/bin/env python3
+from pathlib import Path
+import shutil
+root = Path(__file__).resolve().parent.parent
+app = root / "dist/CodexBar.app"
+if app.exists():
+    shutil.rmtree(app)
+for folder in ("MacOS", "Helpers", "Resources"):
+    (app / "Contents" / folder).mkdir(parents=True, exist_ok=True)
+shutil.copyfile(root / "Resources/Info.plist", app / "Contents/Info.plist")
+for relative in ("MacOS/CodexBar", "Helpers/codexbar-hook"):
+    executable = app / "Contents" / relative
+    executable.write_text("fixture executable")
+    executable.chmod(0o755)
+print(app)
+'''
+
+
+class ReleaseTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="codexbar-release-test-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        for directory in ("scripts", "Sources", "Resources", "tools"):
+            (self.root / directory).mkdir()
+        self.script = self.root / "scripts/release-app"
+        if (REPO / "scripts/release-app").exists():
+            shutil.copyfile(REPO / "scripts/release-app", self.script)
+        self.script.parent.joinpath("build-app").write_text(BUILD_STUB)
+        self.script.parent.joinpath("build-app").chmod(0o755)
+        (self.root / "Sources/main.swift").write_text("// isolated fixture source\n")
+        (self.root / "Package.swift").write_text("// isolated fixture package\n")
+        shutil.copyfile(REPO / "Resources/Info.plist", self.root / "Resources/Info.plist")
+        self.log = self.root / "commands.jsonl"
+        self.env = dict(os.environ, PATH=str(self.root / "tools") + os.pathsep + os.environ["PATH"],
+                        RELEASE_TEST_LOG=str(self.log))
+        for tool in ("security", "codesign", "lipo", "ditto", "xcrun", "spctl"):
+            executable = self.root / "tools" / tool
+            executable.write_text(STUB)
+            executable.chmod(0o755)
+        self.output = self.root / "candidate"
+        self.record = self.root / "compatibility.json"
+
+    def run_release(self, *args, ok=True):
+        self.assertTrue(self.script.exists(), "scripts/release-app release gate is not implemented")
+        result = subprocess.run([sys.executable, str(self.script), *map(str, args)],
+                                cwd=self.root, env=self.env, capture_output=True, text=True)
+        if ok:
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        else:
+            self.assertNotEqual(result.returncode, 0, "Release unexpectedly passed: " + result.stdout)
+        return result
+
+    def write_record(self, **changes):
+        fingerprint = self.run_release("--source-fingerprint").stdout.strip()
+        record = {
+            "schema_version": 1, "evidence_kind": "real", "source_sha256": fingerprint,
+            "tested_at": "2026-09-13T12:00:00+08:00", "tester": "Isolated test fixture",
+            "environments": [{
+                "macos": "15.7", "architecture": "arm64", "vscode": "1.104.0",
+                "vscode_channel": "stable", "codex_extension": "0.4.16",
+                "evidence": "Isolated fixture; not a real compatibility observation",
+                "scenarios": {name: "pass" for name in SCENARIOS},
+            }],
+        }
+        record.update(changes)
+        self.record.write_text(json.dumps(record))
+        return record
+
+    def prepare(self):
+        self.write_record()
+        return self.run_release("--prepare", "--identity", IDENTITY,
+                                "--compatibility", self.record, "--output", self.output)
+
+    def commands(self):
+        return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
+
+    def test_check_needs_explicit_developer_identity(self):
+        self.write_record()
+        self.run_release("--check", "--compatibility", self.record, ok=False)
+        self.run_release("--check", "--compatibility", self.record, "--identity", "-", ok=False)
+        self.assertFalse(any(command[:2] == ["xcrun", "notarytool"] for command in self.commands()))
+
+    def test_missing_signing_credentials_fail_before_build(self):
+        self.write_record()
+        self.env["RELEASE_TEST_NO_IDENTITY"] = "1"
+        self.run_release("--prepare", "--identity", IDENTITY,
+                         "--compatibility", self.record, "--output", self.output, ok=False)
+        self.assertFalse((self.root / "dist").exists())
+
+    def test_check_rejects_synthetic_stale_and_incomplete_records(self):
+        for changes in ({"evidence_kind": "synthetic"}, {"source_sha256": "0" * 64},
+                        {"environments": []}):
+            with self.subTest(changes=changes):
+                self.write_record(**changes)
+                self.run_release("--check", "--identity", IDENTITY, "--compatibility", self.record, ok=False)
+        record = self.write_record()
+        record["environments"][0]["scenarios"]["hook_task_lifecycle"] = "not_run"
+        self.record.write_text(json.dumps(record))
+        self.run_release("--check", "--identity", IDENTITY, "--compatibility", self.record, ok=False)
+
+    def test_prepare_signs_inside_out_and_never_notarizes(self):
+        self.prepare()
+        commands = self.commands()
+        signatures = [command for command in commands if command[0] == "codesign" and "--sign" in command]
+        self.assertEqual(len(signatures), 2)
+        self.assertTrue(signatures[0][-1].endswith("Contents/Helpers/codexbar-hook"))
+        self.assertTrue(signatures[1][-1].endswith("CodexBar.app"))
+        for command in signatures:
+            self.assertIn("--timestamp", command)
+            self.assertIn("runtime", command)
+            self.assertNotIn("--deep", command)
+        self.assertFalse(any(command[:2] == ["xcrun", "notarytool"] for command in commands))
+        manifest = json.loads((self.output / "manifest.json").read_text())
+        self.assertEqual(manifest["status"], "prepared")
+        self.assertFalse((self.output / "CodexBar.zip").exists())
+
+    def test_prepare_refuses_overwrite_and_untested_architecture(self):
+        self.output.mkdir()
+        marker = self.output / "keep"
+        marker.write_text("do not replace")
+        self.write_record()
+        self.run_release("--prepare", "--identity", IDENTITY, "--compatibility", self.record,
+                         "--output", self.output, ok=False)
+        self.assertEqual(marker.read_text(), "do not replace")
+        shutil.rmtree(self.output)
+        self.env["RELEASE_TEST_ARCH"] = "x86_64"
+        self.run_release("--prepare", "--identity", IDENTITY, "--compatibility", self.record,
+                         "--output", self.output, ok=False)
+
+    def test_notarize_requires_profile_and_unchanged_source_and_candidate(self):
+        self.prepare()
+        self.run_release("--notarize", "--output", self.output, ok=False)
+        source = self.root / "Sources/main.swift"
+        original = source.read_text()
+        source.write_text(original + "// changed after prepare\n")
+        self.run_release("--notarize", "--output", self.output, "--keychain-profile", "fixture", ok=False)
+        source.write_text(original)
+        (self.output / "CodexBar.app/Contents/MacOS/CodexBar").write_text("changed executable")
+        self.run_release("--notarize", "--output", self.output, "--keychain-profile", "fixture", ok=False)
+        self.assertFalse(any(command[:2] == ["xcrun", "notarytool"] for command in self.commands()))
+
+    def test_notary_rejection_does_not_create_release_archive(self):
+        self.prepare()
+        self.env["RELEASE_TEST_NOTARY_STATUS"] = "Invalid"
+        self.run_release("--notarize", "--output", self.output, "--keychain-profile", "fixture", ok=False)
+        self.assertFalse((self.output / "CodexBar.zip").exists())
+        self.assertFalse(any(command[:3] == ["xcrun", "stapler", "staple"] for command in self.commands()))
+
+    def test_staple_or_gatekeeper_failure_does_not_create_release_archive(self):
+        for failure in ("RELEASE_TEST_BAD_STAPLE", "RELEASE_TEST_BAD_GATEKEEPER"):
+            with self.subTest(failure=failure):
+                if self.output.exists():
+                    shutil.rmtree(self.output)
+                self.prepare()
+                self.env[failure] = "1"
+                self.run_release("--notarize", "--output", self.output, "--keychain-profile", "fixture", ok=False)
+                self.assertFalse((self.output / "CodexBar.zip").exists())
+                self.env.pop(failure)
+
+    def test_notarize_staples_then_repackages_and_hashes_final_bytes(self):
+        self.prepare()
+        self.run_release("--notarize", "--output", self.output, "--keychain-profile", "fixture")
+        commands = self.commands()
+        staple = next(index for index, command in enumerate(commands) if command[:3] == ["xcrun", "stapler", "staple"])
+        final_zip = max(index for index, command in enumerate(commands) if command[0] == "ditto" and "-c" in command)
+        self.assertLess(staple, final_zip)
+        archive = self.output / "CodexBar.zip"
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        self.assertEqual((self.output / "SHA256SUMS").read_text().strip(), digest + "  CodexBar.zip")
+        self.assertEqual(json.loads((self.output / "manifest.json").read_text())["status"], "ready")
+        import zipfile
+        with zipfile.ZipFile(archive) as packaged:
+            self.assertEqual(packaged.read("CodexBar.app/Contents/ticket"), b"stapled")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

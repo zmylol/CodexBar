@@ -4,6 +4,129 @@ import CodexBarCore
 @MainActor
 func inboxTestCases() -> [CodexBarTestCase] {
     [
+        CodexBarTestCase(name: "bounds reliable inbox while preserving the newest lifecycle state") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            let policy = CodexInboxRetentionPolicy(maximumFileCount: 3, maximumBytes: 32_768, maximumAge: 604_800)
+            let writer = InboxWriter(paths: paths, retentionPolicy: policy)
+            for (name, timestamp) in [(CodexHookEventName.userPromptSubmit, 100.0), (.permissionRequest, 101), (.stop, 102)] {
+                _ = try writer.write(inboxEvent(name, timestamp: timestamp))
+            }
+            _ = try writer.write(inboxEvent(.permissionRequest, timestamp: 99))
+            let source = CodexHookEventSource(paths: paths, retentionPolicy: policy)
+            let pending = try source.pendingEvents()
+            try expect(pending.map(\.event.name) == [.userPromptSubmit, .permissionRequest, .stop], "a late older event evicted the newest lifecycle state")
+            let health = try source.inboxHealth()
+            try expect(health.pendingCount == 3 && health.discardedCount == 1, "inbox loss or pending count was not reported")
+            let store = TaskStore()
+            let processor = EventProcessor(source: source, store: store)
+            _ = try await processor.processPending()
+            try expect(store.tasks.first?.status == .ready, "bounded replay rolled the task back from Stop")
+            let drainedHealth = try await processor.inboxHealth()
+            try expect(drainedHealth.pendingCount == 0 && drainedHealth.discardedCount == 1, "drain lost the data-loss warning")
+        },
+        CodexBarTestCase(name: "enforces reliable inbox byte budget and keeps loss count across source restarts") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            let events = (100..<104).map { inboxEvent(.stop, timestamp: TimeInterval($0)) }
+            let sizes = try events.map { try JSONEncoder.codexBar.encode($0).count }
+            let budget = sizes[2] + sizes[3]
+            let policy = CodexInboxRetentionPolicy(maximumFileCount: 20, maximumBytes: budget, maximumAge: 604_800)
+            for event in events {
+                _ = try InboxWriter(paths: paths, retentionPolicy: policy).write(event)
+            }
+            for _ in 0..<2 {
+                let source = CodexHookEventSource(paths: paths, retentionPolicy: policy)
+                let pending = try source.pendingEvents()
+                try expect(pending.map(\.event.id) == Array(events.suffix(2)).map(\.id), "byte retention did not retain the newest events")
+                let retainedBytes = try pending.reduce(0) { try $0 + Data(contentsOf: $1.sourceURL).count }
+                try expect(retainedBytes <= budget, "reliable inbox exceeded its byte budget")
+                try expect(try source.inboxHealth().discardedCount == 2, "reopening reset the cumulative discard count")
+            }
+        },
+        CodexBarTestCase(name: "expires reliable inbox by arrival mtime and sweeps even without new hooks") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            let writer = InboxWriter(paths: paths)
+            let expired = try writer.write(inboxEvent(.userPromptSubmit, timestamp: Date().timeIntervalSince1970))
+            let oldPayload = try writer.write(inboxEvent(.stop, timestamp: 100))
+            try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-120)], ofItemAtPath: expired.path)
+            let policy = CodexInboxRetentionPolicy(maximumFileCount: 20, maximumBytes: 32_768, maximumAge: 60)
+            let source = CodexHookEventSource(paths: paths, retentionPolicy: policy)
+            let pending = try source.pendingEvents()
+            try expect(pending.map(\.sourceURL) == [oldPayload], "retention trusted payload time instead of arrival mtime")
+            try expect(!FileManager.default.fileExists(atPath: expired.path), "an idle expired Inbox entry was retained")
+            try expect(try source.inboxHealth().discardedCount == 1, "expiry was not reported as lost events")
+        },
+        CodexBarTestCase(name: "drains a reliable inbox snapshot without sorting every batch and retries unacknowledged events") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            let writer = InboxWriter(paths: paths)
+            for index in 0..<66 {
+                _ = try writer.write(inboxEvent(.stop, timestamp: TimeInterval(100 + index)))
+            }
+            let manager = InboxCountingFileManager(inboxURL: paths.inbox)
+            let source = CodexHookEventSource(paths: paths, fileManager: manager)
+            let first = try source.pendingEvents()
+            try expect(first.count == 25, "the first processing batch changed size")
+            try expect(try source.pendingEvents() == first, "reading advanced past events that were not acknowledged")
+            var consumed = first
+            try source.markProcessed(first)
+            while true {
+                let pending = try source.pendingEvents()
+                if pending.isEmpty { break }
+                consumed.append(contentsOf: pending)
+                try source.markProcessed(pending)
+            }
+            try expect(consumed.count == 66 && Set(consumed.map(\.event.id)).count == 66, "snapshot draining lost or duplicated events")
+            try expect(manager.inboxScans <= 2, "every 25-event batch enumerated the entire Inbox again")
+        },
+        CodexBarTestCase(name: "defers new activity until its lifecycle prompt joins the drained inbox snapshot") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            let writer = InboxWriter(paths: paths)
+            for index in 0..<60 {
+                _ = try writer.write(inboxEvent(.stop, timestamp: TimeInterval(100 + index)))
+            }
+            let source = CodexHookEventSource(paths: paths)
+            try source.markProcessed(source.pendingEvents())
+            _ = try writer.write(inboxEvent(.userPromptSubmit, timestamp: 200))
+            _ = try writer.write(inboxActionEvent(timestamp: 201))
+            var remaining: [PendingCodexEvent] = []
+            while true {
+                let pending = try source.pendingEvents()
+                if pending.isEmpty { break }
+                remaining.append(contentsOf: pending)
+                try source.markProcessed(pending)
+            }
+            try expect(remaining.count == 37, "events arriving while draining a snapshot were missed")
+            try expect(remaining.suffix(2).map(\.event.name) == [.userPromptSubmit, .preToolUse], "new activity overtook its unscanned prompt")
+        },
+        CodexBarTestCase(name: "coordinates concurrent reliable inbox writes and persistent discard counts") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            let policy = CodexInboxRetentionPolicy(maximumFileCount: 8, maximumBytes: 32_768, maximumAge: 604_800)
+            try paths.prepareEventDirectories()
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for index in 0..<40 {
+                    group.addTask {
+                        _ = try InboxWriter(paths: paths, retentionPolicy: policy).write(inboxEvent(.stop, timestamp: TimeInterval(100 + index)))
+                    }
+                }
+                try await group.waitForAll()
+            }
+            let source = CodexHookEventSource(paths: paths, retentionPolicy: policy)
+            let pending = try source.pendingEvents()
+            try expect(pending.map(\.event.timestamp.timeIntervalSince1970) == (132..<140).map(TimeInterval.init), "concurrent retention lost the newest events")
+            let health = try source.inboxHealth()
+            try expect(health.pendingCount == 8 && health.discardedCount == 32, "concurrent pruning lost a count update or exceeded its limit")
+        },
         CodexBarTestCase(name: "writes inbox events atomically with private permissions") {
             let root = temporaryDirectory()
             defer { try? FileManager.default.removeItem(at: root) }
@@ -1001,6 +1124,25 @@ private final class BatchRecordingEventSource: CodexEventSource, @unchecked Send
 
 private enum BatchRecordingError: Error {
     case expectedFailure
+}
+
+private final class InboxCountingFileManager: FileManager, @unchecked Sendable {
+    private let inboxURL: URL
+    private(set) var inboxScans = 0
+
+    init(inboxURL: URL) {
+        self.inboxURL = inboxURL
+        super.init()
+    }
+
+    override func contentsOfDirectory(
+        at url: URL,
+        includingPropertiesForKeys keys: [URLResourceKey]?,
+        options mask: DirectoryEnumerationOptions = []
+    ) throws -> [URL] {
+        if url.standardizedFileURL == inboxURL.standardizedFileURL { inboxScans += 1 }
+        return try super.contentsOfDirectory(at: url, includingPropertiesForKeys: keys, options: mask)
+    }
 }
 
 private final class InboxSnapshotRaceFileManager: FileManager, @unchecked Sendable {
