@@ -51,7 +51,113 @@ struct KnowledgeLibraryModelChecks {
         try await unseenUpdates()
         try await sectionBadges()
         try await rootFilesAreIgnored()
+        let regressions: [(String, @MainActor () async throws -> Void)] = [
+            ("uncached article moves", uncachedArticleMoves),
+            ("replacement root state", replacementRootState)
+        ]
+        var failures: [String] = []
+        for (name, check) in regressions {
+            do { try await check() }
+            catch { failures.append("\(name): \(error.localizedDescription)") }
+        }
+        if !failures.isEmpty {
+            FileHandle.standardError.write(Data((failures.joined(separator: "\n") + "\n").utf8))
+        }
+        precondition(failures.isEmpty, failures.joined(separator: "\n"))
         print("PASS independent knowledge library: no VS Code dependency, folder baseline, diff/review, stale-action guard, invalid selection, stop and restoration")
+    }
+
+    private static func uncachedArticleMoves() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("knowledge-library-uncached-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        let suite = "codexbar-library-uncached-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".obsidian"), withIntermediateDirectories: true)
+        let model = KnowledgeLibraryModel(defaultsSuiteName: suite, registryURL: root.appendingPathComponent("missing.json"))
+        defer {
+            model.stop()
+            try? FileManager.default.removeItem(at: root)
+            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        }
+        let content = String(repeating: "x", count: KnowledgeFolderTracker.maximumNoteBytes)
+        for index in 0..<(KnowledgeFolderTracker.maximumContentBytes / KnowledgeFolderTracker.maximumNoteBytes) {
+            try writeNote(content, path: "Archive/Note-\(index).md", root: root)
+        }
+        await model.selectVault(root)
+        try writeNote(articleText("Uncached arrival"), path: "A/Article.md", root: root)
+        await model.refreshNow()
+        try requireState(model.todayArticles.map(\.path) == ["A/Article.md"] && model.review?.notes.isEmpty == true,
+                         "The fixture did not index an article outside the full body cache")
+        model.markUpdatesSeen(in: "A")
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("B"), withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: root.appendingPathComponent("A/Article.md"),
+                                        to: root.appendingPathComponent("B/Renamed.md"))
+        await model.refreshNow()
+        try requireState(model.todayArticles.map(\.path) == ["B/Renamed.md"] && model.unseenChangeCount == 0,
+                         "Moving a seen article outside the body cache incorrectly restored its unread badge")
+        try FileManager.default.linkItem(at: root.appendingPathComponent("B/Renamed.md"),
+                                        to: root.appendingPathComponent("B/Twin.md"))
+        await model.refreshNow()
+        model.markUpdatesSeen(in: "B")
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("C"), withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: root.appendingPathComponent("B/Renamed.md"),
+                                        to: root.appendingPathComponent("C/Ambiguous.md"))
+        await model.refreshNow()
+        try requireState(model.unseenCount(in: "B") == 0 && model.unseenCount(in: "C") == 1,
+                         "Ambiguous hard links incorrectly transferred a previous article's read state")
+        print("PASS article read state: uncached rename preserves acknowledgement; ambiguous hard links do not inherit it")
+    }
+
+    private static func replacementRootState() async throws {
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent("knowledge-library-replacement-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        let root = parent.appendingPathComponent("Vault")
+        let suite = "codexbar-library-replacement-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".obsidian"), withIntermediateDirectories: true)
+        let model = KnowledgeLibraryModel(defaultsSuiteName: suite, registryURL: parent.appendingPathComponent("missing.json"))
+        defer {
+            model.stop()
+            try? FileManager.default.removeItem(at: parent)
+            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        }
+        try writeNote(articleText("Original article"), path: "A/Article.md", root: root)
+        try writeNote("original baseline", path: "Legacy/Change.md", root: root)
+        await model.selectVault(root)
+        model.markUpdatesSeen(in: "A")
+        try writeNote("original pending edit", path: "Legacy/Change.md", root: root)
+        await model.refreshNow()
+        guard let oldChange = model.review?.notes.first else {
+            throw stateError("The fixture did not establish a pending review for the original root")
+        }
+        try requireState(model.review?.pendingCount == 1 && model.unseenChangeCount == 0,
+                         "The fixture did not establish the original root's pending diff and read article")
+        try FileManager.default.moveItem(at: root, to: parent.appendingPathComponent("OldVault"))
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".obsidian"), withIntermediateDirectories: true)
+        try writeNote(articleText("Replacement article"), path: "A/Article.md", root: root)
+        try writeNote("replacement baseline", path: "Legacy/Change.md", root: root)
+        await model.refreshNow()
+        try requireState(model.review?.notes.isEmpty == true && model.unseenChangeCount == 1
+                         && model.todayArticles.map(\.title) == ["Replacement article"],
+                         "Replacement root inherited old review records or same-path article read state (pending: \(model.review?.pendingCount ?? -1), unread: \(model.unseenChangeCount))")
+        await model.toggleReviewNow(oldChange)
+        try requireState(model.review?.notes.isEmpty == true && model.unseenChangeCount == 1,
+                         "A delayed review action restored records or read state from the old root")
+        model.markUpdatesSeen(in: "A")
+        await model.refreshNow()
+        try requireState(model.unseenChangeCount == 0, "An unchanged replacement root repeatedly reset read state")
+        try writeNote("replacement pending edit", path: "Legacy/Change.md", root: root)
+        await model.refreshNow()
+        try requireState(model.review?.pendingCount == 1
+                         && model.review?.notes.first?.diff?.contains("-replacement baseline") == true,
+                         "The replacement root did not use its own baseline for subsequent reviews")
+        print("PASS root replacement: old pending diffs and read state cleared; stale actions rejected; later edits use the new baseline")
+    }
+
+    private static func requireState(_ condition: Bool, _ message: String) throws {
+        guard condition else { throw stateError(message) }
+    }
+
+    private static func stateError(_ message: String) -> NSError {
+        NSError(domain: "KnowledgeLibraryModelChecks", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 
     private static func unseenUpdates() async throws {
