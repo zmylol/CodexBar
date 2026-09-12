@@ -299,10 +299,15 @@ final class KnowledgeLibraryModel: ObservableObject {
     }
 
     private var receivedRevision = -1
+    private var receivedBaselineID: UUID?
 
     private func receive(_ next: KnowledgeLibraryUpdate) {
         guard next.revision > receivedRevision else { return }
         receivedRevision = next.revision
+        if receivedBaselineID != next.baselineID {
+            receivedBaselineID = next.baselineID
+            seenArticleIDs.removeAll()
+        }
         if review != next.review { review = next.review }
         for (previous, current) in next.articleMoves where seenArticleIDs.remove(previous) != nil {
             seenArticleIDs.insert(current)
@@ -325,6 +330,7 @@ final class KnowledgeLibraryModel: ObservableObject {
         scanRequested = false
         worker = nil
         receivedRevision = -1
+        receivedBaselineID = nil
         review = nil
         seenArticleIDs.removeAll()
         articles = []
@@ -344,6 +350,7 @@ private enum KnowledgeLibraryError: Error { case notVault }
 private struct KnowledgeLibraryUpdate: Sendable {
     let review: KnowledgeVaultReview
     let revision: Int
+    let baselineID: UUID
     let sections: [KnowledgeFolderSection]
     let noteCount: Int
     let articles: [KnowledgeArticle]
@@ -358,6 +365,8 @@ private actor KnowledgeLibraryWorker {
     private var sections: [KnowledgeFolderSection] = []
     private var noteCount = 0
     private var articles: [KnowledgeArticle] = []
+    private var baselineID = UUID()
+    private var articleMoves: [String: String] = [:]
 
     init(vault: ObsidianVault) {
         tracker = KnowledgeFolderTracker(vault: vault)
@@ -366,15 +375,19 @@ private actor KnowledgeLibraryWorker {
 
     func capture() async throws -> KnowledgeLibraryUpdate {
         let snapshot = try await tracker.capture()
+        if baselineID != snapshot.baselineID {
+            baselineID = snapshot.baselineID
+            ledger = KnowledgeReviewLedger(vault: ledger.vault, scopeID: baselineID.uuidString)
+        }
         ledger.receiveLatest(snapshot.changes, cwd: ledger.vault.rootPath)
         warnings = snapshot.warnings
         sections = snapshot.sections
         noteCount = snapshot.noteCount
         articles = snapshot.articles
-        let moves = Dictionary(uniqueKeysWithValues: snapshot.changes.compactMap { change in
-            change.movePath.map { (change.path, $0) }
-        })
-        return update(articleMoves: moves)
+        // The model receives each capture before starting the next one. Keep these moves in
+        // review updates too, which may otherwise overtake a capture with a newer revision.
+        articleMoves = snapshot.articleMoves
+        return update()
     }
 
     func toggleReview(_ note: KnowledgeNoteChange) -> KnowledgeLibraryUpdate {
@@ -400,11 +413,11 @@ private actor KnowledgeLibraryWorker {
         return ledger.vault.openURL(notePath: relative)
     }
 
-    private func update(articleMoves: [String: String] = [:]) -> KnowledgeLibraryUpdate {
+    private func update() -> KnowledgeLibraryUpdate {
         revision += 1
         let notices = warnings
         return KnowledgeLibraryUpdate(review: KnowledgeVaultReview(vault: ledger.vault, notes: ledger.recentNotes,
             isLoading: false, message: notices.isEmpty ? nil : notices.joined(separator: "\n")), revision: revision,
-            sections: sections, noteCount: noteCount, articles: articles, articleMoves: articleMoves)
+            baselineID: baselineID, sections: sections, noteCount: noteCount, articles: articles, articleMoves: articleMoves)
     }
 }

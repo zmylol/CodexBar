@@ -16,11 +16,13 @@ public struct KnowledgeFolderSection: Identifiable, Equatable, Sendable {
 }
 
 public struct KnowledgeFolderSnapshot: Equatable, Sendable {
+    public let baselineID: UUID
     public let changes: [CodexRecordedFileChange]
     public let noteCount: Int
     public let warnings: [String]
     public let sections: [KnowledgeFolderSection]
     public let articles: [KnowledgeArticle]
+    public let articleMoves: [String: String]
 }
 
 /// Keeps an in-memory baseline for one explicitly selected vault. Capture is never run on the UI actor.
@@ -33,6 +35,7 @@ public actor KnowledgeFolderTracker {
 
     private let vault: ObsidianVault
     private let trackerID = UUID().uuidString
+    private var baselineID = UUID()
     private var files: [String: Note] = [:]
     private var articleIndex: [String: ArticleEntry] = [:]
     private var sections: [KnowledgeFolderSection] = []
@@ -152,6 +155,8 @@ public actor KnowledgeFolderTracker {
 
         revision += 1
         let changes = hasBaseline && !replacedRoot ? changes(from: files, to: next) : []
+        let moves = replacedRoot ? [:] : articleMoves(from: articleIndex, to: nextArticleIndex)
+        if replacedRoot { baselineID = UUID() }
         files = next
         articleIndex = nextArticleIndex
         sections = folderSections(inventory, preserving: replacedRoot ? [] : sections)
@@ -160,8 +165,27 @@ public actor KnowledgeFolderTracker {
         let articles = nextArticleIndex.values.compactMap(\.article).sorted {
             $0.collectedAt == $1.collectedAt ? $0.path < $1.path : $0.collectedAt > $1.collectedAt
         }
-        return KnowledgeFolderSnapshot(changes: changes, noteCount: inventory.notes.count,
-                                       warnings: inventory.warnings.sorted(), sections: sections, articles: articles)
+        return KnowledgeFolderSnapshot(baselineID: baselineID, changes: changes, noteCount: inventory.notes.count,
+                                       warnings: inventory.warnings.sorted(), sections: sections, articles: articles,
+                                       articleMoves: moves)
+    }
+
+    private func articleMoves(from old: [String: ArticleEntry], to new: [String: ArticleEntry]) -> [String: String] {
+        let removed = Set(old.keys).subtracting(new.keys)
+        let added = Set(new.keys).subtracting(old.keys)
+        guard !removed.isEmpty, !added.isEmpty else { return [:] }
+        let oldIdentities = Dictionary(grouping: old.keys) { old[$0]!.metadata.identity }
+        let newIdentities = Dictionary(grouping: new.keys) { new[$0]!.metadata.identity }
+        var moves: [String: String] = [:]
+        for path in removed {
+            guard let previous = old[path], previous.article != nil else { continue }
+            let identity = previous.metadata.identity
+            if oldIdentities[identity]?.count == 1, newIdentities[identity]?.count == 1,
+               let destination = newIdentities[identity]?.first, added.contains(destination), new[destination]?.article != nil {
+                moves[path] = destination
+            }
+        }
+        return moves
     }
 
     private func folderSections(_ inventory: Inventory, preserving previousSections: [KnowledgeFolderSection]) -> [KnowledgeFolderSection] {
