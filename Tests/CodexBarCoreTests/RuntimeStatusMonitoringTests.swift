@@ -57,6 +57,27 @@ func runtimeStatusMonitoringTests() -> [CodexBarTestCase] {
             try await runtimeWait { router.following("known", value: true) == 2 }
             try expect(monitor.connectionState == .connected, "manual refresh could not recover an exhausted connection")
         },
+        CodexBarTestCase(name: "runtime monitor bounds initialization-only connections that immediately close") {
+            let router = try RuntimeTestRouter()
+            router.closesAfterInitialization = true
+            defer { router.stop() }
+            let monitor = CodexRuntimeStatusMonitor(
+                codexHome: router.home, reconnectDelays: [.milliseconds(20), .milliseconds(40), .milliseconds(80)]
+            )
+            var initializedConnections = 0
+            monitor.onConnectionStateChange = { state in
+                if state == .connected { initializedConnections += 1 }
+            }
+            monitor.setSessions(["known"])
+            monitor.start(onChange: { _ in })
+            defer { monitor.stop() }
+            try await runtimeWait { monitor.connectionState == .exhausted || router.acceptedConnections > 4 }
+            try expect(initializedConnections > 0, "fixture never completed a successful initialization")
+            try expect(router.acceptedConnections == 4 && monitor.connectionState == .exhausted,
+                       "initialization without a trusted stream reset the reconnect budget")
+            try await Task.sleep(for: .milliseconds(180))
+            try expect(router.acceptedConnections == 4, "initialization-only connections continued after exhaustion")
+        },
         CodexBarTestCase(name: "runtime monitor cancels scheduled reconnects on stop or empty sessions") {
             for clearsSessions in [false, true] {
                 let router = try RuntimeTestRouter()
@@ -313,6 +334,7 @@ private final class RuntimeTestRouter {
     var historyReplyOwner = "owner"
     var disconnected = false
     var rejectsInitialization = false
+    var closesAfterInitialization = false
     private(set) var acceptedConnections = 0
     private var listener: Int32 = -1
     private var client: Int32 = -1
@@ -451,6 +473,10 @@ private final class RuntimeTestRouter {
                 }
                 send(["type": "response", "requestId": requestID, "resultType": "success", "method": "initialize",
                       "handledByClientId": "fixture-client", "result": ["clientId": "fixture-client"]])
+                if closesAfterInitialization {
+                    closeClient()
+                    return
+                }
             } else if message["method"] as? String == "thread-owner-discovery" {
                 if hasOwner {
                     send(["type": "response", "requestId": requestID, "resultType": "success", "method": "thread-owner-discovery",
