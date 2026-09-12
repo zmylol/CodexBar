@@ -34,7 +34,9 @@ public actor KnowledgeFolderTracker {
     private let vault: ObsidianVault
     private let trackerID = UUID().uuidString
     private var files: [String: Note] = [:]
+    private var articleIndex: [String: ArticleEntry] = [:]
     private var sections: [KnowledgeFolderSection] = []
+    private var rootIdentity: Identity?
     private var hasBaseline = false
     private var revision = 0
 
@@ -68,8 +70,12 @@ public actor KnowledgeFolderTracker {
     private struct Note: Sendable {
         let metadata: Metadata
         let content: String
-        let article: KnowledgeArticle?
         var byteCount: Int { content.utf8.count }
+    }
+
+    private struct ArticleEntry: Sendable {
+        let metadata: Metadata
+        let article: KnowledgeArticle?
     }
 
     private struct Inventory {
@@ -98,9 +104,14 @@ public actor KnowledgeFolderTracker {
         var inventory = Inventory()
         try enumerate(directory: root, path: "", depth: 0, inventory: &inventory)
 
-        var next = files
+        let capturedRootIdentity = Metadata(rootStatus).identity
+        let replacedRoot = hasBaseline && rootIdentity != capturedRootIdentity
+        if replacedRoot { inventory.warnings.insert("知识库文件夹已替换，已重新建立基线。") }
+        var next = replacedRoot ? [:] : files
+        var nextArticleIndex = replacedRoot ? [:] : articleIndex
         if inventory.complete {
             next = next.filter { inventory.notes[$0.key] != nil }
+            nextArticleIndex = nextArticleIndex.filter { inventory.notes[$0.key] != nil }
         }
         var retainedBytes = next.values.reduce(0) { $0 + $1.byteCount }
         for path in inventory.notes.keys.sorted() {
@@ -109,39 +120,51 @@ public actor KnowledgeFolderTracker {
                 inventory.warnings.insert("部分笔记超过 256 KiB，暂未读取其正文。")
                 continue
             }
-            if next[path]?.metadata == metadata { continue }
             let previousBytes = next[path]?.byteCount ?? 0
-            guard retainedBytes - previousBytes + Int(metadata.size) <= Self.maximumContentBytes,
-                  next[path] != nil || next.count < Self.maximumNotes else {
+            let canCacheBody = retainedBytes - previousBytes + Int(metadata.size) <= Self.maximumContentBytes
+                && (next[path] != nil || next.count < Self.maximumNotes)
+            let canIndexArticle = nextArticleIndex[path] != nil || nextArticleIndex.count < Self.maximumNotes
+            if !canCacheBody {
                 inventory.warnings.insert("知识库超过读取预算，部分笔记暂未纳入变更预览。")
-                continue
             }
+            if !canIndexArticle { inventory.warnings.insert("文章索引达到上限，部分文章暂未纳入列表。") }
+            // Uncached bodies must not block article discovery. Retain metadata for nonarticles too,
+            // so unchanged files outside the body budget do not need to be read on every capture.
+            guard canCacheBody && next[path]?.metadata != metadata
+                || canIndexArticle && nextArticleIndex[path]?.metadata != metadata else { continue }
             guard let content = try readNote(path, root: root, expected: metadata) else {
                 inventory.warnings.insert("部分笔记不是 UTF-8 文本，暂未读取其正文。")
                 continue
             }
-            let note = Note(metadata: metadata, content: content, article: KnowledgeArticle(path: path, content: content))
-            next[path] = note
-            retainedBytes += note.byteCount - previousBytes
+            if canIndexArticle {
+                nextArticleIndex[path] = ArticleEntry(metadata: metadata, article: KnowledgeArticle(path: path, content: content))
+            }
+            if canCacheBody {
+                let note = Note(metadata: metadata, content: content)
+                next[path] = note
+                retainedBytes += note.byteCount - previousBytes
+            }
         }
         // A moved/replaced root must not publish edits under its old location.
         var currentRoot = stat()
         guard lstat(vault.rootPath, &currentRoot) == 0, currentRoot.st_mode & S_IFMT == S_IFDIR,
-              Metadata(currentRoot).identity == Metadata(rootStatus).identity else { throw scanError() }
+              Metadata(currentRoot).identity == capturedRootIdentity else { throw scanError() }
 
         revision += 1
-        let changes = hasBaseline ? changes(from: files, to: next) : []
+        let changes = hasBaseline && !replacedRoot ? changes(from: files, to: next) : []
         files = next
-        sections = folderSections(inventory)
+        articleIndex = nextArticleIndex
+        sections = folderSections(inventory, preserving: replacedRoot ? [] : sections)
+        rootIdentity = capturedRootIdentity
         hasBaseline = true
-        let articles = next.values.compactMap(\.article).sorted {
+        let articles = nextArticleIndex.values.compactMap(\.article).sorted {
             $0.collectedAt == $1.collectedAt ? $0.path < $1.path : $0.collectedAt > $1.collectedAt
         }
         return KnowledgeFolderSnapshot(changes: changes, noteCount: inventory.notes.count,
                                        warnings: inventory.warnings.sorted(), sections: sections, articles: articles)
     }
 
-    private func folderSections(_ inventory: Inventory) -> [KnowledgeFolderSection] {
+    private func folderSections(_ inventory: Inventory, preserving previousSections: [KnowledgeFolderSection]) -> [KnowledgeFolderSection] {
         var counts: [String: Int] = [:]
         for path in inventory.notes.keys {
             let section = path.firstIndex(of: "/").map { String(path[..<$0]) } ?? ""
@@ -152,7 +175,7 @@ public actor KnowledgeFolderTracker {
         })
         // A capped traversal cannot establish that an old category or its notes disappeared.
         if !inventory.complete {
-            for previous in sections { current[previous.relativePath] = previous }
+            for previous in previousSections { current[previous.relativePath] = previous }
         }
         return current.values.sorted { $0.relativePath < $1.relativePath }
     }

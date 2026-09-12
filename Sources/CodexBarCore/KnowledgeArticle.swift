@@ -46,8 +46,23 @@ public struct KnowledgeArticle: Identifiable, Equatable, Sendable {
         }.first
         let metadataTitle = fields["title"].flatMap { $0.isEmpty ? nil : $0 }
         let filename = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
-        self.init(path: path, title: heading ?? metadataTitle ?? filename, collectedAt: date,
-                  summary: Self.summary(in: lines[(end + 1)...]))
+        self.init(path: path, title: Self.boundedText(heading ?? metadataTitle ?? filename, maximumBytes: 1_024),
+                  collectedAt: date,
+                  summary: Self.summary(in: lines[(end + 1)...]).map { Self.boundedText($0, maximumBytes: 4 * 1_024) })
+    }
+
+    /// Article indexes retain bounded display text even when the full note is outside the body cache.
+    private static func boundedText(_ text: String, maximumBytes: Int) -> String {
+        guard text.utf8.count > maximumBytes else { return text }
+        var result = ""
+        var remainingBytes = maximumBytes - "…".utf8.count
+        for character in text {
+            let byteCount = String(character).utf8.count
+            guard byteCount <= remainingBytes else { break }
+            result.append(character)
+            remainingBytes -= byteCount
+        }
+        return result + "…"
     }
 
     /// Uses the article's own summary rather than guessing from navigation or introductory text.
