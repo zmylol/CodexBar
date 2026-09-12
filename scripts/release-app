@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""Prepare a signed candidate locally; notarization requires a separate command."""
+
+import argparse
+from datetime import datetime
+import hashlib
+import json
+from pathlib import Path
+import plistlib
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+
+
+ROOT = Path(__file__).resolve().parent.parent
+SCENARIOS = (
+    "app_launch", "hook_task_lifecycle", "approval_required", "approval_resume",
+    "window_focus", "conversation_preview", "reconnect_same_socket",
+    "history_loading", "knowledge_arrival",
+)
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def run(*arguments):
+    return subprocess.run(list(map(str, arguments)), cwd=ROOT, check=True,
+                          capture_output=True, text=True)
+
+
+def digest_files(root, files):
+    """Bind names, permissions and bytes; this app does not contain symlinks."""
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        require(not path.is_symlink(), "Symbolic links are not supported in release inputs: " + str(path))
+        if not path.is_file():
+            continue
+        name = path.relative_to(root).as_posix().encode()
+        digest.update(str(len(name)).encode() + b":" + name)
+        digest.update(str(stat.S_IMODE(path.stat().st_mode)).encode() + b":")
+        digest.update(str(path.stat().st_size).encode() + b":")
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def source_fingerprint():
+    files = [ROOT / "Package.swift"]
+    for directory in ("Sources", "Resources"):
+        files.extend((ROOT / directory).rglob("*"))
+    files.extend(ROOT / "scripts" / name for name in (
+        "build-app", "install-app", "release-app", "install-hooks", "hook-config-common.zsh", "hooks-config.js",
+    ))
+    return digest_files(ROOT, files)
+
+
+def read_json(path):
+    require(path.is_file() and path.stat().st_size <= 1024 * 1024,
+            "Missing or oversized JSON record: " + str(path))
+    return json.loads(path.read_text())
+
+
+def write_json(path, value):
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+
+
+def validate_record(record, fingerprint):
+    require(isinstance(record, dict), "Compatibility record must be an object")
+    require(record.get("schema_version") == 1, "Unsupported compatibility schema")
+    require(record.get("evidence_kind") == "real", "Release requires real compatibility evidence; synthetic evidence is not accepted")
+    require(record.get("source_sha256") == fingerprint, "Compatibility record does not match current source fingerprint")
+    require(isinstance(record.get("tester"), str) and record["tester"].strip(), "Record must name its tester")
+    timestamp = datetime.fromisoformat(str(record.get("tested_at", "")).replace("Z", "+00:00"))
+    require(timestamp.tzinfo is not None, "tested_at must include a timezone")
+    environments = record.get("environments")
+    require(isinstance(environments, list) and environments, "Record must include tested environments")
+    for environment in environments:
+        require(isinstance(environment, dict), "Each environment must be an object")
+        require(environment.get("architecture") in ("arm64", "x86_64"), "Record has an unsupported architecture")
+        for key in ("macos", "vscode", "codex_extension"):
+            require(isinstance(environment.get(key), str)
+                    and re.fullmatch(r"\d+\.\d+(?:\.\d+)*(?:[-+][A-Za-z0-9.-]+)?", environment[key]),
+                    "Record must identify an exact " + key + " version")
+        require(environment.get("vscode_channel") == "stable", "Only tested VS Code Stable environments qualify")
+        require(isinstance(environment.get("evidence"), str) and environment["evidence"].strip(),
+                "Each environment must describe its real observation evidence")
+        scenarios = environment.get("scenarios")
+        require(isinstance(scenarios, dict) and all(scenarios.get(name) == "pass" for name in SCENARIOS),
+                "Every compatibility scenario must pass: " + ", ".join(SCENARIOS))
+    return {environment["architecture"] for environment in environments}
+
+
+def validate_identity(identity):
+    require(identity and re.fullmatch(r"Developer ID Application: .+ \([A-Z0-9]{10}\)", identity),
+            "Provide --identity with an exact Developer ID Application certificate name; ad-hoc signing is not a release")
+    identities = run("security", "find-identity", "-v", "-p", "codesigning").stdout
+    require('"' + identity + '"' in identities, "Requested Developer ID signing identity is unavailable in the keychain")
+
+
+def verify_bundle(bundle, identity, tested_architectures):
+    run("codesign", "--verify", "--deep", "--strict", bundle)
+    expected_team = identity.rsplit("(", 1)[1][:-1]
+    actual_architectures = set()
+    for target in (bundle / "Contents/Helpers/codexbar-hook", bundle):
+        details = run("codesign", "--display", "--verbose=4", target)
+        text = details.stdout + details.stderr
+        require("Authority=" + identity in text and "TeamIdentifier=" + expected_team in text,
+                "Signature identity does not match the requested Developer ID")
+        require("(runtime)" in text and "Timestamp=" in text, "Signature is missing hardened runtime or secure timestamp")
+        executable = target / "Contents/MacOS/CodexBar" if target == bundle else target
+        architectures = set(run("lipo", "-archs", executable).stdout.split())
+        require(architectures and architectures <= tested_architectures,
+                "Binary architecture has no matching real compatibility record: " + ", ".join(sorted(architectures)))
+        if actual_architectures:
+            require(architectures == actual_architectures, "App and helper architectures differ")
+        actual_architectures = architectures
+    return sorted(actual_architectures)
+
+
+def prepare(output, identity, record, fingerprint, architectures):
+    require(not output.exists() and not output.is_symlink(), "Output already exists; choose a new candidate directory")
+    run(ROOT / "scripts/build-app")
+    require(source_fingerprint() == fingerprint, "Source changed during build; repeat compatibility checks")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".codexbar-prepare-", dir=output.parent) as temporary:
+        staging = Path(temporary)
+        bundle = staging / "CodexBar.app"
+        run("ditto", ROOT / "dist/CodexBar.app", bundle)
+        for target in (bundle / "Contents/Helpers/codexbar-hook", bundle):
+            run("codesign", "--force", "--sign", identity, "--timestamp", "--options", "runtime", target)
+        actual_architectures = verify_bundle(bundle, identity, architectures)
+        with (bundle / "Contents/Info.plist").open("rb") as stream:
+            info = plistlib.load(stream)
+        write_json(staging / "compatibility.json", record)
+        write_json(staging / "manifest.json", {
+            "schema_version": 1, "status": "prepared", "source_sha256": fingerprint,
+            "identity": identity, "architectures": actual_architectures,
+            "version": info["CFBundleShortVersionString"], "build": info["CFBundleVersion"],
+            "bundle_sha256": digest_files(bundle, bundle.rglob("*")),
+        })
+        staging.rename(output)
+    print("Prepared signed candidate (not notarized; not ready for distribution): " + str(output))
+
+
+def notarize(output, profile):
+    require(profile and profile.strip(), "Notarization uploads to Apple and requires explicit --keychain-profile")
+    require(output.is_dir() and not output.is_symlink(), "Candidate must be a real directory")
+    manifest = read_json(output / "manifest.json")
+    require(isinstance(manifest, dict) and manifest.get("schema_version") == 1
+            and manifest.get("status") == "prepared", "Candidate must have prepared status")
+    fingerprint = source_fingerprint()
+    require(manifest.get("source_sha256") == fingerprint, "Source changed after prepare")
+    record = read_json(output / "compatibility.json")
+    architectures = validate_record(record, fingerprint)
+    bundle = output / "CodexBar.app"
+    require(bundle.is_dir() and not bundle.is_symlink()
+            and digest_files(bundle, bundle.rglob("*")) == manifest.get("bundle_sha256"),
+            "Prepared candidate was modified")
+    identity = manifest.get("identity")
+    require(isinstance(identity, str) and re.fullmatch(r"Developer ID Application: .+ \([A-Z0-9]{10}\)", identity),
+            "Candidate must identify its Developer ID signature")
+    verify_bundle(bundle, identity, architectures)
+    require(not (output / "CodexBar.zip").exists() and not (output / "SHA256SUMS").exists(),
+            "Release files already exist; prepare a new candidate")
+    # Work on a copy: failed notarization or stapling leaves the candidate retryable.
+    with tempfile.TemporaryDirectory(prefix=".codexbar-notary-", dir=output) as temporary:
+        staging = Path(temporary)
+        staged_bundle = staging / "CodexBar.app"
+        run("ditto", bundle, staged_bundle)
+        upload = staging / "notary-upload.zip"
+        run("ditto", "-c", "-k", "--keepParent", staged_bundle, upload)
+        result = run("xcrun", "notarytool", "submit", upload, "--keychain-profile", profile,
+                     "--wait", "--output-format", "json")
+        response = json.loads(result.stdout)
+        write_json(output / "notarization.json", response)
+        require(isinstance(response, dict) and response.get("status") == "Accepted" and response.get("id"),
+                "Apple did not accept notarization; inspect notarization.json and retrieve the submission log")
+        run("xcrun", "stapler", "staple", staged_bundle)
+        run("xcrun", "stapler", "validate", staged_bundle)
+        verify_bundle(staged_bundle, identity, architectures)
+        run("spctl", "--assess", "--type", "execute", "--verbose=2", staged_bundle)
+        require(source_fingerprint() == fingerprint, "Source changed during notarization; prepare a new candidate")
+        archive = staging / "CodexBar.zip"
+        run("ditto", "-c", "-k", "--keepParent", staged_bundle, archive)
+        with archive.open("rb") as stream:
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        (staging / "SHA256SUMS").write_text(digest.hexdigest() + "  CodexBar.zip\n")
+        manifest.update(status="ready", notarization_id=response["id"], archive_sha256=digest.hexdigest())
+        write_json(staging / "manifest.json", manifest)
+        # Only the final ZIP contains the stapled app; retain the original candidate for audit.
+        published = []
+        try:
+            for name in ("CodexBar.zip", "SHA256SUMS"):
+                target = output / name
+                (staging / name).replace(target)
+                published.append(target)
+            (staging / "manifest.json").replace(output / "manifest.json")
+        except BaseException:
+            # Keep prepared status retryable if publishing any final file fails.
+            for target in reversed(published):
+                target.unlink(missing_ok=True)
+            raise
+    print("Notarized and stapled release archive ready (nothing published): " + str(output / "CodexBar.zip"))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    modes = parser.add_mutually_exclusive_group(required=True)
+    for mode in ("source-fingerprint", "check", "prepare", "notarize"):
+        modes.add_argument("--" + mode, action="store_true")
+    parser.add_argument("--identity", help="Exact Developer ID Application certificate name")
+    parser.add_argument("--compatibility", type=Path, help="Real manual compatibility record")
+    parser.add_argument("--output", type=Path, help="New candidate directory, or existing candidate for --notarize")
+    parser.add_argument("--keychain-profile", help="Existing notarytool Keychain credential profile")
+    args = parser.parse_args()
+    if args.source_fingerprint:
+        print(source_fingerprint())
+        return
+    if args.notarize:
+        require(args.output, "--notarize requires --output")
+        notarize(args.output.absolute(), args.keychain_profile)
+        return
+    validate_identity(args.identity)
+    require(args.compatibility, "--compatibility is required; synthetic tests cannot qualify a release")
+    fingerprint = source_fingerprint()
+    record = read_json(args.compatibility)
+    architectures = validate_record(record, fingerprint)
+    if args.check:
+        print("Local preflight passed; no build, notarization or publication performed")
+        return
+    require(args.output, "--prepare requires a new --output directory")
+    prepare(args.output.absolute(), args.identity, record, fingerprint, architectures)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+        print("Release stopped: " + str(error), file=sys.stderr)
+        if isinstance(error, subprocess.CalledProcessError) and error.stderr:
+            print(error.stderr.strip(), file=sys.stderr)
+        sys.exit(1)

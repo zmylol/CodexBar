@@ -18,5 +18,7 @@ CODEX_INTERNAL_ORIGINATOR_OVERRIDE=codex_vscode "$script_dir/test-hook-cli"
 "$script_dir/test-e2e-simulated"
 "$script_dir/test-app-bundle"
 "$script_dir/test-install-app"
+"$script_dir/test-hook-setup"
+"$script_dir/test-release-app"
 
 print "PASS complete CodexBar test suite"

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" role="img" aria-labelledby="title description">
   <title id="title">CodexBar：少切窗口，多看进展</title>
-  <desc id="description">功能界面示意，所有项目和对话均为虚构示例。窄小的桌面悬浮条显示 alpha-api 正在执行、docs-site 需要处理、desktop 可查看。悬停在 alpha-api 后，侧边会话预览展示用户消息、Codex 回复和可展开的命令条目，底部可跟随最新内容或查看会话。</desc>
+  <desc id="description">功能界面示意，所有项目和对话均为虚构示例。窄小的桌面悬浮条显示 alpha-api 正在执行、docs-site 需要处理、desktop 可查看。悬停在 alpha-api 后，侧边会话预览展示用户消息、Codex 回复和可展开的命令条目，底部可跟随最新内容或切到项目验收。</desc>
   <defs>
     <linearGradient id="background" x2="1" y2="1">
       <stop stop-color="#FAFAF7"/>
@@ -87,7 +87,7 @@
     <path d="M698 537v12m-4-4 4 4 4-4m-6 8h8" fill="none" stroke="#64717F" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
     <text x="713" y="550" font-size="13" font-weight="500" fill="#64717F">跟随最新</text>
     <rect x="1007" y="530" width="106" height="34" rx="7" fill="#F0F2F4"/>
-    <text x="1021" y="552" font-size="13" font-weight="600">查看会话</text>
+    <text x="1021" y="552" font-size="13" font-weight="600">切到项目</text>
     <path d="m1085 548 9-9m-7 0h7v7" fill="none" stroke="#45515E" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
     <text x="1133" y="608" text-anchor="end" font-size="12" fill="#6A7581">界面示意 · 示例内容</text>
   </g>

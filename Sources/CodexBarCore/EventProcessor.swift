@@ -30,11 +30,14 @@ public final class EventProcessor {
             appliedLifecycleEvents: lifecycleResult.appliedEvents,
             finalTasks: store.tasks
         )
-        // Once the state is durable, archive the whole source batch even if the
-        // caller is cancelled. Durable event IDs and the bounded in-memory
-        // activity delivery IDs make a failed archive or deletion safe to retry.
+        // Durable event IDs and bounded in-memory activity delivery IDs make
+        // archiving safe to retry, including after a cancelled lock wait.
         try await sourceWorker.markProcessed(pendingEvents)
         return pendingEvents.count
+    }
+
+    public func inboxHealth() async throws -> CodexInboxHealth {
+        try await sourceWorker.inboxHealth()
     }
 }
 
@@ -45,11 +48,31 @@ private actor CodexEventSourceWorker {
         self.source = source
     }
 
-    func pendingEvents() throws -> [PendingCodexEvent] {
-        try source.pendingEvents()
+    func pendingEvents() async throws -> [PendingCodexEvent] {
+        try await retryLockContention { try source.pendingEvents() }
     }
 
-    func markProcessed(_ pendingEvents: [PendingCodexEvent]) throws {
-        try source.markProcessed(pendingEvents)
+    func markProcessed(_ pendingEvents: [PendingCodexEvent]) async throws {
+        try await retryLockContention { try source.markProcessed(pendingEvents) }
+    }
+
+    func inboxHealth() async throws -> CodexInboxHealth {
+        try await retryLockContention { try source.inboxHealth() }
+    }
+
+    private func retryLockContention<Result>(_ operation: () throws -> Result) async throws -> Result {
+        let delays: [Duration] = [.milliseconds(50), .milliseconds(150), .milliseconds(300)]
+        var attempt = 0
+        while true {
+            try Task.checkCancellation()
+            do {
+                return try operation()
+            } catch CodexInboxRetentionError.lockBusy {
+                try Task.checkCancellation()
+                guard attempt < delays.count else { throw CodexInboxRetentionError.lockBusy }
+                try await Task.sleep(for: delays[attempt])
+                attempt += 1
+            }
+        }
     }
 }

@@ -7,9 +7,25 @@ public enum CodexRuntimeUnavailableReason: Equatable, Sendable {
     case unsupportedProtocol(expected: Int, received: Int?)
 }
 
+public enum CodexRuntimeConnectionState: Equatable, Sendable {
+    case idle
+    case connecting
+    case connected
+    case retrying(attempt: Int)
+    case exhausted
+    case incompatible
+}
+
 /// Follows known local Codex threads. Frames are delivered transiently and never persisted.
 @MainActor
 public final class CodexRuntimeStatusMonitor {
+    public private(set) var connectionState: CodexRuntimeConnectionState = .idle {
+        didSet {
+            if connectionState != oldValue { onConnectionStateChange?(connectionState) }
+        }
+    }
+    public var onConnectionStateChange: (@MainActor @Sendable (CodexRuntimeConnectionState) -> Void)?
+
     private struct Envelope: Decodable, Sendable {
         struct Parameters: Decodable, Sendable {
             let conversationId: String?
@@ -76,6 +92,7 @@ public final class CodexRuntimeStatusMonitor {
     private static let maximumPendingRequests = 32
     private let codexHome: URL
     private let legacyDirectory: URL?
+    private let reconnectDelays: [Duration]
     private let queue = DispatchQueue(label: "CodexBar.RuntimeStatus")
     private var watches: [String: RuntimeDirectoryWatch] = [:]
     private var sessions: Set<String> = []
@@ -91,10 +108,19 @@ public final class CodexRuntimeStatusMonitor {
     private var clientID: String?
     private var buffer = Data()
     private var running = false
+    private var reconnectTask: Task<Void, Never>?
+    private var reconnectID: UUID?
+    private var reconnectAttempt = 0
     private var onChange: (@MainActor @Sendable (Data) -> Void)?
     private var onUnavailable: (@MainActor @Sendable ([String: CodexRuntimeUnavailableReason]) -> Void)?
 
-    public init(codexHome: URL? = nil, legacyDirectory: URL? = nil) {
+    public convenience init(codexHome: URL? = nil, legacyDirectory: URL? = nil) {
+        self.init(codexHome: codexHome, legacyDirectory: legacyDirectory,
+                  reconnectDelays: [.milliseconds(250), .milliseconds(500), .seconds(1), .seconds(2), .seconds(4)])
+    }
+
+    package init(codexHome: URL? = nil, legacyDirectory: URL? = nil, reconnectDelays: [Duration]) {
+        self.reconnectDelays = reconnectDelays
         self.codexHome = codexHome ?? URL(fileURLWithPath:
             ProcessInfo.processInfo.environment["CODEX_HOME"]
                 ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path
@@ -120,6 +146,7 @@ public final class CodexRuntimeStatusMonitor {
     }
 
     public func setSessions(_ sessions: Set<String>) {
+        guard self.sessions != sessions else { return }
         let removed = self.sessions.subtracting(sessions)
         for sessionID in removed {
             if let owner = owners.removeValue(forKey: sessionID) {
@@ -138,21 +165,26 @@ public final class CodexRuntimeStatusMonitor {
         reportUnavailable(removed)
         guard running else { return }
         if sessions.isEmpty {
+            cancelReconnect()
+            reconnectAttempt = 0
             disconnect()
-        } else if connection == nil {
+        } else if connection == nil, reconnectTask == nil {
             refresh()
         } else {
             discoverMissingSessions()
         }
+        updateConnectionState()
     }
 
     /// Called by explicit refresh, Hook activity, or window events; never by a repeating timer.
     public func refresh() {
         guard running else { return }
+        cancelReconnect()
+        reconnectAttempt = 0
         refreshDirectoryWatches()
         if let connectedSocket,
            secureSocket(at: connectedSocket.path) != connectedSocket.identity {
-            disconnect()
+            disconnect(reconnect: false)
         }
         attemptedSessions.removeAll()
         incompatibleSessions.removeAll()
@@ -164,6 +196,7 @@ public final class CodexRuntimeStatusMonitor {
             }
             discoverMissingSessions()
         }
+        updateConnectionState()
     }
 
     /// Retries unavailable owners after a Hook or window event without re-copying known threads.
@@ -175,8 +208,10 @@ public final class CodexRuntimeStatusMonitor {
             disconnect()
         }
         attemptedSessions.removeAll()
-        if connection == nil { connectToExistingSocket() }
-        else { discoverMissingSessions() }
+        if connection == nil, reconnectTask == nil {
+            reconnectAttempt = 0
+            connectToExistingSocket()
+        } else { discoverMissingSessions() }
     }
 
     public func requestSnapshot(sessionID: String, retryIncompatible: Bool = false) {
@@ -221,6 +256,8 @@ public final class CodexRuntimeStatusMonitor {
             sendFollowing(sessionID, owner: owner, following: false)
         }
         running = false
+        cancelReconnect()
+        reconnectAttempt = 0
         disconnect()
         unavailableReasons.removeAll()
         watches.removeAll()
@@ -230,11 +267,12 @@ public final class CodexRuntimeStatusMonitor {
 
     deinit {
         connection?.cancel()
+        reconnectTask?.cancel()
         for request in pending.values { request.timeout.cancel() }
         for request in historyRequests.values { request.timeout.cancel() }
     }
 
-    private func disconnect() {
+    private func disconnect(reconnect: Bool = true) {
         let unavailable = Set(owners.keys)
         connectionID = nil
         connection?.cancel()
@@ -249,6 +287,55 @@ public final class CodexRuntimeStatusMonitor {
         pending.removeAll()
         reportUnavailable(unavailable)
         finishHistoryRequests(sessions: Set(historyRequests.values.map(\.sessionID)))
+        if reconnect { scheduleReconnect() }
+        updateConnectionState()
+    }
+
+    private func cancelReconnect() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectID = nil
+    }
+
+    private func scheduleReconnect() {
+        guard running, !sessions.isEmpty, connection == nil, reconnectTask == nil else { return }
+        guard reconnectAttempt < reconnectDelays.count else {
+            updateConnectionState()
+            return
+        }
+        let delay = reconnectDelays[reconnectAttempt]
+        reconnectAttempt += 1
+        let retryID = UUID()
+        reconnectID = retryID
+        reconnectTask = Task { [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard let self, !Task.isCancelled, running, !sessions.isEmpty, reconnectID == retryID else { return }
+            reconnectTask = nil
+            reconnectID = nil
+            connectToExistingSocket()
+        }
+        updateConnectionState()
+    }
+
+    private func updateConnectionState() {
+        if !running || sessions.isEmpty {
+            connectionState = .idle
+        } else if unavailableReasons.values.contains(where: {
+            if case .unsupportedProtocol = $0 { return true }
+            return false
+        }) {
+            connectionState = .incompatible
+        } else if reconnectTask != nil {
+            connectionState = .retrying(attempt: reconnectAttempt)
+        } else if clientID != nil {
+            connectionState = .connected
+        } else if connection != nil {
+            connectionState = .connecting
+        } else if reconnectAttempt >= reconnectDelays.count {
+            connectionState = .exhausted
+        } else {
+            connectionState = .connecting
+        }
     }
 
     private func reportUnavailable(
@@ -265,6 +352,7 @@ public final class CodexRuntimeStatusMonitor {
             if sessions.contains(sessionID) { unavailableReasons[sessionID] = effective }
             update[sessionID] = effective
         }
+        updateConnectionState()
         if !update.isEmpty { onUnavailable?(update) }
     }
 
@@ -297,15 +385,19 @@ public final class CodexRuntimeStatusMonitor {
     }
 
     private func connectToExistingSocket() {
-        guard running, !sessions.isEmpty, connection == nil else { return }
+        guard running, !sessions.isEmpty, connection == nil, reconnectTask == nil else { return }
         guard let endpoint = socketPaths.compactMap({ path in
             secureSocket(at: path).map { (path, $0) }
-        }).first else { return }
+        }).first else {
+            scheduleReconnect()
+            return
+        }
         let connectionID = UUID()
         let connection = NWConnection(to: .unix(path: endpoint.0), using: .tcp)
         self.connectionID = connectionID
         self.connection = connection
         connectedSocket = endpoint
+        updateConnectionState()
         connection.stateUpdateHandler = { [weak self] state in
             Task { @MainActor [weak self] in
                 guard let self, self.connectionID == connectionID else { return }
@@ -387,6 +479,7 @@ public final class CodexRuntimeStatusMonitor {
             } else if envelope.resultType == "success", envelope.method == "initialize",
                       let clientID = envelope.result?.clientId, !clientID.isEmpty {
                 self.clientID = clientID
+                updateConnectionState()
                 discoverMissingSessions()
             } else {
                 disconnect()
@@ -423,6 +516,8 @@ public final class CodexRuntimeStatusMonitor {
             return
         }
         unavailableReasons.removeValue(forKey: sessionID)
+        reconnectAttempt = 0
+        updateConnectionState()
         onChange?(frame)
     }
 
@@ -503,7 +598,10 @@ public final class CodexRuntimeStatusMonitor {
                     if let socket = self.connectedSocket, self.secureSocket(at: socket.path) != socket.identity {
                         self.disconnect()
                     }
-                    if self.connection == nil { self.connectToExistingSocket() }
+                    if self.connection == nil, self.reconnectTask == nil {
+                        self.reconnectAttempt = 0
+                        self.connectToExistingSocket()
+                    }
                 }
             }
             source.setCancelHandler { close(descriptor) }

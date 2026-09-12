@@ -27,15 +27,21 @@ trap 'cleanup; exit 143' TERM
 /bin/mkdir -p \
     "$staged_bundle/Contents/MacOS" \
     "$staged_bundle/Contents/Helpers" \
-    "$staged_bundle/Contents/Resources"
+    "$staged_bundle/Contents/Resources/HookSetup"
 /bin/cp "$repo_root/Resources/Info.plist" "$staged_bundle/Contents/Info.plist"
 /bin/cp "$release_bin/CodexBar" "$staged_bundle/Contents/MacOS/CodexBar"
 /bin/cp "$release_bin/codexbar-hook" "$staged_bundle/Contents/Helpers/codexbar-hook"
+/bin/cp "$repo_root/Resources/InstallHooks.command" "$staged_bundle/Contents/Resources/HookSetup/Install.command"
+for hook_setup_script in install-hooks hook-config-common.zsh hooks-config.js; do
+    /bin/cp "$script_dir/$hook_setup_script" "$staged_bundle/Contents/Resources/HookSetup/$hook_setup_script"
+done
 /bin/chmod 755 \
     "$staged_bundle/Contents/MacOS/CodexBar" \
-    "$staged_bundle/Contents/Helpers/codexbar-hook"
+    "$staged_bundle/Contents/Helpers/codexbar-hook" \
+    "$staged_bundle/Contents/Resources/HookSetup/Install.command"
 /usr/bin/plutil -lint "$staged_bundle/Contents/Info.plist" >/dev/null
-/usr/bin/codesign --force --deep --sign - "$staged_bundle" >/dev/null
+/usr/bin/codesign --force --sign - "$staged_bundle/Contents/Helpers/codexbar-hook" >/dev/null
+/usr/bin/codesign --force --sign - "$staged_bundle" >/dev/null
 /usr/bin/codesign --verify --deep --strict "$staged_bundle"
 
 if [[ -e "$bundle" ]]; then

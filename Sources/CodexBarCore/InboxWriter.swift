@@ -6,10 +6,20 @@ public struct InboxWriter {
 
     private let paths: CodexBarPaths
     private let fileManager: FileManager
+    private let retentionPolicy: CodexInboxRetentionPolicy
 
     public init(paths: CodexBarPaths = CodexBarPaths(), fileManager: FileManager = .default) {
+        self.init(paths: paths, fileManager: fileManager, retentionPolicy: .standard)
+    }
+
+    package init(
+        paths: CodexBarPaths,
+        fileManager: FileManager = .default,
+        retentionPolicy: CodexInboxRetentionPolicy
+    ) {
         self.paths = paths
         self.fileManager = fileManager
+        self.retentionPolicy = retentionPolicy
     }
 
     @discardableResult
@@ -44,9 +54,23 @@ public struct InboxWriter {
             [.posixPermissions: NSNumber(value: 0o600)],
             ofItemAtPath: temporaryURL.path
         )
+        // Publication must not wait for another process to finish maintenance.
         try fileManager.moveItem(at: temporaryURL, to: finalURL)
         if isTransientActivity {
             trimPendingActivity(preserving: finalURL)
+        } else {
+            let retention = CodexInboxRetention(paths: paths, fileManager: fileManager, policy: retentionPolicy)
+            do {
+                try retention.withLock {
+                    let urls = try fileManager.contentsOfDirectory(at: paths.inbox, includingPropertiesForKeys: nil)
+                        .filter { !$0.lastPathComponent.hasPrefix(".") && $0.pathExtension.lowercased() == "json" }
+                        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+                    _ = try retention.retain(urls)
+                }
+            } catch CodexInboxRetentionError.lockBusy {
+                // The next writer or reader retries retention. Keep the published
+                // lifecycle event even if this briefly exceeds the queue budget.
+            }
         }
         return finalURL
     }

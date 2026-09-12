@@ -40,6 +40,8 @@ enum PanelPlacement { case topLeft, topRight, bottomLeft, bottomRight }
     let isRecoveringOpenTasks = false
     let hasNoOpenWindows = false
     let notice: PanelNotice? = nil
+    let connectionStatusMessage = "演示连接 · 虚构数据"
+    let inboxHealth = CodexInboxHealth(pendingCount: 0, discardedCount: 0)
     var onActivate: () -> Void = {}
     var visibleTasks: [CodexTask] { store.tasks }
     var visibleSortedTasks: [CodexTask] { store.tasks }
@@ -52,6 +54,8 @@ enum PanelPlacement { case topLeft, topRight, bottomLeft, bottomRight }
     func setPanelDisplayMode(_ mode: CodexBarPanelDisplayMode) { panelDisplayMode = mode }
     func placePanel(_ placement: PanelPlacement) {}
     func openAccessibilitySettings() {}
+    func openConnectionGuide() {}
+    func installTaskConnection() {}
     func requestAccessibilityPermission() {}
     func dismissNotice() {}
     func quit() {}

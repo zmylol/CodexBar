@@ -93,6 +93,20 @@ struct TaskListView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             Menu {
+                Menu("连接与设置") {
+                    Text(model.connectionStatusMessage)
+                    Text("待处理事件：\(model.inboxHealth.pendingCount)")
+                    if model.inboxHealth.discardedCount > 0 {
+                        Text("历史积压累计裁剪：\(model.inboxHealth.discardedCount)")
+                    }
+                    Divider()
+                    Button("安装或更新任务连接…", action: model.installTaskConnection)
+                        .help("在终端合并 Codex Hook 配置；随后需要在 Codex 中审核")
+                    Button("刷新连接与任务", action: model.refreshOpenTasks)
+                        .disabled(model.isRecoveringOpenTasks)
+                    Button("连接指南", action: model.openConnectionGuide)
+                    Button("辅助功能设置", action: model.openAccessibilitySettings)
+                }
                 Button("知识库…", action: onKnowledgeRequested)
                 Button(model.isRecoveringOpenTasks ? "正在刷新任务…" : "刷新 VS Code 任务", action: model.refreshOpenTasks)
                     .disabled(model.isRecoveringOpenTasks)

@@ -11,6 +11,8 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     ) ?? .scrolling
     @Published private var taskVisibility = VSCodeTaskVisibility()
     @Published private(set) var isRecoveringOpenTasks = false
+    @Published private(set) var runtimeConnectionState = CodexRuntimeConnectionState.idle
+    @Published private(set) var inboxHealth = CodexInboxHealth(pendingCount: 0, discardedCount: 0)
     @Published private(set) var notice: PanelNotice? {
         didSet {
             guard notice != oldValue else {
@@ -28,6 +30,18 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     var visibleTasks: [CodexTask] { taskVisibility.visibleTasks(in: store.tasks) }
     var visibleSortedTasks: [CodexTask] { taskVisibility.visibleTasks(in: store.sortedTasks) }
     var hasNoOpenWindows: Bool { taskVisibility.hasNoOpenWindows }
+    var connectionStatusMessage: String {
+        guard AccessibilityAuthorization.isTrusted else { return "需要辅助功能授权" }
+        if hasNoOpenWindows { return "未打开 VS Code 窗口" }
+        switch runtimeConnectionState {
+        case .idle: return "等待 VS Code 中的 Codex 任务"
+        case .connecting: return "正在连接 Codex…"
+        case .connected: return "已连接 Codex"
+        case .retrying(let attempt): return "正在重新连接 Codex（第 \(attempt) 次）…"
+        case .exhausted: return "连接暂不可用，请刷新重试"
+        case .incompatible: return "Codex 扩展暂不兼容实时连接"
+        }
+    }
     var onPresentationChanged: ((Int, Bool, Bool) -> Void)?
     var onPanelPlacementRequested: ((PanelPlacement) -> Void)?
     var onAnnouncementRequested: ((String, Bool) -> Void)?
@@ -39,16 +53,11 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     private let windowMonitor: VSCodeWindowMonitor
     private let runtimeMonitor = CodexRuntimeStatusMonitor()
     private lazy var previewCoordinator = ConversationPreviewCoordinator(store: previewStore, monitor: runtimeMonitor)
-    private var runtimeProjection = RuntimeStatusProjectionWorker()
+    private lazy var runtimeEvents = makeRuntimeEventCoordinator()
     private var knowledgeWorker = KnowledgeReviewWorker()
     private var knowledgeSynchronizationTask: Task<Void, Never>?
     private var knowledgeSessions: [String: String] = [:]
     private var knowledgeSynchronizationID: UUID?
-    private var runtimeStates: [String: CodexRuntimeStatusUpdate] = [:]
-    private var runtimeEvents: [RuntimeStatusEvent] = []
-    private var runtimeEventBytes = 0
-    private var runtimeProcessingTask: Task<Void, Never>?
-    private var runtimeProcessingID: UUID?
     private let oldTaskCleanupWorker = OldTaskCleanupWorker()
     private var isStarted = false
     private var inboxNeedsProcessing = false
@@ -71,6 +80,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     private var windowEventGeneration: UInt64 = 0
     private var needsWindowRecovery = false
     private var pendingRefreshCompletion = false
+    private var reportedDiscardedEvents = 0
 
     init(
         store: TaskStore,
@@ -99,11 +109,25 @@ final class CodexBarAppModel: NSObject, ObservableObject {
             showNotice(message: "任务状态文件损坏，已隔离并重建。")
         }
         startInboxMonitoring()
+        runtimeEvents.start()
+        runtimeMonitor.onConnectionStateChange = { [weak self] state in
+            guard let self, isStarted else { return }
+            runtimeConnectionState = state
+            if state == .exhausted {
+                showNotice(message: "Codex 连接暂不可用，请确认 VS Code 已打开，再从菜单刷新任务。")
+            } else if state == .incompatible {
+                showNotice(message: "Codex 扩展暂不兼容实时连接，请从菜单打开连接指南。")
+            } else if state == .connected,
+                      notice?.message == "Codex 连接暂不可用，请确认 VS Code 已打开，再从菜单刷新任务。"
+                        || notice?.message == "Codex 扩展暂不兼容实时连接，请从菜单打开连接指南。" {
+                notice = nil
+            }
+        }
         runtimeMonitor.start(onChange: { [weak self] data in
             guard let self else { return }
-            enqueueRuntimeEvent(.frame(data, previewCoordinator.generation))
+            runtimeEvents.enqueue(.frame(data, previewCoordinator.generation))
         }, onUnavailable: { [weak self] sessions in
-            self?.enqueueRuntimeEvent(.unavailable(sessions))
+            self?.runtimeEvents.enqueue(.unavailable(sessions))
         })
         synchronizeRuntimeSessions()
         windowMonitor.onStatusChange = { [weak self] status in
@@ -136,14 +160,10 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         isStarted = false
         knowledgeLibrary.stop()
         endConversationPreview()
+        runtimeMonitor.onConnectionStateChange = nil
         runtimeMonitor.stop()
-        runtimeProcessingTask?.cancel()
-        runtimeProcessingTask = nil
-        runtimeProcessingID = nil
-        runtimeEvents.removeAll()
-        runtimeEventBytes = 0
-        runtimeStates.removeAll()
-        runtimeProjection = RuntimeStatusProjectionWorker()
+        runtimeConnectionState = .idle
+        runtimeEvents.stop()
         knowledgeSynchronizationTask?.cancel()
         knowledgeSynchronizationTask = nil
         knowledgeSynchronizationID = nil
@@ -284,6 +304,22 @@ final class CodexBarAppModel: NSObject, ObservableObject {
             accessibilityRecoveryTrigger.waitForGrant(reportCompletion: false)
         }
         NSWorkspace.shared.open(url)
+    }
+
+    func openConnectionGuide() {
+        guard let url = URL(string: "https://github.com/zmylol/CodexBar/blob/main/docs/USER_GUIDE.md#连接状态与排查") else { return }
+        if !NSWorkspace.shared.open(url) { showNotice(message: "无法打开连接指南，请在项目 README 查看使用指南。") }
+    }
+
+    func installTaskConnection() {
+        guard let command = Bundle.main.resourceURL?.appendingPathComponent("HookSetup/Install.command"),
+              FileManager.default.isExecutableFile(atPath: command.path) else {
+            showNotice(message: "当前运行方式没有安装助手，请使用已安装的 CodexBar.app 或按连接指南安装。")
+            return
+        }
+        if !NSWorkspace.shared.open(command) {
+            showNotice(message: "无法打开安装助手，请查看连接指南。")
+        }
     }
 
     func remove(_ task: CodexTask) {
@@ -565,104 +601,58 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         previewCoordinator.loadHistory()
     }
 
-    private func enqueueRuntimeEvent(_ event: RuntimeStatusEvent) {
-        guard isStarted else { return }
-        if case .frame(let data, _) = event {
-            // Bound transient snapshots while the projection worker is busy.
-            guard runtimeEventBytes + data.count <= 64 * 1024 * 1024,
-                  runtimeEvents.count < 128 else {
-                runtimeProcessingTask?.cancel()
-                runtimeProcessingTask = nil
-                runtimeProcessingID = nil
-                runtimeEvents.removeAll()
-                runtimeEventBytes = 0
-                runtimeStates.removeAll()
-                runtimeProjection = RuntimeStatusProjectionWorker()
-                previewCoordinator.invalidate()
-                let worker = knowledgeWorker
-                Task { [weak self] in
-                    guard let self else { return }
-                    let update = await worker.unavailable(Set(knowledgeSessions.keys))
-                    guard isStarted, knowledgeWorker === worker else { return }
-                    applyKnowledgeReview(update)
-                }
-                runtimeMonitor.refresh()
-                return
-            }
-            runtimeEventBytes += data.count
-        } else if case .reconcile = event,
-                  runtimeEvents.contains(where: { if case .reconcile = $0 { return true }; return false }) {
-            return
+    private func makeRuntimeEventCoordinator() -> RuntimeEventCoordinator {
+        let coordinator = RuntimeEventCoordinator()
+        coordinator.onSnapshotNeeded = { [weak self] session in
+            self?.runtimeMonitor.requestSnapshot(sessionID: session)
         }
-        runtimeEvents.append(event)
-        guard runtimeProcessingTask == nil else { return }
-        let processingID = UUID()
-        runtimeProcessingID = processingID
-        let projection = runtimeProjection
-        runtimeProcessingTask = Task { [weak self] in
+        coordinator.onUpdates = { [weak self] updates in
             guard let self else { return }
-            defer {
-                if runtimeProcessingID == processingID {
-                    runtimeProcessingID = nil
-                    runtimeProcessingTask = nil
-                }
-            }
-            while !runtimeEvents.isEmpty {
-                let event = runtimeEvents.removeFirst()
-                var updatesToApply: [CodexRuntimeStatusUpdate] = []
-                switch event {
-                case .frame(let data, let previewToken):
-                    runtimeEventBytes -= data.count
-                    let result = await projection.consume(data)
-                    guard !Task.isCancelled, runtimeProcessingID == processingID else { return }
-                    if let sessionID = result.invalidatedSessionID {
-                        runtimeStates.removeValue(forKey: sessionID)
-                    }
-                    if let sessionID = result.resnapshotSessionID {
-                        runtimeStates.removeValue(forKey: sessionID)
-                        runtimeMonitor.requestSnapshot(sessionID: sessionID)
-                    }
-                    if let update = result.update {
-                        runtimeStates[update.sessionID] = update
-                        updatesToApply = [update]
-                    }
-                    if let sessionID = result.sessionID, knowledgeStore.reviews[sessionID] != nil {
-                        let knowledge = knowledgeWorker
-                        let knowledgeUpdate = await knowledge.consume(data)
-                        guard !Task.isCancelled, runtimeProcessingID == processingID else { return }
-                        if knowledgeWorker === knowledge { applyKnowledgeReview(knowledgeUpdate) }
-                    }
-                    await previewCoordinator.consume(data, sessionID: result.sessionID, generation: previewToken)
-                    guard !Task.isCancelled, runtimeProcessingID == processingID else { return }
-                case .unavailable(let reasons):
-                    let sessions = Set(reasons.keys)
-                    for sessionID in sessions { runtimeStates.removeValue(forKey: sessionID) }
-                    await projection.reset(sessions: sessions)
-                    let knowledge = knowledgeWorker
-                    let knowledgeUpdate = await knowledge.unavailable(sessions)
-                    guard !Task.isCancelled, runtimeProcessingID == processingID else { return }
-                    if knowledgeWorker === knowledge { applyKnowledgeReview(knowledgeUpdate) }
-                    if let target = previewCoordinator.target, let reason = reasons[target.sessionID] {
-                        previewCoordinator.invalidate(reason: reason)
-                    }
-                case .reconcile:
-                    updatesToApply = Array(runtimeStates.values)
-                }
-                let visibleSessions = Set(visibleTasks.map(\.sessionID))
-                for update in updatesToApply where visibleSessions.contains(update.sessionID) {
-                    guard let turnID = update.turnID, let cwd = update.cwd else { continue }
-                    do {
-                        let changed = try await store.applyRuntimeStatus(
-                            sessionID: update.sessionID, turnID: turnID, cwd: cwd, status: update.status
-                        )
-                        guard !Task.isCancelled, runtimeProcessingID == processingID else { return }
-                        if changed { notifyPresentationChanged(animated: true) }
-                    } catch {
-                        showNotice(message: "无法保存实时任务状态，请点击刷新重试。")
-                    }
+            for update in updates where visibleTasks.contains(where: { $0.sessionID == update.sessionID }) {
+                guard let turnID = update.turnID, let cwd = update.cwd else { continue }
+                do {
+                    let changed = try await store.applyRuntimeStatus(
+                        sessionID: update.sessionID, turnID: turnID, cwd: cwd, status: update.status
+                    )
+                    guard !Task.isCancelled, isStarted else { return }
+                    if changed { notifyPresentationChanged(animated: true) }
+                } catch {
+                    guard !Task.isCancelled, isStarted else { return }
+                    showNotice(message: "无法保存实时任务状态，请点击刷新重试。")
                 }
             }
         }
+        coordinator.onFrame = { [weak self] data, session, generation in
+            guard let self else { return }
+            if let session, knowledgeStore.reviews[session] != nil {
+                let worker = knowledgeWorker
+                let update = await worker.consume(data)
+                guard !Task.isCancelled, isStarted else { return }
+                if knowledgeWorker === worker { applyKnowledgeReview(update) }
+            }
+            await previewCoordinator.consume(data, sessionID: session, generation: generation)
+        }
+        coordinator.onUnavailable = { [weak self] reasons in
+            guard let self else { return }
+            let worker = knowledgeWorker
+            let update = await worker.unavailable(Set(reasons.keys))
+            guard !Task.isCancelled, isStarted else { return }
+            if knowledgeWorker === worker { applyKnowledgeReview(update) }
+            if let target = previewCoordinator.target, let reason = reasons[target.sessionID] {
+                previewCoordinator.invalidate(reason: reason)
+            }
+        }
+        coordinator.onOverflow = { [weak self] in
+            guard let self else { return }
+            previewCoordinator.invalidate()
+            // Serialize invalidation ahead of the replacement snapshots.
+            runtimeEvents.enqueue(.unavailable(Dictionary(
+                knowledgeSessions.keys.map { ($0, CodexRuntimeUnavailableReason.connectionUnavailable) },
+                uniquingKeysWith: { first, _ in first }
+            )))
+            runtimeMonitor.refresh()
+        }
+        return coordinator
     }
 
     private func processInbox() {
@@ -688,6 +678,9 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                     inboxNeedsProcessing = false
                     let count = try await processor.processPending()
                     guard !Task.isCancelled, inboxProcessingID == processingID else { return }
+                    let health = try await processor.inboxHealth()
+                    guard !Task.isCancelled, inboxProcessingID == processingID else { return }
+                    if inboxHealth != health { inboxHealth = health }
                     processedCount += count
                     if count > 0 {
                         inboxNeedsProcessing = true
@@ -724,7 +717,12 @@ final class CodexBarAppModel: NSObject, ObservableObject {
             }
             synchronizeRuntimeSessions()
             runtimeMonitor.retryDiscovery()
-            enqueueRuntimeEvent(.reconcile)
+            runtimeEvents.enqueue(.reconcile)
+            if inboxHealth.discardedCount > reportedDiscardedEvents {
+                reportedDiscardedEvents = inboxHealth.discardedCount
+                showNotice(message: "积压事件已按保留期限和容量裁剪；正在重新核对当前任务，旧进展可能不完整。")
+                recoverStartupTasks(reportCompletion: false)
+            }
             guard processedCount > 0 else {
                 return
             }
@@ -854,7 +852,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                     return
                 }
                 synchronizeRuntimeSessions()
-                enqueueRuntimeEvent(.reconcile)
+                runtimeEvents.enqueue(.reconcile)
                 let currentTasks = visibleTasks
                 let changedCount = Set(
                     priorVisibleTasks.filter { !currentTasks.contains($0) }.map(\.id)
@@ -940,24 +938,6 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         synchronizeRuntimeSessions()
         activityStore.synchronize(with: store.tasks)
         onPresentationChanged?(visibleTasks.count, notice != nil, animated)
-    }
-}
-
-private enum RuntimeStatusEvent {
-    case frame(Data, UUID?)
-    case unavailable([String: CodexRuntimeUnavailableReason])
-    case reconcile
-}
-
-private actor RuntimeStatusProjectionWorker {
-    private var reducer = CodexRuntimeStatusReducer()
-
-    func consume(_ data: Data) -> CodexRuntimeStatusResult {
-        reducer.consume(data)
-    }
-
-    func reset(sessions: Set<String>) {
-        for sessionID in sessions { reducer.reset(sessionID: sessionID) }
     }
 }
 

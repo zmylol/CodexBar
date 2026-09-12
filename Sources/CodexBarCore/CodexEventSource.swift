@@ -20,9 +20,14 @@ public protocol CodexEventSource: Sendable {
     func pendingEvents() throws -> [PendingCodexEvent]
     func markProcessed(_ pendingEvent: PendingCodexEvent) throws
     func markProcessed(_ pendingEvents: [PendingCodexEvent]) throws
+    func inboxHealth() throws -> CodexInboxHealth
 }
 
 public extension CodexEventSource {
+    func inboxHealth() throws -> CodexInboxHealth {
+        CodexInboxHealth(pendingCount: 0, discardedCount: 0)
+    }
+
     func markProcessed(_ pendingEvents: [PendingCodexEvent]) throws {
         for pendingEvent in pendingEvents {
             try markProcessed(pendingEvent)
@@ -38,11 +43,28 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
     private static let archiveRetentionSweepInterval: TimeInterval = 60 * 60
     private let paths: CodexBarPaths
     private let fileManager: FileManager
+    private let retentionPolicy: CodexInboxRetentionPolicy
+    private let inboxSnapshot = InboxSnapshot()
     private let archiveRetentionSchedule = ArchiveRetentionSchedule()
 
     public init(paths: CodexBarPaths = CodexBarPaths(), fileManager: FileManager = .default) {
+        self.init(paths: paths, fileManager: fileManager, retentionPolicy: .standard)
+    }
+
+    package init(
+        paths: CodexBarPaths,
+        fileManager: FileManager = .default,
+        retentionPolicy: CodexInboxRetentionPolicy
+    ) {
         self.paths = paths
         self.fileManager = fileManager
+        self.retentionPolicy = retentionPolicy
+    }
+
+    public func inboxHealth() throws -> CodexInboxHealth {
+        let retention = CodexInboxRetention(paths: paths, fileManager: fileManager, policy: retentionPolicy)
+        let discardedCount = try retention.withLock { try retention.discardedCount() }
+        return CodexInboxHealth(pendingCount: inboxSnapshot.urls.count, discardedCount: discardedCount)
     }
 
     public func pendingEvents() throws -> [PendingCodexEvent] {
@@ -70,10 +92,21 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
             )
         }
 
-        // Snapshot activity first so a prompt and its first action cannot arrive
-        // between the two directory reads and let the action overtake the prompt.
-        let queuedActivityEvents = try candidateURLs(in: paths.activity)
-        let queuedLifecycleEvents = try candidateURLs(in: paths.inbox)
+        // Drain one sorted lifecycle snapshot before rescanning. Fresh activity must
+        // wait for a fresh Inbox snapshot so it cannot overtake an unscanned prompt.
+        let cachedLifecycleEvents = inboxSnapshot.urls
+        let queuedActivityEvents: [URL]
+        let queuedLifecycleEvents: [URL]
+        if cachedLifecycleEvents.isEmpty {
+            queuedActivityEvents = try candidateURLs(in: paths.activity)
+            let candidates = try candidateURLs(in: paths.inbox)
+            let retention = CodexInboxRetention(paths: paths, fileManager: fileManager, policy: retentionPolicy)
+            queuedLifecycleEvents = try retention.withLock { try retention.retain(candidates) }
+            inboxSnapshot.replace(with: queuedLifecycleEvents, activity: queuedActivityEvents)
+        } else {
+            queuedActivityEvents = inboxSnapshot.activityURLs
+            queuedLifecycleEvents = cachedLifecycleEvents
+        }
         let lifecycleCandidates = Array(
             queuedLifecycleEvents.prefix(Self.maximumEventsPerPoll)
         )
@@ -112,19 +145,23 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
                 }
                 do {
                     try fileManager.removeItem(at: url)
+                    inboxSnapshot.remove(url)
                 } catch {
                     if isMissingFileError(error) {
+                        inboxSnapshot.remove(url)
                         continue
                     }
                     throw error
                 }
             } catch {
                 if isMissingFileError(error) || !fileManager.fileExists(atPath: url.path) {
+                    inboxSnapshot.remove(url)
                     continue
                 }
                 if transientActivityCandidates.contains(url) {
                     do {
                         try fileManager.removeItem(at: url)
+                        inboxSnapshot.remove(url)
                     } catch {
                         if isMissingFileError(error) {
                             continue
@@ -139,8 +176,10 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
                 )
                 do {
                     try fileManager.moveItem(at: url, to: destination)
+                    inboxSnapshot.remove(url)
                 } catch {
                     if isMissingFileError(error) {
+                        inboxSnapshot.remove(url)
                         continue
                     }
                     throw error
@@ -154,6 +193,9 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
                 preserving: quarantinedURLs,
                 fileManager: fileManager
             )
+        }
+        if pendingEvents.isEmpty, !inboxSnapshot.urls.isEmpty {
+            return try self.pendingEvents()
         }
         return pendingEvents
     }
@@ -213,6 +255,11 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
             return
         }
         try paths.prepareEventDirectories(fileManager: fileManager)
+        let retention = CodexInboxRetention(paths: paths, fileManager: fileManager, policy: retentionPolicy)
+        try retention.withLock { try archiveProcessed(pendingEvents) }
+    }
+
+    private func archiveProcessed(_ pendingEvents: [PendingCodexEvent]) throws {
         var destinations: Set<URL> = []
         for pendingEvent in pendingEvents {
             if pendingEvent.event.name == .preToolUse || pendingEvent.event.name == .postToolUse {
@@ -223,17 +270,27 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
                         throw error
                     }
                 }
+                inboxSnapshot.remove(pendingEvent.sourceURL)
                 continue
             }
             let destination = uniqueDestinationURL(
                 for: pendingEvent.sourceURL.lastPathComponent,
                 in: paths.processed
             )
-            if pendingEvent.event.toolExecution != nil {
-                try archiveWithoutExecutionMetadata(pendingEvent, to: destination)
-            } else {
-                try fileManager.moveItem(at: pendingEvent.sourceURL, to: destination)
+            do {
+                if pendingEvent.event.toolExecution != nil {
+                    try archiveWithoutExecutionMetadata(pendingEvent, to: destination)
+                } else {
+                    try fileManager.moveItem(at: pendingEvent.sourceURL, to: destination)
+                }
+            } catch {
+                if isMissingFileError(error) {
+                    inboxSnapshot.remove(pendingEvent.sourceURL)
+                    continue
+                }
+                throw error
             }
+            inboxSnapshot.remove(pendingEvent.sourceURL)
             destinations.insert(destination)
         }
         guard !destinations.isEmpty else {
@@ -300,6 +357,29 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
         let error = error as NSError
         return (error.domain == NSCocoaErrorDomain && error.code == NSFileNoSuchFileError)
             || (error.domain == NSPOSIXErrorDomain && error.code == 2)
+    }
+}
+
+private final class InboxSnapshot {
+    private let lock = NSLock()
+    private var storedURLs: [URL] = []
+    private var storedActivityURLs: [URL] = []
+
+    var urls: [URL] { lock.withLock { storedURLs } }
+    var activityURLs: [URL] { lock.withLock { storedActivityURLs } }
+
+    func replace(with urls: [URL], activity: [URL]) {
+        lock.withLock {
+            storedURLs = urls
+            storedActivityURLs = activity
+        }
+    }
+
+    func remove(_ url: URL) {
+        lock.withLock {
+            storedURLs.removeAll { $0 == url }
+            storedActivityURLs.removeAll { $0 == url }
+        }
     }
 }
 

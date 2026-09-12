@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "synthetic",
+  "source_sha256": "REPLACE_AFTER_TESTING_THE_CURRENT_SOURCE",
+  "tested_at": "2026-09-13T12:00:00+08:00",
+  "tester": "EXAMPLE ONLY — replace with the real tester",
+  "environments": [
+    {
+      "macos": "15.0",
+      "architecture": "arm64",
+      "vscode": "1.104.0",
+      "vscode_channel": "stable",
+      "codex_extension": "0.4.16",
+      "evidence": "EXAMPLE ONLY — record actual observations and a local evidence reference; never include secrets or conversation contents",
+      "scenarios": {
+        "app_launch": "not_run",
+        "hook_task_lifecycle": "not_run",
+        "approval_required": "not_run",
+        "approval_resume": "not_run",
+        "window_focus": "not_run",
+        "conversation_preview": "not_run",
+        "reconnect_same_socket": "not_run",
+        "history_loading": "not_run",
+        "knowledge_arrival": "not_run"
+      }
+    }
+  ]
+}
