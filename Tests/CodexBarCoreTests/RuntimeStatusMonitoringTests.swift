@@ -473,11 +473,12 @@ private final class RuntimeTestRouter {
                 }
                 send(["type": "response", "requestId": requestID, "resultType": "success", "method": "initialize",
                       "handledByClientId": "fixture-client", "result": ["clientId": "fixture-client"]])
+            } else if message["method"] as? String == "thread-owner-discovery" {
+                // This request proves the client consumed the successful handshake.
                 if closesAfterInitialization {
                     closeClient()
                     return
                 }
-            } else if message["method"] as? String == "thread-owner-discovery" {
                 if hasOwner {
                     send(["type": "response", "requestId": requestID, "resultType": "success", "method": "thread-owner-discovery",
                           "handledByClientId": "owner", "result": ["supportsUntrustedAppInput": true]])
