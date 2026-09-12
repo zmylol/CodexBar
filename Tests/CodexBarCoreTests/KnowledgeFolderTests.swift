@@ -175,6 +175,80 @@ func knowledgeFolderTestCases() -> [CodexBarTestCase] {
             let removed = try await tracker.capture()
             try expect(removed.articles.isEmpty && removed.changes.first?.kind == "delete", "deleted article remained in the inventory")
         },
+        CodexBarTestCase(name: "knowledge folder indexes new articles and their later changes when body cache is full") {
+            let root = try knowledgeFolderFixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            try fillFolderBodyCache(root)
+            let tracker = folderTracker(root)
+            _ = try await tracker.capture()
+            let path = "Today/Article.md"
+            let content = collectedArticle("今日新增", on: "2026-09-11") + "\n## 摘要\n第一版摘要。"
+            try writeFolderNote(content, at: path, root: root)
+            let added = try await tracker.capture()
+            try expect(added.articles.first?.title == "今日新增" && added.articles.first?.summary == "第一版摘要。",
+                       "full body cache hid a newly collected article or its summary")
+            try expect(added.changes.isEmpty && !added.warnings.isEmpty,
+                       "uncached article invented a body diff or lost its body-cache warning")
+            let repeated = try await tracker.capture()
+            try expect(repeated.articles == added.articles && repeated.changes.isEmpty && !repeated.warnings.isEmpty,
+                       "unchanged uncached article repeated events, disappeared, or lost its cache warning")
+            try writeFolderNote(content.replacingOccurrences(of: "第一版摘要", with: "第二版摘要"), at: path, root: root)
+            let updated = try await tracker.capture()
+            try expect(updated.articles.first?.summary == "第二版摘要。" && updated.changes.isEmpty,
+                       "uncached article kept a stale summary or invented a body diff")
+            try FileManager.default.moveItem(at: root.appendingPathComponent(path),
+                                            to: root.appendingPathComponent("Today/Renamed.md"))
+            let moved = try await tracker.capture()
+            try expect(moved.articles.map(\.path) == ["Today/Renamed.md"] && moved.changes.isEmpty,
+                       "uncached article rename left stale metadata or invented a body diff")
+            try FileManager.default.removeItem(at: root.appendingPathComponent("Today/Renamed.md"))
+            let deleted = try await tracker.capture()
+            try expect(deleted.articles.isEmpty && deleted.changes.isEmpty,
+                       "uncached article deletion remained in the article index or invented a body diff")
+        },
+        CodexBarTestCase(name: "knowledge folder refreshes growing articles beyond the body budget and restores deferred diffs") {
+            let root = try knowledgeFolderFixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let path = "Today/Article.md"
+            let original = collectedArticle("原始标题", on: "2026-09-11")
+            try fillFolderBodyCache(root, reserving: original.utf8.count)
+            try writeFolderNote(original, at: path, root: root)
+            let tracker = folderTracker(root)
+            _ = try await tracker.capture()
+            let revised = collectedArticle("更新标题", on: "2026-09-11") + "\n## 摘要\n增长后的正文仍应更新文章索引。"
+            try writeFolderNote(revised, at: path, root: root)
+            let grown = try await tracker.capture()
+            try expect(grown.articles.first?.title == "更新标题" && grown.articles.first?.summary == "增长后的正文仍应更新文章索引。"
+                       && grown.changes.isEmpty && !grown.warnings.isEmpty,
+                       "body budget preserved stale article metadata or silently exceeded its limit")
+            try FileManager.default.removeItem(at: root.appendingPathComponent("Archive/Note-0.md"))
+            let recovered = try await tracker.capture()
+            try expect(recovered.articles == grown.articles
+                       && recovered.changes.first { $0.path == path }?.diff?.contains("-# 原始标题") == true
+                       && recovered.changes.first { $0.path == path }?.diff?.contains("+# 更新标题") == true,
+                       "freed cache budget lost the last cached version of the deferred article edit")
+            let repeated = try await tracker.capture()
+            try expect(repeated.changes.isEmpty, "a recovered body cache repeated the same deferred edit")
+            try writeFolderNote(revised + "\n正文补充。", at: path, root: root)
+            let edited = try await tracker.capture()
+            try expect(edited.changes.count == 1 && edited.changes.first?.diff?.contains("+正文补充。") == true,
+                       "freed cache budget did not restore later full diff previews")
+        },
+        CodexBarTestCase(name: "knowledge folder bounds retained article titles and summaries independently of body content") {
+            let root = try knowledgeFolderFixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let title = String(repeating: "长标题", count: 1_000)
+            let summary = String(repeating: "文章摘要内容。", count: 1_000)
+            try writeFolderNote(collectedArticle(title, on: "2026-09-11") + "\n## 摘要\n" + summary,
+                                at: "Notes/Long.md", root: root)
+            let snapshot = try await folderTracker(root).capture()
+            let article = try require(snapshot.articles.first, "long metadata hid an otherwise valid article")
+            try expect(article.title.utf8.count <= 1_024 && article.title.hasPrefix("长标题") && article.title.hasSuffix("…"),
+                       "article index retained an unbounded title or damaged its Unicode text")
+            try expect((article.summary?.utf8.count ?? 0) <= 4 * 1_024
+                       && article.summary?.hasPrefix("文章摘要内容。") == true && article.summary?.hasSuffix("…") == true,
+                       "article index retained an unbounded summary or did not indicate truncation")
+        },
         CodexBarTestCase(name: "knowledge folder excludes templates indexes and invalid collection metadata") {
             let root = try knowledgeFolderFixture()
             defer { try? FileManager.default.removeItem(at: root) }
@@ -320,6 +394,59 @@ func knowledgeFolderTestCases() -> [CodexBarTestCase] {
             try FileManager.default.moveItem(at: movedRoot, to: root)
             let recovered = try await tracker.capture()
             try expect(recovered.noteCount == 1 && recovered.changes.isEmpty, "failed capture damaged the baseline")
+        },
+        CodexBarTestCase(name: "knowledge folder rebaselines a replaced root without reporting deleted notes") {
+            let root = try knowledgeFolderFixture()
+            let movedRoot = root.appendingPathExtension("moved")
+            defer {
+                try? FileManager.default.removeItem(at: root)
+                try? FileManager.default.removeItem(at: movedRoot)
+            }
+            try writeFolderNote(collectedArticle("原目录文章", on: "2026-09-11"), at: "Original/Note.md", root: root)
+            let tracker = folderTracker(root)
+            _ = try await tracker.capture()
+            try FileManager.default.moveItem(at: root, to: movedRoot)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let replaced = try await tracker.capture()
+            try expect(replaced.noteCount == 0 && replaced.changes.isEmpty
+                       && replaced.articles.isEmpty && replaced.sections.isEmpty,
+                       "replacement root inherited old articles, sections, or reported their deletion")
+            try expect(replaced.warnings.contains { $0.contains("文件夹已替换") },
+                       "root identity change silently reset the baseline")
+            try writeFolderNote(collectedArticle("新目录文章", on: "2026-09-11"), at: "New/Note.md", root: root)
+            let added = try await tracker.capture()
+            try expect(added.changes.count == 1 && added.changes.first?.kind == "add"
+                       && added.articles.first?.title == "新目录文章" && added.warnings.isEmpty,
+                       "replacement root failed to track later changes or repeated its replacement warning")
+        },
+        CodexBarTestCase(name: "knowledge folder preserves the original root baseline when a replacement scan fails") {
+            let root = try knowledgeFolderFixture()
+            let movedRoot = root.appendingPathExtension("moved")
+            let unreadable = root.appendingPathComponent("Unreadable")
+            defer {
+                try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: unreadable.path)
+                try? FileManager.default.removeItem(at: root)
+                try? FileManager.default.removeItem(at: movedRoot)
+            }
+            let original = collectedArticle("原目录文章", on: "2026-09-11")
+            try writeFolderNote(original, at: "Original/Note.md", root: root)
+            let tracker = folderTracker(root)
+            let baseline = try await tracker.capture()
+            try FileManager.default.moveItem(at: root, to: movedRoot)
+            try FileManager.default.createDirectory(at: unreadable, withIntermediateDirectories: true)
+            try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: unreadable.path)
+            var rejected = false
+            do { _ = try await tracker.capture() } catch { rejected = true }
+            try expect(rejected, "unreadable replacement root was accepted as a new baseline")
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: unreadable.path)
+            try FileManager.default.removeItem(at: root)
+            try FileManager.default.moveItem(at: movedRoot, to: root)
+            try writeFolderNote(original + "\n原目录的新内容。", at: "Original/Note.md", root: root)
+            let recovered = try await tracker.capture()
+            try expect(recovered.changes.count == 1 && recovered.changes.first?.kind == "update"
+                       && recovered.changes.first?.diff?.contains("+原目录的新内容。") == true
+                       && recovered.articles == baseline.articles && recovered.warnings.isEmpty,
+                       "failed replacement scan discarded or relabeled the original baseline")
         },
         CodexBarTestCase(name: "knowledge folder reports oversized notes without false deletion and recovers later") {
             let root = try knowledgeFolderFixture()
@@ -530,6 +657,15 @@ private func writeFolderNote(_ text: String, at path: String, root: URL) throws 
     let url = root.appendingPathComponent(path)
     try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
     try Data(text.utf8).write(to: url)
+}
+
+private func fillFolderBodyCache(_ root: URL, reserving reservedBytes: Int = 0) throws {
+    let fullNoteCount = KnowledgeFolderTracker.maximumContentBytes / KnowledgeFolderTracker.maximumNoteBytes
+    let fullContent = String(repeating: "x", count: KnowledgeFolderTracker.maximumNoteBytes)
+    for index in 0..<fullNoteCount {
+        let content = index == fullNoteCount - 1 ? String(fullContent.dropLast(reservedBytes)) : fullContent
+        try writeFolderNote(content, at: "Archive/Note-\(index).md", root: root)
+    }
 }
 
 private func collectedArticle(_ title: String, on date: String) -> String {
