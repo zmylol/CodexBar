@@ -8,9 +8,11 @@ struct ConversationPreviewCoordinatorCheck {
         try await rejectsFramesFromPreviousSelection()
         try await rejectsFramesFromInvalidatedWorker()
         try await ignoresHistoryAfterDismissal()
+        try await synchronizesHistoryCompletionWithSnapshotRevision()
+        try await recoversFromSnapshotTimeout()
         try await retainsBodyOnDisconnect()
         try await preservesProtocolFailureUntilSupportedSnapshot()
-        print("PASS preview selection/worker isolation, late history, retained body, incompatible protocol, timeout and recovery")
+        print("PASS preview selection/worker isolation, late history, history revision synchronization, snapshot timeout recovery, retained body, incompatible protocol and recovery")
     }
 
     private static func rejectsFramesFromPreviousSelection() async throws {
@@ -63,6 +65,49 @@ struct ConversationPreviewCoordinatorCheck {
         precondition(monitor.snapshotRequests.count == requests, "Dismissed history callback requested another snapshot")
     }
 
+    private static func synchronizesHistoryCompletionWithSnapshotRevision() async throws {
+        let store = ConversationPreviewStore()
+        let monitor = PreviewMonitorFixture()
+        let coordinator = ConversationPreviewCoordinator(store: store, monitor: monitor)
+        coordinator.begin(sessionID: "a", cwd: "/tmp/a")
+        await coordinator.consume(try snapshot(session: "a"), sessionID: "a", generation: coordinator.generation)
+        coordinator.loadHistory()
+        let initialRequests = monitor.snapshotRequests.count
+        monitor.historyCompletion?(3)
+        precondition(store.isLoadingHistory, "History response finished before its snapshot arrived")
+        precondition(monitor.snapshotRequests.count == initialRequests + 1, "History completion did not request its missing snapshot")
+        await coordinator.consume(try snapshot(session: "a", revision: 2), sessionID: "a", generation: coordinator.generation)
+        precondition(store.isLoadingHistory && store.latestRevision == 2, "An older snapshot completed history prematurely")
+        await coordinator.consume(try snapshot(session: "a", revision: 3), sessionID: "a", generation: coordinator.generation)
+        precondition(!store.isLoadingHistory && store.latestRevision == 3, "Expected history revision left the spinner running")
+
+        coordinator.loadHistory()
+        let completedRequests = monitor.snapshotRequests.count
+        monitor.historyCompletion?(3)
+        precondition(!store.isLoadingHistory, "Already-received history revision did not finish immediately")
+        precondition(monitor.snapshotRequests.count == completedRequests, "Already-received history revision requested another snapshot")
+        coordinator.end()
+    }
+
+    private static func recoversFromSnapshotTimeout() async throws {
+        let store = ConversationPreviewStore()
+        let monitor = PreviewMonitorFixture()
+        let coordinator = ConversationPreviewCoordinator(store: store, monitor: monitor, snapshotTimeout: .milliseconds(20))
+        coordinator.begin(sessionID: "a", cwd: "/tmp/a")
+        try await waitUntil { store.state == .unavailable }
+        precondition(store.preview == nil && store.message?.contains("暂时无法读取最新会话") == true,
+                     "Missing snapshot left an unexplained loading state")
+        coordinator.refresh()
+        precondition(store.state == .loading && store.message == nil, "Retry did not leave the timed-out state")
+        precondition(monitor.snapshotRequests.last?.retryIncompatible == true, "Refresh did not request a fresh snapshot")
+        await coordinator.consume(try snapshot(session: "a"), sessionID: "a", generation: coordinator.generation)
+        precondition(store.state == .ready && store.preview?.items.first?.text == "fixture body" && store.message == nil,
+                     "Valid snapshot did not recover the timed-out preview")
+        try await Task.sleep(for: .milliseconds(60))
+        precondition(store.state == .ready && store.message == nil, "Completed snapshot left a stale timeout active")
+        coordinator.end()
+    }
+
     private static func retainsBodyOnDisconnect() async throws {
         let store = ConversationPreviewStore()
         let monitor = PreviewMonitorFixture()
@@ -105,7 +150,7 @@ struct ConversationPreviewCoordinatorCheck {
     }
 
     /// Synthetic v11 data; this check does not connect to an installed extension.
-    private static func snapshot(session: String) throws -> Data {
+    private static func snapshot(session: String, revision: Int = 1) throws -> Data {
         let item: [String: Any] = ["id": "fixture-item", "type": "agentMessage", "text": "fixture body"]
         let state: [String: Any] = [
             "id": session, "sessionId": session, "cwd": "/tmp/\(session)", "source": "vscode",
@@ -115,7 +160,7 @@ struct ConversationPreviewCoordinatorCheck {
         return try JSONSerialization.data(withJSONObject: [
             "type": "broadcast", "method": "thread-stream-state-changed", "version": 11, "sourceClientId": "fixture-owner",
             "params": ["hostId": "local", "conversationId": session,
-                       "change": ["type": "snapshot", "revision": 1, "conversationState": state]]
+                       "change": ["type": "snapshot", "revision": revision, "conversationState": state]]
         ])
     }
 
