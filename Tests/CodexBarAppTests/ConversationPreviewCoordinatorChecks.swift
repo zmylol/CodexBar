@@ -106,12 +106,16 @@ struct ConversationPreviewCoordinatorCheck {
 
     /// Synthetic v11 data; this check does not connect to an installed extension.
     private static func snapshot(session: String) throws -> Data {
-        try JSONSerialization.data(withJSONObject: [
+        let item: [String: Any] = ["id": "fixture-item", "type": "agentMessage", "text": "fixture body"]
+        let state: [String: Any] = [
+            "id": session, "sessionId": session, "cwd": "/tmp/\(session)", "source": "vscode",
+            "resumeState": "resumed", "turnsPagination": ["hasLoadedOldest": true],
+            "turns": [["turnId": "fixture-turn", "items": [item]]]
+        ]
+        return try JSONSerialization.data(withJSONObject: [
             "type": "broadcast", "method": "thread-stream-state-changed", "version": 11, "sourceClientId": "fixture-owner",
-            "params": ["hostId": "local", "conversationId": session, "change": ["type": "snapshot", "revision": 1,
-                "conversationState": ["id": session, "sessionId": session, "cwd": "/tmp/\(session)", "source": "vscode",
-                    "resumeState": "resumed", "turnsPagination": ["hasLoadedOldest": true],
-                    "turns": [["turnId": "fixture-turn", "items": [["id": "fixture-item", "type": "agentMessage", "text": "fixture body"]]]]]]
+            "params": ["hostId": "local", "conversationId": session,
+                       "change": ["type": "snapshot", "revision": 1, "conversationState": state]]
         ])
     }
 

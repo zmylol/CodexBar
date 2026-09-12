@@ -2,6 +2,11 @@ import Darwin
 import Foundation
 import Network
 
+public enum CodexRuntimeUnavailableReason: Equatable, Sendable {
+    case connectionUnavailable
+    case unsupportedProtocol(expected: Int, received: Int?)
+}
+
 /// Follows known local Codex threads. Frames are delivered transiently and never persisted.
 @MainActor
 public final class CodexRuntimeStatusMonitor {
@@ -77,6 +82,7 @@ public final class CodexRuntimeStatusMonitor {
     private var owners: [String: String] = [:]
     private var attemptedSessions: Set<String> = []
     private var incompatibleSessions: Set<String> = []
+    private var unavailableReasons: [String: CodexRuntimeUnavailableReason] = [:]
     private var pending: [String: PendingRequest] = [:]
     private var historyRequests: [String: HistoryRequest] = [:]
     private var connection: NWConnection?
@@ -86,7 +92,7 @@ public final class CodexRuntimeStatusMonitor {
     private var buffer = Data()
     private var running = false
     private var onChange: (@MainActor @Sendable (Data) -> Void)?
-    private var onUnavailable: (@MainActor @Sendable (Set<String>) -> Void)?
+    private var onUnavailable: (@MainActor @Sendable ([String: CodexRuntimeUnavailableReason]) -> Void)?
 
     public init(codexHome: URL? = nil, legacyDirectory: URL? = nil) {
         self.codexHome = codexHome ?? URL(fileURLWithPath:
@@ -100,13 +106,17 @@ public final class CodexRuntimeStatusMonitor {
 
     public func start(
         onChange: @escaping @MainActor @Sendable (Data) -> Void,
-        onUnavailable: @escaping @MainActor @Sendable (Set<String>) -> Void = { _ in }
+        onUnavailable: @escaping @MainActor @Sendable ([String: CodexRuntimeUnavailableReason]) -> Void = { _ in }
     ) {
         stop()
         running = true
         self.onChange = onChange
         self.onUnavailable = onUnavailable
         refresh()
+    }
+
+    public func unavailableReason(for sessionID: String) -> CodexRuntimeUnavailableReason? {
+        unavailableReasons[sessionID]
     }
 
     public func setSessions(_ sessions: Set<String>) {
@@ -124,7 +134,8 @@ public final class CodexRuntimeStatusMonitor {
         attemptedSessions.subtract(removed)
         incompatibleSessions.subtract(removed)
         self.sessions = sessions
-        if !removed.isEmpty { onUnavailable?(removed) }
+        for sessionID in removed { unavailableReasons.removeValue(forKey: sessionID) }
+        reportUnavailable(removed)
         guard running else { return }
         if sessions.isEmpty {
             disconnect()
@@ -168,13 +179,14 @@ public final class CodexRuntimeStatusMonitor {
         else { discoverMissingSessions() }
     }
 
-    public func requestSnapshot(sessionID: String) {
+    public func requestSnapshot(sessionID: String, retryIncompatible: Bool = false) {
         guard running, sessions.contains(sessionID) else { return }
+        if retryIncompatible { incompatibleSessions.remove(sessionID) }
         if let owner = owners[sessionID] {
             sendFollowing(sessionID, owner: owner, following: true)
         } else {
             attemptedSessions.remove(sessionID)
-            if connection == nil { refresh() } else { discoverMissingSessions() }
+            if connection == nil { retryDiscovery() } else { discoverMissingSessions() }
         }
     }
 
@@ -210,6 +222,7 @@ public final class CodexRuntimeStatusMonitor {
         }
         running = false
         disconnect()
+        unavailableReasons.removeAll()
         watches.removeAll()
         onChange = nil
         onUnavailable = nil
@@ -234,8 +247,25 @@ public final class CodexRuntimeStatusMonitor {
         incompatibleSessions.removeAll()
         for request in pending.values { request.timeout.cancel() }
         pending.removeAll()
+        reportUnavailable(unavailable)
         finishHistoryRequests(sessions: Set(historyRequests.values.map(\.sessionID)))
-        if !unavailable.isEmpty { onUnavailable?(unavailable) }
+    }
+
+    private func reportUnavailable(
+        _ sessionIDs: Set<String>, reason: CodexRuntimeUnavailableReason = .connectionUnavailable
+    ) {
+        var update: [String: CodexRuntimeUnavailableReason] = [:]
+        for sessionID in sessionIDs {
+            let effective: CodexRuntimeUnavailableReason
+            if reason == .connectionUnavailable, let previous = unavailableReasons[sessionID] {
+                effective = previous
+            } else {
+                effective = reason
+            }
+            if sessions.contains(sessionID) { unavailableReasons[sessionID] = effective }
+            update[sessionID] = effective
+        }
+        if !update.isEmpty { onUnavailable?(update) }
     }
 
     private func finishHistoryRequests(sessions: Set<String>) {
@@ -370,8 +400,8 @@ public final class CodexRuntimeStatusMonitor {
             if envelope.params?.status == "disconnected" {
                 let unavailable = Set(owners.filter { $0.value == peerID }.keys)
                 for sessionID in unavailable { owners.removeValue(forKey: sessionID) }
+                reportUnavailable(unavailable)
                 finishHistoryRequests(sessions: unavailable)
-                if !unavailable.isEmpty { onUnavailable?(unavailable) }
             }
             if envelope.params?.status == "connected" || envelope.params?.status == "disconnected" {
                 attemptedSessions.removeAll()
@@ -386,12 +416,13 @@ public final class CodexRuntimeStatusMonitor {
         guard envelope.version == 11 else {
             // Stop trusting this stream until explicit refresh or a peer lifecycle change.
             sendFollowing(sessionID, owner: owner, following: false)
-            finishHistoryRequests(sessions: [sessionID])
             owners.removeValue(forKey: sessionID)
             incompatibleSessions.insert(sessionID)
-            onUnavailable?([sessionID])
+            reportUnavailable([sessionID], reason: .unsupportedProtocol(expected: 11, received: envelope.version))
+            finishHistoryRequests(sessions: [sessionID])
             return
         }
+        unavailableReasons.removeValue(forKey: sessionID)
         onChange?(frame)
     }
 

@@ -36,7 +36,11 @@ final class ConversationPreviewStore: ObservableObject {
     }
 }
 
-actor ConversationPreviewWorker {
+protocol ConversationPreviewConsuming: AnyObject, Sendable {
+    func consume(_ data: Data) async -> CodexConversationPreviewResult
+}
+
+actor ConversationPreviewWorker: ConversationPreviewConsuming {
     private var reducer: CodexConversationPreviewReducer
 
     init(sessionID: String, cwd: String) {

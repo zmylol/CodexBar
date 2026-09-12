@@ -38,13 +38,15 @@ StartupTaskReconciler → TaskStore
 
 `CodexInboxMonitor` 使用文件系统通知监听 Inbox 和 Activity，先注册监听再处理启动积压，并在每次通知后逐批排空。处理期间的新通知会留下待处理标记，避免遗漏；没有定时 Inbox 检查。手动刷新会重新注册监听并处理积压。关闭窗口只过滤可见任务，保留本地状态以便重开窗口恢复；读取失败保留最后一次成功的窗口清单。
 
-`CodexRuntimeStatusMonitor` 只连接当前用户已有的 Codex IPC socket，为可见任务查找原会话 owner 并订阅 `thread-stream-state-changed` v11。`CodexRuntimeStatusReducer` 在后台按 revision 投影必要状态，缺失增量时重新请求快照；不保留聊天内容。原会话的审批等待标记决定三角形，恢复 active 后立即显示执行中，无须等待工具完成。实时状态仅更新 session、turn 和 cwd 精确匹配的既有行；Hook 批次处理后重新应用当前投影，避免延迟 Hook 覆盖实时状态。断线、owner 离开或取消跟随后丢弃投影，窗口/文件/客户端事件及手动刷新触发重连，无周期轮询。接口为扩展内部协议，升级时必须重新验证兼容性。
+`CodexRuntimeStatusMonitor` 只连接当前用户已有的 Codex IPC socket，为可见任务查找原会话 owner 并订阅 `thread-stream-state-changed` v11。`CodexRuntimeStatusReducer` 在后台按 revision 投影必要状态，缺失增量时重新请求快照；不保留聊天内容。原会话的审批等待标记决定三角形，恢复 active 后立即显示执行中，无须等待工具完成。实时状态仅更新 session、turn 和 cwd 精确匹配的既有行；Hook 批次处理后重新应用当前投影，避免延迟 Hook 覆盖实时状态。断线、owner 离开或取消跟随后丢弃投影，窗口/文件/客户端事件及手动刷新触发重连，无周期轮询。接口为扩展内部协议，升级时必须重新验证兼容性。monitor 将连接不可用与协议不兼容分别记录；不兼容原因按 session 保留，稍后展开预览也能立即显示。普通 Hook 和快照请求不反复订阅不兼容 owner；显式刷新或客户端生命周期变化允许重新协商，但只有已校验 owner 的有效 v11 帧才能清除原因。断线和请求超时不会掩盖已知的不兼容。
 
-会话预览使用同一条已校验 owner/目标的连接。`ConversationPreviewWorker` 在后台只为当前展开的 session/cwd 维护 `CodexConversationPreviewReducer`，合并 snapshot 和 Immer patch，再发布给独立的 `ConversationPreviewStore`。canonical 历史与 live turns 合并为有序条目；同 revision 的快照仍接收，因为未广播的命令输出可能已变化。缺少基准或 revision 不连续时请求快照；正文预算 32 MiB，结构或预算超限明确失效。展示目标带 generation，切换前已排队的帧不能更新新预览。关闭预览释放正文，状态订阅继续独立运行；断线保留最后可见内容并标记不可用。
+会话预览使用同一条已校验 owner/目标的连接。`ConversationPreviewCoordinator` 管理当前目标、generation、worker、快照等待及历史加载的完整生命周期；AppModel 仅转发视图动作并保留共享 runtime 事件的串行队列。`ConversationPreviewWorker` 在后台只为当前展开的 session/cwd 维护 `CodexConversationPreviewReducer`，合并 snapshot 和 Immer patch，再发布给独立的 `ConversationPreviewStore`。canonical 历史与 live turns 合并为有序条目；同 revision 的快照仍接收，因为未广播的命令输出可能已变化。缺少基准或 revision 不连续时请求快照；正文预算 32 MiB，结构或预算超限明确失效。消费帧的 await 前后均校验 generation 与 worker 身份，切换前已排队的帧及失效 worker 的迟到结果不能更新新预览；历史回调使用同样的身份检查。关闭预览释放正文，状态订阅继续独立运行；断线保留最后可见内容并标记不可用。
 
 `TaskDetailCard` 使用 420×520 的首选尺寸并受屏幕可用范围限制，固定顶栏与底栏，中间只有一个原生 `NSScrollView`。正文支持基本 Markdown、文字选择、用户消息和工具展开。滚动位置由 AppKit 管理，阅读旧内容时暂停跟随，补入早期条目时补偿高度变化。点击加载历史只向当前 owner 发送 `thread-follower-load-complete-history` v2，并等待相应 revision，不执行任何 turn 操作。协议验证和已知输出限制见 [CONTENT_PREVIEW_VERIFICATION.md](CONTENT_PREVIEW_VERIFICATION.md)。
 
-长会话首次只排版末尾 30 条，上滚接近顶部或点击本地前文按钮时再加入一批；起始位置按 item ID 保留，尾部新增不会挤走正在阅读的内容。所有已收到的正文仍在当前会话 reducer 内，分批只限制界面排版。状态投影同时返回已解析的 session ID，其他会话帧不再进入选中预览的正文解析。`ConversationPreviewStore` 只在可见内容变化时发布，revision 单独推进历史请求进度，同 revision 的新工具输出仍然更新。可用 `scripts/test-preview-performance` 复跑合成首开/更新基准与原生阅读行为检查。
+长会话首次只排版末尾 30 条，上滚接近顶部或点击本地前文按钮时再加入一批；起始位置按 item ID 保留，尾部新增不会挤走正在阅读的内容。所有已收到的正文仍在当前会话 reducer 内，分批只限制界面排版。状态投影同时返回已解析的 session ID，其他会话帧不再进入选中预览的正文解析。`ConversationPreviewStore` 只在可见内容变化时发布，revision 单独推进历史请求进度，同 revision 的新工具输出仍然更新。`scripts/test-app-models` 将预览发布、coordinator 生命周期和知识库 Model/Store 检查纳入默认测试；这些检查无需创建桌面窗口。可用 `scripts/test-preview-performance` 复跑合成首开/更新基准与原生阅读行为检查。
+
+`KnowledgeFolderTracker` 将文章索引与变更比较所用的正文缓存分开：正文缓存最多 32 MiB，索引标题最多 1 KiB、摘要最多 4 KiB；单文件读取上限 256 KiB、最多扫描 10,000 篇笔记。旧正文填满缓存不再阻止新文章进入今日列表。相同路径的根目录身份发生替换时重新建立基线并提示，避免将另一目录的旧记录报告为删除。
 
 ## Targets
 
