@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Run the bundled Hook installer in temporary application/configuration roots."""
+
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+class BundledHookSetupTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="codexbar-bundled-hooks-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.applications = self.root / "Applications with ' quote"
+        self.app = self.applications / "CodexBar.app"
+        self.setup = self.app / "Contents/Resources/HookSetup"
+        self.setup.mkdir(parents=True)
+        for name in ("install-hooks", "hook-config-common.zsh", "hooks-config.js"):
+            shutil.copyfile(ROOT / "scripts" / name, self.setup / name)
+        source = ROOT / "Resources/InstallHooks.command"
+        if source.exists():
+            shutil.copyfile(source, self.setup / "Install.command")
+        self.helper = self.app / "Contents/Helpers/codexbar-hook"
+        self.helper.parent.mkdir()
+        self.helper.write_text("#!/bin/zsh\nexit 99\n")
+        self.helper.chmod(0o755)
+        self.hooks = self.root / "config/hooks.json"
+        self.hooks.parent.mkdir()
+        self.original = {"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "/opt/example/keep"}]}]},
+                         "keep_setting": True}
+        self.hooks.write_text(json.dumps(self.original))
+        self.trust = self.hooks.parent / "config.toml"
+        self.trust.write_text('[hooks.state]\n# unrelated preexisting trust state\n')
+        self.env = dict(os.environ, CODEXBAR_APPLICATIONS_ROOT=str(self.applications),
+                        CODEXBAR_HOOKS_FILE=str(self.hooks), CODEXBAR_SUPPORT_ROOT=str(self.root / "support/CodexBar"),
+                        CODEXBAR_HOOK_EXECUTABLE="/unrelated/should-not-be-used")
+
+    def invoke(self, app=None, ok=True):
+        app = app or self.app
+        command = app / "Contents/Resources/HookSetup/Install.command"
+        self.assertTrue(command.exists(), "Bundled Install.command entry point is not implemented")
+        result = subprocess.run(["/bin/zsh", str(command)], env=self.env,
+                                capture_output=True, text=True, timeout=15)
+        if ok:
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        else:
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+        return result
+
+    def test_installs_exact_bundled_helper_and_preserves_unrelated_configuration(self):
+        original_trust = self.trust.read_bytes()
+        output = self.invoke().stdout
+        configuration = json.loads(self.hooks.read_text())
+        commands = [handler["command"] for groups in configuration["hooks"].values()
+                    for group in groups for handler in group["hooks"]]
+        expected = "'" + str(self.helper).replace("'", "'\\''") + "' --codexbar-managed"
+        self.assertEqual(commands.count(expected), 7)
+        self.assertIn("/opt/example/keep", commands)
+        self.assertTrue(configuration["keep_setting"])
+        self.assertEqual(self.trust.read_bytes(), original_trust)
+        self.assertIn("Codex Settings > Hooks", output)
+        self.assertIn("Reload VS Code", output)
+        first = self.hooks.read_bytes()
+        self.invoke()
+        self.assertEqual(self.hooks.read_bytes(), first, "Repeated setup duplicated managed handlers")
+
+    def test_downloads_dist_translocation_and_nested_app_locations_are_rejected(self):
+        original = self.hooks.read_bytes()
+        for relative in ("Downloads", "dist", "AppTranslocation/example", "Applications with ' quote/Nested"):
+            with self.subTest(location=relative):
+                location = self.root / relative / "CodexBar.app"
+                shutil.copytree(self.app, location)
+                self.invoke(location, ok=False)
+                self.assertEqual(self.hooks.read_bytes(), original)
+
+    def test_missing_or_symlinked_helper_does_not_modify_hooks(self):
+        original = self.hooks.read_bytes()
+        self.helper.unlink()
+        self.invoke(ok=False)
+        other = self.root / "external-helper"
+        other.write_text("#!/bin/zsh\nexit 0\n")
+        other.chmod(0o755)
+        self.helper.symlink_to(other)
+        self.invoke(ok=False)
+        self.assertEqual(self.hooks.read_bytes(), original)
+
+    def test_malformed_hooks_fail_without_overwriting_the_original(self):
+        self.hooks.write_text("{not valid json")
+        original = self.hooks.read_bytes()
+        self.invoke(ok=False)
+        self.assertEqual(self.hooks.read_bytes(), original)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

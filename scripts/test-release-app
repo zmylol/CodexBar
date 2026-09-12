@@ -16,7 +16,8 @@ REPO = Path(__file__).resolve().parent.parent
 IDENTITY = "Developer ID Application: Fixture Developer (TESTTEAM01)"
 SCENARIOS = (
     "app_launch", "hook_task_lifecycle", "approval_required", "window_focus",
-    "conversation_preview", "knowledge_arrival",
+    "approval_resume", "conversation_preview", "reconnect_same_socket",
+    "history_loading", "knowledge_arrival",
 )
 
 STUB = r'''#!/usr/bin/env python3
@@ -139,6 +140,16 @@ class ReleaseTests(unittest.TestCase):
         self.run_release("--check", "--compatibility", self.record, ok=False)
         self.run_release("--check", "--compatibility", self.record, "--identity", "-", ok=False)
         self.assertFalse(any(command[:2] == ["xcrun", "notarytool"] for command in self.commands()))
+
+    def test_source_fingerprint_covers_every_bundled_hook_setup_script(self):
+        for name in ("install-hooks", "hook-config-common.zsh", "hooks-config.js"):
+            with self.subTest(script=name):
+                script = self.root / "scripts" / name
+                script.write_text("// original bundled hook setup fixture\n")
+                before = self.run_release("--source-fingerprint").stdout
+                script.write_text("// changed bundled hook setup fixture\n")
+                after = self.run_release("--source-fingerprint").stdout
+                self.assertNotEqual(before, after, "Bundled hook installer changes must invalidate compatibility evidence")
 
     def test_missing_signing_credentials_fail_before_build(self):
         self.write_record()
