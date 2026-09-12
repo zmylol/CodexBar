@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import CodexBarCore
 
@@ -52,12 +53,12 @@ func inboxTestCases() -> [CodexBarTestCase] {
             let paths = CodexBarPaths(rootDirectory: root)
             let writer = InboxWriter(paths: paths)
             let expired = try writer.write(inboxEvent(.userPromptSubmit, timestamp: Date().timeIntervalSince1970))
-            let oldPayload = try writer.write(inboxEvent(.stop, timestamp: 100))
+            _ = try writer.write(inboxEvent(.stop, timestamp: 100))
             try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-120)], ofItemAtPath: expired.path)
             let policy = CodexInboxRetentionPolicy(maximumFileCount: 20, maximumBytes: 32_768, maximumAge: 60)
             let source = CodexHookEventSource(paths: paths, retentionPolicy: policy)
             let pending = try source.pendingEvents()
-            try expect(pending.map(\.sourceURL) == [oldPayload], "retention trusted payload time instead of arrival mtime")
+            try expect(pending.map(\.event.timestamp.timeIntervalSince1970) == [100], "retention trusted payload time instead of arrival mtime: \(pending.map(\.event.timestamp.timeIntervalSince1970))")
             try expect(!FileManager.default.fileExists(atPath: expired.path), "an idle expired Inbox entry was retained")
             try expect(try source.inboxHealth().discardedCount == 1, "expiry was not reported as lost events")
         },
@@ -126,6 +127,51 @@ func inboxTestCases() -> [CodexBarTestCase] {
             try expect(pending.map(\.event.timestamp.timeIntervalSince1970) == (132..<140).map(TimeInterval.init), "concurrent retention lost the newest events")
             let health = try source.inboxHealth()
             try expect(health.pendingCount == 8 && health.discardedCount == 32, "concurrent pruning lost a count update or exceeded its limit")
+        },
+        CodexBarTestCase(name: "retains inbox events when the discard counter cannot be saved") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            let writer = InboxWriter(paths: paths)
+            _ = try writer.write(inboxEvent(.userPromptSubmit, timestamp: 100))
+            _ = try writer.write(inboxEvent(.stop, timestamp: 101))
+            let policy = CodexInboxRetentionPolicy(maximumFileCount: 1, maximumBytes: 32_768, maximumAge: 604_800)
+            let source = CodexHookEventSource(paths: paths, fileManager: InboxCounterFailureFileManager(), retentionPolicy: policy)
+            var failed = false
+            do { _ = try source.pendingEvents() } catch { failed = true }
+            try expect(failed, "counter write failure was hidden")
+            try expect(try archiveFileCount(in: paths.inbox) == 2, "events were deleted without a durable loss record")
+            let recovered = CodexHookEventSource(paths: paths, retentionPolicy: policy)
+            try expect(try recovered.pendingEvents().map(\.event.name) == [.stop], "cleanup did not recover after counter storage became writable")
+            try expect(try recovered.inboxHealth().discardedCount == 1, "recovered cleanup did not record the discarded event")
+            let attributes = try FileManager.default.attributesOfItem(atPath: root.appendingPathComponent("inbox-discarded-count").path)
+            try expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600, "discard counter is not private")
+        },
+        CodexBarTestCase(name: "publishes lifecycle events promptly while inbox maintenance is locked") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            try paths.prepareEventDirectories()
+            let descriptor = open(root.appendingPathComponent(".inbox.lock").path, O_RDWR | O_CREAT, 0o600)
+            try expect(descriptor >= 0, "could not create the isolated contention fixture")
+            defer { close(descriptor) }
+            try expect(flock(descriptor, LOCK_EX) == 0, "could not lock the contention fixture")
+            let (started, continuation) = AsyncStream<Void>.makeStream()
+            let writer = Task.detached {
+                let start = ContinuousClock.now
+                continuation.yield(())
+                continuation.finish()
+                _ = try? InboxWriter(paths: paths).write(inboxEvent(.stop, timestamp: 100))
+                return start.duration(to: .now)
+            }
+            var starts = started.makeAsyncIterator()
+            let didStart = await starts.next() != nil
+            try await Task.sleep(for: .milliseconds(350))
+            _ = flock(descriptor, LOCK_UN)
+            let duration = await writer.value
+            try expect(didStart && duration < .milliseconds(250), "maintenance contention blocked the lifecycle hook")
+            let pending = try CodexHookEventSource(paths: paths).pendingEvents()
+            try expect(pending.map(\.event.name) == [.stop], "lock contention silently dropped the newest lifecycle event")
         },
         CodexBarTestCase(name: "writes inbox events atomically with private permissions") {
             let root = temporaryDirectory()
@@ -858,14 +904,14 @@ func inboxTestCases() -> [CodexBarTestCase] {
             let inboxURL = try InboxWriter(paths: paths).write(
                 inboxEvent(.stop, timestamp: 120)
             )
-            try FileManager.default.setAttributes(
-                [.modificationDate: Date().addingTimeInterval(-(8 * 24 * 60 * 60))],
-                ofItemAtPath: inboxURL.path
-            )
             let source = CodexHookEventSource(paths: paths)
             let pending = try require(
                 try source.pendingEvents().first,
                 "new event was not available for archiving"
+            )
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date().addingTimeInterval(-(8 * 24 * 60 * 60))],
+                ofItemAtPath: inboxURL.path
             )
 
             try source.markProcessed(pending)
@@ -1124,6 +1170,13 @@ private final class BatchRecordingEventSource: CodexEventSource, @unchecked Send
 
 private enum BatchRecordingError: Error {
     case expectedFailure
+}
+
+private final class InboxCounterFailureFileManager: FileManager, @unchecked Sendable {
+    override func createFile(atPath path: String, contents data: Data?, attributes attr: [FileAttributeKey: Any]? = nil) -> Bool {
+        if URL(fileURLWithPath: path).lastPathComponent.hasPrefix(".inbox-count-") { return false }
+        return super.createFile(atPath: path, contents: data, attributes: attr)
+    }
 }
 
 private final class InboxCountingFileManager: FileManager, @unchecked Sendable {
