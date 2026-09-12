@@ -5,11 +5,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -216,6 +218,24 @@ class ReleaseTests(unittest.TestCase):
         self.run_release("--notarize", "--output", self.output, "--keychain-profile", "fixture", ok=False)
         self.assertFalse((self.output / "CodexBar.zip").exists())
         self.assertFalse(any(command[:3] == ["xcrun", "stapler", "staple"] for command in self.commands()))
+
+    def test_final_write_failure_leaves_candidate_retryable(self):
+        self.prepare()
+        release = runpy.run_path(str(self.script))
+        original_replace = Path.replace
+
+        def fail_checksum_once(path, destination):
+            if path.name == "SHA256SUMS":
+                raise OSError("Simulated final checksum publication failure")
+            return original_replace(path, destination)
+
+        with mock.patch.dict(os.environ, self.env, clear=True), mock.patch.object(Path, "replace", fail_checksum_once):
+            with self.assertRaisesRegex(OSError, "checksum publication failure"):
+                release["notarize"](self.output, "fixture")
+        self.assertEqual(json.loads((self.output / "manifest.json").read_text())["status"], "prepared")
+        self.assertFalse((self.output / "CodexBar.zip").exists(), "Failed publication left a misleading release ZIP")
+        self.assertFalse((self.output / "SHA256SUMS").exists())
+        self.run_release("--notarize", "--output", self.output, "--keychain-profile", "fixture")
 
     def test_staple_or_gatekeeper_failure_does_not_create_release_archive(self):
         for failure in ("RELEASE_TEST_BAD_STAPLE", "RELEASE_TEST_BAD_GATEKEEPER"):
