@@ -30,7 +30,9 @@ import SwiftUI
                 source: CodexHookEventSource(paths: paths), store: store, activityStore: activity
             ),
             activator: AccessibilityWindowActivator(),
-            inboxMonitor: CodexInboxMonitor(paths: paths)
+            inboxMonitor: CodexInboxMonitor(paths: paths),
+            knowledgeLibrary: KnowledgeLibraryModel(defaultsSuiteName: suiteName,
+                                                    registryURL: root.appendingPathComponent("missing-registry.json"))
         )
         let controller = FloatingPanelController(model: model, defaults: defaults)
         model.onPresentationChanged = { [weak controller] taskCount, noticeVisible, animated in
@@ -261,12 +263,6 @@ import SwiftUI
     ) throws {
         let barHeight = bar.frame.height
         let vault = root.appendingPathComponent("Vault", isDirectory: true)
-        let folderKey = "codexbar.knowledgeLibraryFolder"
-        let previousFolder = UserDefaults.standard.object(forKey: folderKey)
-        defer {
-            if let previousFolder { UserDefaults.standard.set(previousFolder, forKey: folderKey) }
-            else { UserDefaults.standard.removeObject(forKey: folderKey) }
-        }
         let categories = ["A", "B"] + (1...34).map { "Library \($0)" }
         for directory in [".obsidian"] + categories {
             try FileManager.default.createDirectory(at: vault.appendingPathComponent(directory), withIntermediateDirectories: true)
