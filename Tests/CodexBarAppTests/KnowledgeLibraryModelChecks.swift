@@ -1,5 +1,6 @@
 import AppKit
 import CodexBarCore
+import Combine
 import Foundation
 
 @main
@@ -56,6 +57,7 @@ struct KnowledgeLibraryModelChecks {
             ("replacement root state", replacementRootState),
             ("article reading ranges", articleReadingRanges),
             ("persistent article reading history", persistentArticleReadingHistory),
+            ("reading history notifications and retention", readingHistoryNotificationsAndRetention),
             ("vault reading history isolation", vaultReadingHistoryIsolation),
             ("root replaced while stopped", rootReplacedWhileStopped)
         ]
@@ -279,6 +281,66 @@ struct KnowledgeLibraryModelChecks {
                          && afterMove.unseenCount(in: "A") == 0 && afterMove.unseenCount(in: "B") == 0,
                          "Yesterday's previously read articles became unread after midnight")
         print("PASS persistent reading history: all ranges survive restart, new arrivals remain unread, edits stay read, observed moves persist and midnight retains acknowledgement")
+    }
+
+    private static func readingHistoryNotificationsAndRetention() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("knowledge-library-receipts-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        let suite = "codexbar-library-receipts-\(UUID().uuidString)"
+        var currentDate = ISO8601DateFormatter().date(from: "2026-09-13T12:00:00+08:00")!
+        let model = KnowledgeLibraryModel(defaultsSuiteName: suite, registryURL: root.appendingPathComponent("missing.json"),
+                                          now: { currentDate })
+        defer {
+            model.stop()
+            try? FileManager.default.removeItem(at: root)
+            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".obsidian"), withIntermediateDirectories: true)
+        let title = "Private article title"
+        let path = "A/PrivateArticle.md"
+        let body = "Private article body"
+        try writeNote(articleText("Today", collected: "2026-09-13"), path: "A/Today.md", root: root)
+        try writeNote(articleText(title, collected: "2026-09-12"), path: path, root: root)
+        await model.selectVault(root)
+        model.setArticleRange(.yesterday)
+        var notifications = 0
+        let observation = model.objectWillChange.sink { notifications += 1 }
+        defer { observation.cancel() }
+        model.markUpdatesSeen(in: "A")
+        try requireState(model.unseenCount(in: "A") == 0 && model.unseenChangeCount == 1 && notifications > 0,
+                         "Acknowledging yesterday must notify the UI even when today's unread count and visible article content stay unchanged")
+        try writeNote(articleText(title, collected: "2026-09-12") + "\n\(body)\n", path: path, root: root)
+        await model.refreshNow()
+        try requireState(model.unseenCount(in: "A") == 0 && model.unseenChangeCount == 1,
+                         "Editing the body with the original collection date must retain acknowledgement")
+        try writeNote(articleText(title, collected: "2026-09-13") + "\n\(body)\n", path: path, root: root)
+        await model.refreshNow()
+        model.setArticleRange(.today)
+        try requireState(model.unseenCount(in: "A") == 2 && model.unseenChangeCount == 2,
+                         "A new collection date at the same article path must count as a new unread collection")
+        model.markUpdatesSeen(in: "A")
+
+        let defaults = UserDefaults(suiteName: suite)!
+        let receiptKey = "codexbar.knowledgeArticleReceipts"
+        guard let receipts = defaults.dictionary(forKey: receiptKey), receipts.count == 2 else {
+            throw stateError("Acknowledging two articles did not persist two reading receipts")
+        }
+        try requireState(receipts.allSatisfy { key, value in
+            key.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
+                && (value as? NSNumber)?.doubleValue.isFinite == true
+        }, "Reading receipts must contain only lowercase SHA-256 keys and finite numeric timestamps")
+        let serialized = String(decoding: try JSONSerialization.data(withJSONObject: receipts), as: UTF8.self)
+        try requireState(![root.path, path, title, body].contains(where: { serialized.contains($0) }),
+                         "Reading receipts persisted a plaintext vault path, article path, title or body")
+        currentDate = ISO8601DateFormatter().date(from: "2026-09-19T23:59:59+08:00")!
+        model.refreshToday()
+        try requireState(defaults.dictionary(forKey: receiptKey)?.count == 2,
+                         "Reading receipts were pruned before their seventh Shanghai calendar day ended")
+        currentDate = ISO8601DateFormatter().date(from: "2026-09-20T00:00:00+08:00")!
+        model.refreshToday()
+        try requireState(defaults.dictionary(forKey: receiptKey)?.isEmpty == true,
+                         "Reading receipts older than the seven-day window were not pruned on day refresh")
+        print("PASS reading receipts: yesterday badge publishes updates, collection dates identify new arrivals, persisted metadata is private and seven-day retention follows Shanghai midnight")
     }
 
     private static func vaultReadingHistoryIsolation() async throws {
