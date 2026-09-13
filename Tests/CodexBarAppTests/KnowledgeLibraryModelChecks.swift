@@ -53,7 +53,11 @@ struct KnowledgeLibraryModelChecks {
         try await rootFilesAreIgnored()
         let regressions: [(String, @MainActor () async throws -> Void)] = [
             ("uncached article moves", uncachedArticleMoves),
-            ("replacement root state", replacementRootState)
+            ("replacement root state", replacementRootState),
+            ("article reading ranges", articleReadingRanges),
+            ("persistent article reading history", persistentArticleReadingHistory),
+            ("vault reading history isolation", vaultReadingHistoryIsolation),
+            ("root replaced while stopped", rootReplacedWhileStopped)
         ]
         var failures: [String] = []
         for (name, check) in regressions {
@@ -150,6 +154,197 @@ struct KnowledgeLibraryModelChecks {
                          && model.review?.notes.first?.diff?.contains("-replacement baseline") == true,
                          "The replacement root did not use its own baseline for subsequent reviews")
         print("PASS root replacement: old pending diffs and read state cleared; stale actions rejected; later edits use the new baseline")
+    }
+
+    private static func articleReadingRanges() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("knowledge-library-ranges-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        let suite = "codexbar-library-ranges-\(UUID().uuidString)"
+        let now = ISO8601DateFormatter().date(from: "2026-09-13T00:00:01+08:00")!
+        let model = KnowledgeLibraryModel(defaultsSuiteName: suite, registryURL: root.appendingPathComponent("missing.json"),
+                                          now: { now })
+        defer {
+            model.stop()
+            try? FileManager.default.removeItem(at: root)
+            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".obsidian"), withIntermediateDirectories: true)
+        let articles = [
+            ("Tomorrow", "2026-09-13T16:00:00Z"),
+            ("Today late", "2026-09-13T15:59:59Z"),
+            ("Today start", "2026-09-12T16:00:00Z"),
+            ("Yesterday end", "2026-09-12T15:59:59Z"),
+            ("Week start", "2026-09-06T16:00:00Z"),
+            ("Too old", "2026-09-06T15:59:59Z")
+        ]
+        for (title, collected) in articles {
+            try writeNote(articleText(title, collected: collected), path: "A/\(title).md", root: root)
+        }
+        await model.selectVault(root)
+        try requireState(model.articleRange == .today
+                         && model.visibleArticles.map(\.title) == ["Today late", "Today start"]
+                         && model.todayArticles == model.visibleArticles
+                         && model.unseenChangeCount == 2,
+                         "The initial reading range did not use the current Shanghai calendar day or newest-first order")
+        model.setArticleRange(.yesterday)
+        try requireState(model.visibleArticles.map(\.title) == ["Yesterday end"]
+                         && model.unseenCount(in: "A") == 1 && model.unseenChangeCount == 2,
+                         "Switching to yesterday changed today's badge, acknowledged an article, or crossed the Shanghai day boundary")
+        model.markUpdatesSeen(in: "A")
+        try requireState(model.unseenCount(in: "A") == 0 && model.unseenChangeCount == 2,
+                         "Reading yesterday acknowledged today's articles in the same category")
+        model.setArticleRange(.lastSevenDays)
+        try requireState(model.visibleArticles.map(\.title) == ["Today late", "Today start", "Yesterday end", "Week start"]
+                         && model.unseenCount(in: "A") == 3 && model.unseenChangeCount == 2,
+                         "The seven-day range must include today and six previous calendar days, exclude tomorrow, and retain read state")
+        model.setArticleRange(.today)
+        try requireState(model.unseenCount(in: "A") == 2 && model.visibleArticles == model.todayArticles,
+                         "Switching reading ranges implicitly acknowledged today's articles")
+        model.setArticleRange(.lastSevenDays)
+        model.markUpdatesSeen(in: "A")
+        try requireState(model.unseenCount(in: "A") == 0 && model.unseenChangeCount == 0
+                         && model.visibleArticles.count == 4,
+                         "Reading a category in the seven-day range must acknowledge its visible articles without removing them")
+        print("PASS reading ranges: Shanghai day boundaries, seven calendar days, newest-first order, explicit acknowledgement and today's independent badge")
+    }
+
+    private static func persistentArticleReadingHistory() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("knowledge-library-history-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        let suite = "codexbar-library-history-\(UUID().uuidString)"
+        let registry = root.appendingPathComponent("missing.json")
+        var currentDate = ISO8601DateFormatter().date(from: "2026-09-13T12:00:00+08:00")!
+        let model = KnowledgeLibraryModel(defaultsSuiteName: suite, registryURL: registry, now: { currentDate })
+        defer {
+            model.stop()
+            try? FileManager.default.removeItem(at: root)
+            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".obsidian"), withIntermediateDirectories: true)
+        try writeNote(articleText("Today", collected: "2026-09-13"), path: "A/Today.md", root: root)
+        try writeNote(articleText("Yesterday", collected: "2026-09-12"), path: "A/Yesterday.md", root: root)
+        try writeNote(articleText("Earlier", collected: "2026-09-07"), path: "B/Earlier.md", root: root)
+        await model.selectVault(root)
+        model.markUpdatesSeen(in: "A")
+        model.setArticleRange(.yesterday)
+        model.markUpdatesSeen(in: "A")
+        model.setArticleRange(.lastSevenDays)
+        model.markUpdatesSeen(in: "B")
+        model.stop()
+
+        let restored = KnowledgeLibraryModel(defaultsSuiteName: suite, registryURL: registry, now: { currentDate })
+        defer { restored.stop() }
+        await restored.restoreNow()
+        try requireState(restored.articleRange == .today && restored.visibleArticles.map(\.title) == ["Today"]
+                         && restored.unseenChangeCount == 0 && restored.unseenCount(in: "A") == 0,
+                         "Restart must open today while preserving today's acknowledged articles")
+        restored.setArticleRange(.yesterday)
+        try requireState(restored.visibleArticles.map(\.title) == ["Yesterday"] && restored.unseenCount(in: "A") == 0,
+                         "Restart forgot articles acknowledged in yesterday's range")
+        restored.setArticleRange(.lastSevenDays)
+        try requireState(restored.visibleArticles.count == 3 && restored.unseenCount(in: "A") == 0
+                         && restored.unseenCount(in: "B") == 0,
+                         "Restart forgot articles acknowledged in the seven-day range")
+
+        let summary = "A revised summary after the article was already read."
+        try writeNote(articleText("Today revised", collected: "2026-09-13") + "\n## 摘要\n\n\(summary)\n\n## 正文\n\nRevised body.\n",
+                      path: "A/Today.md", root: root)
+        try writeNote(articleText("New arrival", collected: "2026-09-13T13:00:00+08:00"), path: "A/New.md", root: root)
+        await restored.refreshNow()
+        try requireState(restored.unseenCount(in: "A") == 1 && restored.unseenChangeCount == 1
+                         && restored.visibleArticles.first(where: { $0.path == "A/Today.md" })?.summary == summary,
+                         "A new article should be unread while edits to a previously read article update its preview without notifying again")
+        restored.markUpdatesSeen(in: "A")
+        try FileManager.default.moveItem(at: root.appendingPathComponent("A/Today.md"),
+                                        to: root.appendingPathComponent("B/Moved.md"))
+        await restored.refreshNow()
+        try requireState(restored.unseenChangeCount == 0 && restored.unseenCount(in: "B") == 0,
+                         "An observed move discarded a read article's acknowledgement")
+        restored.stop()
+
+        let afterMove = KnowledgeLibraryModel(defaultsSuiteName: suite, registryURL: registry, now: { currentDate })
+        defer { afterMove.stop() }
+        await afterMove.restoreNow()
+        try requireState(afterMove.todayArticles.contains { $0.path == "B/Moved.md" }
+                         && afterMove.unseenChangeCount == 0,
+                         "Restart lost the acknowledgement persisted after an observed article move")
+        afterMove.setArticleRange(.lastSevenDays)
+        currentDate = ISO8601DateFormatter().date(from: "2026-09-14T00:00:01+08:00")!
+        afterMove.refreshToday()
+        try requireState(afterMove.todayArticles.isEmpty && afterMove.unseenChangeCount == 0
+                         && afterMove.visibleArticles.count == 3,
+                         "Crossing midnight must update both today's projection and the selected seven-day range")
+        afterMove.setArticleRange(.yesterday)
+        try requireState(Set(afterMove.visibleArticles.map(\.path)) == ["A/New.md", "B/Moved.md"]
+                         && afterMove.unseenCount(in: "A") == 0 && afterMove.unseenCount(in: "B") == 0,
+                         "Yesterday's previously read articles became unread after midnight")
+        print("PASS persistent reading history: all ranges survive restart, new arrivals remain unread, edits stay read, observed moves persist and midnight retains acknowledgement")
+    }
+
+    private static func vaultReadingHistoryIsolation() async throws {
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent("knowledge-library-isolation-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        let firstRoot = parent.appendingPathComponent("First")
+        let secondRoot = parent.appendingPathComponent("Second")
+        let suite = "codexbar-library-isolation-\(UUID().uuidString)"
+        let registry = parent.appendingPathComponent("missing.json")
+        let model = KnowledgeLibraryModel(defaultsSuiteName: suite, registryURL: registry)
+        defer {
+            model.stop()
+            try? FileManager.default.removeItem(at: parent)
+            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        }
+        for root in [firstRoot, secondRoot] {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(".obsidian"), withIntermediateDirectories: true)
+            try writeNote(articleText("Same relative path"), path: "A/Article.md", root: root)
+        }
+        await model.selectVault(firstRoot)
+        model.markUpdatesSeen(in: "A")
+        await model.selectVault(secondRoot)
+        try requireState(model.unseenChangeCount == 1, "A different vault inherited read state from an identical relative article path")
+        model.markUpdatesSeen(in: "A")
+        await model.selectVault(firstRoot)
+        try requireState(model.unseenChangeCount == 0, "Switching back to a previously visited vault forgot its read state")
+        model.stop()
+
+        let restored = KnowledgeLibraryModel(defaultsSuiteName: suite, registryURL: registry)
+        defer { restored.stop() }
+        await restored.restoreNow()
+        try requireState(restored.review?.vault.rootPath == firstRoot.path && restored.unseenChangeCount == 0,
+                         "Restart did not restore the selected vault and its own reading history")
+        await restored.selectVault(secondRoot)
+        try requireState(restored.unseenChangeCount == 0, "Restart discarded reading history for the other previously visited vault")
+        print("PASS vault history isolation: identical paths remain independent and revisiting either vault preserves acknowledgement across restart")
+    }
+
+    private static func rootReplacedWhileStopped() async throws {
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent("knowledge-library-offline-replacement-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        let root = parent.appendingPathComponent("Vault")
+        let suite = "codexbar-library-offline-replacement-\(UUID().uuidString)"
+        let registry = parent.appendingPathComponent("missing.json")
+        let model = KnowledgeLibraryModel(defaultsSuiteName: suite, registryURL: registry)
+        defer {
+            model.stop()
+            try? FileManager.default.removeItem(at: parent)
+            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".obsidian"), withIntermediateDirectories: true)
+        let content = articleText("Same article metadata")
+        try writeNote(content, path: "A/Article.md", root: root)
+        await model.selectVault(root)
+        model.markUpdatesSeen(in: "A")
+        model.stop()
+        try FileManager.default.moveItem(at: root, to: parent.appendingPathComponent("OldVault"))
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".obsidian"), withIntermediateDirectories: true)
+        try writeNote(content, path: "A/Article.md", root: root)
+
+        let restored = KnowledgeLibraryModel(defaultsSuiteName: suite, registryURL: registry)
+        defer { restored.stop() }
+        await restored.restoreNow()
+        try requireState(restored.todayArticles.map(\.path) == ["A/Article.md"] && restored.unseenChangeCount == 1,
+                         "A vault replaced while the app was stopped inherited the old directory's persisted read state")
+        print("PASS stopped root replacement: identical article paths and metadata do not inherit the replaced directory's acknowledgement")
     }
 
     private static func requireState(_ condition: Bool, _ message: String) throws {
