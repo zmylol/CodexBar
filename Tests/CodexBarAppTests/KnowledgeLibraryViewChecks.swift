@@ -9,6 +9,9 @@ import SwiftUI
     @Published var sections: [KnowledgeFolderSection] = []
     @Published var noteCount = 0
     @Published var todayArticles: [KnowledgeArticle] = []
+    @Published var yesterdayArticles: [KnowledgeArticle] = []
+    @Published var earlierArticles: [KnowledgeArticle] = []
+    @Published private(set) var articleRange: KnowledgeArticleRange = .today
     @Published private var seenArticleIDs: Set<String> = []
     var isChoosingVault = false
     var chooseCount = 0
@@ -19,14 +22,23 @@ import SwiftUI
     func chooseVault() { chooseCount += 1 }
     func refresh() { refreshCount += 1 }
     func openArticle(_ article: KnowledgeArticle) { openedArticles.append(article) }
+    func setArticleRange(_ range: KnowledgeArticleRange) { articleRange = range }
+
+    var visibleArticles: [KnowledgeArticle] {
+        switch articleRange {
+        case .today: todayArticles
+        case .yesterday: yesterdayArticles
+        case .lastSevenDays: todayArticles + yesterdayArticles + earlierArticles
+        }
+    }
 
     func unseenCount(in sectionID: String) -> Int {
-        todayArticles.filter { $0.path.hasPrefix(sectionID + "/") && !seenArticleIDs.contains($0.id) }.count
+        visibleArticles.filter { $0.path.hasPrefix(sectionID + "/") && !seenArticleIDs.contains($0.id) }.count
     }
 
     func markUpdatesSeen(in sectionID: String) {
         markedSections.append(sectionID)
-        seenArticleIDs.formUnion(todayArticles.filter { $0.path.hasPrefix(sectionID + "/") }.map(\.id))
+        seenArticleIDs.formUnion(visibleArticles.filter { $0.path.hasPrefix(sectionID + "/") }.map(\.id))
     }
 }
 
@@ -87,6 +99,8 @@ import SwiftUI
     @MainActor static func main() {
         NSApplication.shared.setActivationPolicy(.accessory)
         NSApplication.shared.finishLaunching()
+        // Materialize SwiftUI's accessibility tree without changing system accessibility settings.
+        NSApplication.shared.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface"))
         let model = KnowledgeLibraryModel()
         var dismissed = false
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 600, height: 520), styleMask: .titled, backing: .buffered, defer: false)
@@ -123,9 +137,20 @@ import SwiftUI
                                       title: "把 Agent 会话变成每天都能复用的阅读与实验工作流", collectedAt: Date(),
                                       summary: "文章介绍如何把零散的 Agent 会话整理成可以持续复用的知识：保留任务背景、关键决策和验证结果，再通过每日阅读与小型实验检查这些经验是否适用于新的项目。这样既能找回推理过程，也能减少重复尝试。")
         let third = KnowledgeArticle(path: "Hugging Face/attention-budget.md", title: "注意力预算", collectedAt: Date())
+        let yesterday = KnowledgeArticle(path: "Hugging Face/yesterday.md", title: "昨天尚未阅读的文章",
+                                         collectedAt: Date().addingTimeInterval(-86_400))
+        let earlier = KnowledgeArticle(path: "Anthropic/earlier.md", title: "本周值得补读的文章",
+                                       collectedAt: Date().addingTimeInterval(-172_800))
         model.todayArticles = [first, second, third]
+        model.yesterdayArticles = [yesterday]
+        model.earlierArticles = [earlier]
         settle()
         if hasAccessibilityTree {
+            for range in KnowledgeArticleRange.allCases {
+                check(element("knowledge-library-range-\(range.rawValue)", in: host) != nil,
+                      "Each reading range must have an accessible control: \(range.rawValue)")
+            }
+            check(model.articleRange == .today, "The library must initially show today's articles")
             check(model.markedSections.isEmpty, "Initial presentation must not acknowledge any library")
             check(element("knowledge-library-select-section", in: host) != nil,
                   "Initial detail must ask the user to select a library")
@@ -168,6 +193,17 @@ import SwiftUI
         capture(host, path: "/tmp/codexbar-library-narrow.png")
         check(abs(host.frame.width - 320) < 1 && abs(host.frame.height - 520) < 1,
               "Narrow-screen layout must stay within 320×520")
+        if hasAccessibilityTree {
+            let screenFrame = window.convertToScreen(host.convert(host.bounds, to: nil))
+            for range in KnowledgeArticleRange.allCases {
+                guard let control = element("knowledge-library-range-\(range.rawValue)", in: host),
+                      let frame = control.accessibilityFrame?() else {
+                    fatalError("Missing narrow reading range control: \(range.rawValue)")
+                }
+                check(frame.width > 0 && screenFrame.contains(frame),
+                      "Every reading range control must stay inside the 320-point panel")
+            }
+        }
         window.setContentSize(NSSize(width: 600, height: 520))
         let incoming = KnowledgeArticle(path: "Hugging Face/arrived-later.md", title: "稍后自动获取的文章", collectedAt: Date())
         model.todayArticles.append(incoming)
@@ -193,11 +229,44 @@ import SwiftUI
             check(!unreadBadge("Hugging Face", in: host) &&
                   element("knowledge-note-\(incoming.id)", in: host) != nil,
                   "Acknowledging articles must remove the badge but retain article titles")
+            let marksBeforeRangeChange = model.markedSections
+            let responderBeforeRangeChange = window.firstResponder
+            press("knowledge-library-range-yesterday", in: host)
+            check(model.articleRange == .yesterday, "Yesterday's control must select yesterday's articles")
+            checkSelected("Hugging Face", true, in: host)
+            check(model.markedSections == marksBeforeRangeChange && unreadBadge("Hugging Face", in: host),
+                  "Changing the reading range must retain the category without acknowledging its articles")
+            check(window.firstResponder === responderBeforeRangeChange,
+                  "Changing the reading range must not assign keyboard focus")
+            check(element("knowledge-note-\(yesterday.id)", in: host) != nil &&
+                  element("knowledge-note-\(second.id)", in: host) == nil,
+                  "Yesterday's detail must replace today's article rows")
+            check(element("knowledge-library-article-list", in: host)?.accessibilityLabel?() == "Hugging Face昨日新增文章",
+                  "The article list must announce the selected reading range")
+            capture(host, path: "/tmp/codexbar-library-yesterday.png")
+            press("knowledge-library-row-Hugging Face", in: host)
+            check(!unreadBadge("Hugging Face", in: host), "Selecting yesterday's category must acknowledge its visible articles")
+            let marksBeforeWeek = model.markedSections
+            press("knowledge-library-range-lastSevenDays", in: host)
+            check(model.articleRange == .lastSevenDays && model.markedSections == marksBeforeWeek,
+                  "The seven-day control must change the range without marking articles seen")
+            checkSelected("Hugging Face", true, in: host)
+            check(element("knowledge-note-\(yesterday.id)", in: host) != nil &&
+                  element("knowledge-note-\(second.id)", in: host) != nil,
+                  "The seven-day detail must include both today's and yesterday's articles")
+            check(!unreadBadge("Hugging Face", in: host) && unreadBadge("Anthropic", in: host),
+                  "Acknowledged articles must remain acknowledged across reading ranges")
+            capture(host, path: "/tmp/codexbar-library-week.png")
+            press("knowledge-library-range-today", in: host)
             press("knowledge-library-row-LangChain", in: host)
             check(element("knowledge-library-empty-LangChain", in: host) != nil,
                   "A selected empty library must show today's empty state")
             check(element("knowledge-note-\(second.id)", in: host) == nil,
                   "Switching libraries must replace the detail list")
+            press("knowledge-library-range-yesterday", in: host)
+            check(element("knowledge-library-empty-LangChain", in: host)?.accessibilityLabel?() == "昨日暂无新增",
+                  "An empty category must announce yesterday when yesterday is selected")
+            press("knowledge-library-range-today", in: host)
         }
         capture(host, path: "/tmp/codexbar-library-no-updates.png")
         let replacement = ObsidianVault(rootPath: "/fixture/replaced-vault", name: "新的总目录")
@@ -229,6 +298,6 @@ import SwiftUI
         window.orderOut(nil)
         window.contentView = nil
         print("PASS knowledge library native rendering: 600×520 light/dark, first use, empty detail, many categories, and 320×520 narrow fixtures")
-        print(hasAccessibilityTree ? "PASS knowledge library native actions: no initial selection, per-library badges, selection-only acknowledgement, incremental arrival, reopen retention, root reset, category removal, open titles, choose, refresh, close" : "SKIP knowledge library actions: no SwiftUI AX tree in this graphical session")
+        print(hasAccessibilityTree ? "PASS knowledge library native actions: reading ranges, retained category and focus, range-scoped badges, selection-only acknowledgement, incremental arrival, reopen retention, root reset, category removal, open titles, choose, refresh, close" : "SKIP knowledge library actions: no SwiftUI AX tree in this graphical session")
     }
 }
