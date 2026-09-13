@@ -108,12 +108,14 @@ final class KnowledgeLibraryModel: ObservableObject {
         refreshToday()
         guard sections.contains(where: { $0.id == sectionID }) else { return }
         var nextReceipts = receiptDates
+        var acknowledgedKeys: Set<String> = []
         for article in visibleArticles where article.path.hasPrefix(sectionID + "/") {
             if let key = receiptID(for: article.path) {
                 nextReceipts[key] = article.collectedAt.timeIntervalSince1970
+                acknowledgedKeys.insert(key)
             }
         }
-        storeReadingReceipts(nextReceipts, relativeTo: now())
+        storeReadingReceipts(nextReceipts, relativeTo: now(), prioritizing: acknowledgedKeys)
         restoreSeenArticles()
         refreshToday()
     }
@@ -152,13 +154,20 @@ final class KnowledgeLibraryModel: ObservableObject {
         if seenArticleIDs != seen { seenArticleIDs = seen }
     }
 
-    private func storeReadingReceipts(_ receipts: [String: Double], relativeTo date: Date) {
+    private func storeReadingReceipts(
+        _ receipts: [String: Double], relativeTo date: Date, prioritizing acknowledgedKeys: Set<String> = []
+    ) {
         let interval = KnowledgeArticleRange.lastSevenDays.interval(relativeTo: date)
         let retained = receipts.filter { key, timestamp in
             key.utf8.count == 64 && key.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
                 && timestamp.isFinite && timestamp >= interval.start.timeIntervalSince1970
                 && timestamp < interval.end.timeIntervalSince1970
-        }.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
+        }.sorted {
+            let firstIsAcknowledged = acknowledgedKeys.contains($0.key)
+            let secondIsAcknowledged = acknowledgedKeys.contains($1.key)
+            if firstIsAcknowledged != secondIsAcknowledged { return firstIsAcknowledged }
+            return $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value
+        }
         let bounded = Dictionary(uniqueKeysWithValues: retained.prefix(KnowledgeFolderTracker.maximumNotes)
             .map { ($0.key, $0.value) })
         guard bounded != receiptDates else { return }
