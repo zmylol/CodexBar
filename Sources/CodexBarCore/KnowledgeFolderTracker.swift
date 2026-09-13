@@ -17,6 +17,7 @@ public struct KnowledgeFolderSection: Identifiable, Equatable, Sendable {
 
 public struct KnowledgeFolderSnapshot: Equatable, Sendable {
     public let baselineID: UUID
+    public let rootFingerprint: String
     public let changes: [CodexRecordedFileChange]
     public let noteCount: Int
     public let warnings: [String]
@@ -165,7 +166,11 @@ public actor KnowledgeFolderTracker {
         let articles = nextArticleIndex.values.compactMap(\.article).sorted {
             $0.collectedAt == $1.collectedAt ? $0.path < $1.path : $0.collectedAt > $1.collectedAt
         }
-        return KnowledgeFolderSnapshot(baselineID: baselineID, changes: changes, noteCount: inventory.notes.count,
+        let identity = capturedRootIdentity
+        let scope = "\(vault.rootPath)\u{0}\(identity.device):\(identity.inode):\(identity.createdSeconds):\(identity.createdNanoseconds)"
+        let rootFingerprint = SHA256.hash(data: Data(scope.utf8)).map { String(format: "%02x", $0) }.joined()
+        return KnowledgeFolderSnapshot(baselineID: baselineID, rootFingerprint: rootFingerprint,
+                                       changes: changes, noteCount: inventory.notes.count,
                                        warnings: inventory.warnings.sorted(), sections: sections, articles: articles,
                                        articleMoves: moves)
     }

@@ -1,5 +1,6 @@
 import AppKit
 import CodexBarCore
+import CryptoKit
 import Foundation
 
 /// The total vault is independent of VS Code tasks; category previews share its cached changes.
@@ -12,9 +13,14 @@ final class KnowledgeLibraryModel: ObservableObject {
     @Published private(set) var noteCount = 0
     @Published private(set) var unseenChangeCount = 0
     @Published private(set) var todayArticles: [KnowledgeArticle] = []
+    @Published private(set) var articleRange: KnowledgeArticleRange = .today
+    @Published private(set) var visibleArticles: [KnowledgeArticle] = []
 
     private static let folderKey = "codexbar.knowledgeLibraryFolder"
-    private var seenArticleIDs: Set<String> = []
+    private static let receiptKey = "codexbar.knowledgeArticleReceipts"
+    @Published private var seenArticleIDs: Set<String> = []
+    private var receiptDates: [String: Double]
+    private var readingScope: String?
     private var articles: [KnowledgeArticle] = []
     private var displayedDay: Date?
     private var dayTask: Task<Void, Never>?
@@ -35,6 +41,7 @@ final class KnowledgeLibraryModel: ObservableObject {
         defaults = defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.registryURL = registryURL
         self.now = now
+        receiptDates = defaults.dictionary(forKey: Self.receiptKey) as? [String: Double] ?? [:]
     }
 
     func start() {
@@ -86,31 +93,77 @@ final class KnowledgeLibraryModel: ObservableObject {
     }
 
     func unseenCount(in sectionID: String) -> Int {
-        todayArticles.lazy.filter {
+        visibleArticles.lazy.filter {
             $0.path.hasPrefix(sectionID + "/") && !self.seenArticleIDs.contains($0.id)
         }.count
     }
 
-    /// Selecting a library acknowledges only its current arrivals; its articles stay available.
+    func setArticleRange(_ range: KnowledgeArticleRange) {
+        articleRange = range
+        refreshToday()
+    }
+
+    /// Selecting a library acknowledges only articles in the visible range.
     func markUpdatesSeen(in sectionID: String) {
         refreshToday()
         guard sections.contains(where: { $0.id == sectionID }) else { return }
-        seenArticleIDs.formUnion(todayArticles.lazy.filter { $0.path.hasPrefix(sectionID + "/") }.map(\.id))
+        var nextReceipts = receiptDates
+        for article in visibleArticles where article.path.hasPrefix(sectionID + "/") {
+            if let key = receiptID(for: article.path) {
+                nextReceipts[key] = article.collectedAt.timeIntervalSince1970
+            }
+        }
+        storeReadingReceipts(nextReceipts, relativeTo: now())
+        restoreSeenArticles()
         refreshToday()
     }
 
     func refreshToday() {
+        let date = now()
         let calendar = KnowledgeArticle.collectionCalendar
-        let day = calendar.startOfDay(for: now())
+        let day = calendar.startOfDay(for: date)
         if displayedDay != day {
             displayedDay = day
-            seenArticleIDs.removeAll()
+            storeReadingReceipts(receiptDates, relativeTo: date)
         }
         let current = articles.filter { calendar.isDate($0.collectedAt, inSameDayAs: day) }
             .sorted { $0.collectedAt == $1.collectedAt ? $0.path < $1.path : $0.collectedAt > $1.collectedAt }
         if todayArticles != current { todayArticles = current }
+        let interval = articleRange.interval(relativeTo: date)
+        let visible = articles.filter { $0.collectedAt >= interval.start && $0.collectedAt < interval.end }
+            .sorted { $0.collectedAt == $1.collectedAt ? $0.path < $1.path : $0.collectedAt > $1.collectedAt }
+        if visibleArticles != visible { visibleArticles = visible }
         let unseenCount = current.lazy.filter { !self.seenArticleIDs.contains($0.id) }.count
         if unseenChangeCount != unseenCount { unseenChangeCount = unseenCount }
+    }
+
+    private func receiptID(for path: String) -> String? {
+        guard let readingScope else { return nil }
+        return SHA256.hash(data: Data("\(readingScope)\u{0}\(path)".utf8))
+            .map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func restoreSeenArticles() {
+        let seen = Set(articles.compactMap { article -> String? in
+            guard let key = receiptID(for: article.path),
+                  receiptDates[key] == article.collectedAt.timeIntervalSince1970 else { return nil }
+            return article.id
+        })
+        if seenArticleIDs != seen { seenArticleIDs = seen }
+    }
+
+    private func storeReadingReceipts(_ receipts: [String: Double], relativeTo date: Date) {
+        let interval = KnowledgeArticleRange.lastSevenDays.interval(relativeTo: date)
+        let retained = receipts.filter { key, timestamp in
+            key.utf8.count == 64 && key.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+                && timestamp.isFinite && timestamp >= interval.start.timeIntervalSince1970
+                && timestamp < interval.end.timeIntervalSince1970
+        }.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
+        let bounded = Dictionary(uniqueKeysWithValues: retained.prefix(KnowledgeFolderTracker.maximumNotes)
+            .map { ($0.key, $0.value) })
+        guard bounded != receiptDates else { return }
+        receiptDates = bounded
+        defaults.set(bounded, forKey: Self.receiptKey)
     }
 
     func review(for sectionID: String?) -> KnowledgeVaultReview? {
@@ -299,20 +352,27 @@ final class KnowledgeLibraryModel: ObservableObject {
     }
 
     private var receivedRevision = -1
-    private var receivedBaselineID: UUID?
 
     private func receive(_ next: KnowledgeLibraryUpdate) {
         guard next.revision > receivedRevision else { return }
         receivedRevision = next.revision
-        if receivedBaselineID != next.baselineID {
-            receivedBaselineID = next.baselineID
-            seenArticleIDs.removeAll()
+        var nextReceipts = receiptDates
+        if readingScope == next.rootFingerprint && !next.articleMoves.isEmpty {
+            let oldDates = Dictionary(uniqueKeysWithValues: articles.map { ($0.path, $0.collectedAt) })
+            let newDates = Dictionary(uniqueKeysWithValues: next.articles.map { ($0.path, $0.collectedAt) })
+            for (previous, current) in next.articleMoves where seenArticleIDs.contains(previous)
+                && oldDates[previous] == newDates[current] {
+                if let oldKey = receiptID(for: previous), let newKey = receiptID(for: current),
+                   let timestamp = nextReceipts.removeValue(forKey: oldKey) {
+                    nextReceipts[newKey] = timestamp
+                }
+            }
         }
+        readingScope = next.rootFingerprint
+        storeReadingReceipts(nextReceipts, relativeTo: now())
         if review != next.review { review = next.review }
-        for (previous, current) in next.articleMoves where seenArticleIDs.remove(previous) != nil {
-            seenArticleIDs.insert(current)
-        }
         articles = next.articles
+        restoreSeenArticles()
         refreshToday()
         if noteCount != next.noteCount { noteCount = next.noteCount }
         if sections != next.sections {
@@ -330,11 +390,12 @@ final class KnowledgeLibraryModel: ObservableObject {
         scanRequested = false
         worker = nil
         receivedRevision = -1
-        receivedBaselineID = nil
+        readingScope = nil
         review = nil
         seenArticleIDs.removeAll()
         articles = []
         todayArticles = []
+        visibleArticles = []
         displayedDay = nil
         unseenChangeCount = 0
         noteCount = 0
@@ -350,7 +411,7 @@ private enum KnowledgeLibraryError: Error { case notVault }
 private struct KnowledgeLibraryUpdate: Sendable {
     let review: KnowledgeVaultReview
     let revision: Int
-    let baselineID: UUID
+    let rootFingerprint: String?
     let sections: [KnowledgeFolderSection]
     let noteCount: Int
     let articles: [KnowledgeArticle]
@@ -366,6 +427,7 @@ private actor KnowledgeLibraryWorker {
     private var noteCount = 0
     private var articles: [KnowledgeArticle] = []
     private var baselineID = UUID()
+    private var rootFingerprint: String?
     private var articleMoves: [String: String] = [:]
 
     init(vault: ObsidianVault) {
@@ -380,6 +442,7 @@ private actor KnowledgeLibraryWorker {
             ledger = KnowledgeReviewLedger(vault: ledger.vault, scopeID: baselineID.uuidString)
         }
         ledger.receiveLatest(snapshot.changes, cwd: ledger.vault.rootPath)
+        rootFingerprint = snapshot.rootFingerprint
         warnings = snapshot.warnings
         sections = snapshot.sections
         noteCount = snapshot.noteCount
@@ -418,6 +481,6 @@ private actor KnowledgeLibraryWorker {
         let notices = warnings
         return KnowledgeLibraryUpdate(review: KnowledgeVaultReview(vault: ledger.vault, notes: ledger.recentNotes,
             isLoading: false, message: notices.isEmpty ? nil : notices.joined(separator: "\n")), revision: revision,
-            baselineID: baselineID, sections: sections, noteCount: noteCount, articles: articles, articleMoves: articleMoves)
+            rootFingerprint: rootFingerprint, sections: sections, noteCount: noteCount, articles: articles, articleMoves: articleMoves)
     }
 }
