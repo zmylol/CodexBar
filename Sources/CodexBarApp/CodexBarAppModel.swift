@@ -26,7 +26,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     let activityStore: LiveTaskActivityStore
     let previewStore = ConversationPreviewStore()
     let knowledgeStore = KnowledgeReviewStore()
-    let knowledgeLibrary = KnowledgeLibraryModel()
+    let knowledgeLibrary: KnowledgeLibraryModel
     var visibleTasks: [CodexTask] { taskVisibility.visibleTasks(in: store.tasks) }
     var visibleSortedTasks: [CodexTask] { taskVisibility.visibleTasks(in: store.sortedTasks) }
     var hasNoOpenWindows: Bool { taskVisibility.hasNoOpenWindows }
@@ -89,7 +89,8 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         activator: AccessibilityWindowActivator,
         inboxMonitor: CodexInboxMonitor,
         windowMonitor: VSCodeWindowMonitor = VSCodeWindowMonitor(),
-        threadSnapshotLoader: (any CodexThreadSnapshotLoading)? = nil
+        threadSnapshotLoader: (any CodexThreadSnapshotLoading)? = nil,
+        knowledgeLibrary: KnowledgeLibraryModel = KnowledgeLibraryModel()
     ) {
         self.store = store
         self.activityStore = activityStore
@@ -98,6 +99,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         self.inboxMonitor = inboxMonitor
         self.windowMonitor = windowMonitor
         self.threadSnapshotLoader = threadSnapshotLoader
+        self.knowledgeLibrary = knowledgeLibrary
         super.init()
     }
 
