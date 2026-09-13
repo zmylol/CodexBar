@@ -58,6 +58,7 @@ struct KnowledgeLibraryModelChecks {
             ("article reading ranges", articleReadingRanges),
             ("persistent article reading history", persistentArticleReadingHistory),
             ("reading history notifications and retention", readingHistoryNotificationsAndRetention),
+            ("historical acknowledgement at receipt capacity", historicalAcknowledgementAtReceiptCapacity),
             ("vault reading history isolation", vaultReadingHistoryIsolation),
             ("root replaced while stopped", rootReplacedWhileStopped)
         ]
@@ -341,6 +342,45 @@ struct KnowledgeLibraryModelChecks {
         try requireState(defaults.dictionary(forKey: receiptKey)?.isEmpty == true,
                          "Reading receipts older than the seven-day window were not pruned on day refresh")
         print("PASS reading receipts: yesterday badge publishes updates, collection dates identify new arrivals, persisted metadata is private and seven-day retention follows Shanghai midnight")
+    }
+
+    private static func historicalAcknowledgementAtReceiptCapacity() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("knowledge-library-receipt-capacity-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        let suite = "codexbar-library-receipt-capacity-\(UUID().uuidString)"
+        let registry = root.appendingPathComponent("missing.json")
+        let now = ISO8601DateFormatter().date(from: "2026-09-13T12:00:00+08:00")!
+        let receiptKey = "codexbar.knowledgeArticleReceipts"
+        let capacity = 10_000
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(Dictionary(uniqueKeysWithValues: (0..<capacity).map {
+            (String(format: "%064x", $0), now.timeIntervalSince1970)
+        }), forKey: receiptKey)
+        let model = KnowledgeLibraryModel(defaultsSuiteName: suite, registryURL: registry, now: { now })
+        defer {
+            model.stop()
+            try? FileManager.default.removeItem(at: root)
+            defaults.removePersistentDomain(forName: suite)
+        }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".obsidian"), withIntermediateDirectories: true)
+        try writeNote(articleText("Yesterday in another vault", collected: "2026-09-12"), path: "A/Yesterday.md", root: root)
+        await model.selectVault(root)
+        model.setArticleRange(.yesterday)
+        try requireState(model.unseenCount(in: "A") == 1, "The capacity fixture did not expose an unread historical article")
+        model.markUpdatesSeen(in: "A")
+        try requireState(model.unseenCount(in: "A") == 0,
+                         "A full receipt store discarded the just-acknowledged historical article because newer collections occupied capacity")
+        try requireState((defaults.dictionary(forKey: receiptKey)?.count ?? 0) <= capacity,
+                         "Acknowledging a historical article exceeded the receipt capacity")
+        model.stop()
+
+        let restored = KnowledgeLibraryModel(defaultsSuiteName: suite, registryURL: registry, now: { now })
+        defer { restored.stop() }
+        await restored.restoreNow()
+        restored.setArticleRange(.yesterday)
+        try requireState(restored.visibleArticles.map(\.path) == ["A/Yesterday.md"] && restored.unseenCount(in: "A") == 0,
+                         "Restart forgot the historical article acknowledged while the receipt store was full")
+        print("PASS receipt capacity: historical acknowledgement remains read immediately and after restart without exceeding the storage bound")
     }
 
     private static func vaultReadingHistoryIsolation() async throws {
