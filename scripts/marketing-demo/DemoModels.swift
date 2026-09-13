@@ -70,6 +70,7 @@ enum PanelPlacement { case topLeft, topRight, bottomLeft, bottomRight }
         KnowledgeFolderSection(relativePath: $0, name: $0, noteCount: 0)
     }
     @Published var todayArticles: [KnowledgeArticle] = []
+    @Published private(set) var articleRange: KnowledgeArticleRange = .today
     @Published var seen: Set<String> = []
     let message: String? = nil
     let isLoading = false
@@ -77,11 +78,15 @@ enum PanelPlacement { case topLeft, topRight, bottomLeft, bottomRight }
     var onSeen: () -> Void = {}
     var onArrival: () -> Void = {}
     var unseenChangeCount: Int { todayArticles.filter { !seen.contains($0.id) }.count }
+    var visibleArticles: [KnowledgeArticle] { articleRange == .yesterday ? [] : todayArticles }
 
     init() { reset() }
 
+    func setArticleRange(_ range: KnowledgeArticleRange) { articleRange = range }
+
     func reset() {
         seen = []
+        articleRange = .today
         todayArticles = [
             article("Anthropic/agents.md", "设计一个可靠的 Agent 工作流",
                     summary: "把需求拆成可验证的小任务，为每一步提供明确输入和完成条件。遇到无法确认的结果时暂停检查，让自动执行始终有据可查。"),
@@ -103,11 +108,11 @@ enum PanelPlacement { case topLeft, topRight, bottomLeft, bottomRight }
     }
 
     func unseenCount(in sectionID: String) -> Int {
-        todayArticles.filter { $0.path.hasPrefix(sectionID + "/") && !seen.contains($0.id) }.count
+        visibleArticles.filter { $0.path.hasPrefix(sectionID + "/") && !seen.contains($0.id) }.count
     }
 
     func markUpdatesSeen(in sectionID: String) {
-        seen.formUnion(todayArticles.filter { $0.path.hasPrefix(sectionID + "/") }.map(\.id))
+        seen.formUnion(visibleArticles.filter { $0.path.hasPrefix(sectionID + "/") }.map(\.id))
         onSeen()
     }
 

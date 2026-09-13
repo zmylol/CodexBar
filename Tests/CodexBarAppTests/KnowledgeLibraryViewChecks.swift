@@ -82,7 +82,9 @@ import SwiftUI
     }
 
     @MainActor static func value(of element: AnyObject?) -> String? {
-        (element as? NSAccessibilityProtocol)?.accessibilityValue() as? String
+        guard let object = element as? NSObject,
+              object.responds(to: #selector(NSAccessibilityProtocol.accessibilityValue)) else { return nil }
+        return object.perform(#selector(NSAccessibilityProtocol.accessibilityValue))?.takeUnretainedValue() as? String
     }
 
     @MainActor static func checkSelected(_ id: String, _ selected: Bool, in host: NSView) {
@@ -151,6 +153,8 @@ import SwiftUI
                       "Each reading range must have an accessible control: \(range.rawValue)")
             }
             check(model.articleRange == .today, "The library must initially show today's articles")
+            check(value(of: element("knowledge-library-range-today", in: host)) == "已选中",
+                  "The default reading range must expose its selected state")
             check(model.markedSections.isEmpty, "Initial presentation must not acknowledge any library")
             check(element("knowledge-library-select-section", in: host) != nil,
                   "Initial detail must ask the user to select a library")
@@ -233,6 +237,9 @@ import SwiftUI
             let responderBeforeRangeChange = window.firstResponder
             press("knowledge-library-range-yesterday", in: host)
             check(model.articleRange == .yesterday, "Yesterday's control must select yesterday's articles")
+            check(value(of: element("knowledge-library-range-yesterday", in: host)) == "已选中" &&
+                  value(of: element("knowledge-library-range-today", in: host)) == "未选中",
+                  "Changing the reading range must update the controls' accessible selection state")
             checkSelected("Hugging Face", true, in: host)
             check(model.markedSections == marksBeforeRangeChange && unreadBadge("Hugging Face", in: host),
                   "Changing the reading range must retain the category without acknowledging its articles")
@@ -256,7 +263,13 @@ import SwiftUI
                   "The seven-day detail must include both today's and yesterday's articles")
             check(!unreadBadge("Hugging Face", in: host) && unreadBadge("Anthropic", in: host),
                   "Acknowledged articles must remain acknowledged across reading ranges")
+            check(value(of: element("knowledge-note-\(yesterday.id)", in: host))?.contains("收录") == true,
+                  "The seven-day detail must expose each article's collection date to screen readers")
             capture(host, path: "/tmp/codexbar-library-week.png")
+            window.setContentSize(NSSize(width: 320, height: 520))
+            settle()
+            capture(host, path: "/tmp/codexbar-library-week-narrow.png")
+            window.setContentSize(NSSize(width: 600, height: 520))
             press("knowledge-library-range-today", in: host)
             press("knowledge-library-row-LangChain", in: host)
             check(element("knowledge-library-empty-LangChain", in: host) != nil,
@@ -264,7 +277,7 @@ import SwiftUI
             check(element("knowledge-note-\(second.id)", in: host) == nil,
                   "Switching libraries must replace the detail list")
             press("knowledge-library-range-yesterday", in: host)
-            check(element("knowledge-library-empty-LangChain", in: host)?.accessibilityLabel?() == "昨日暂无新增",
+            check(value(of: element("knowledge-library-empty-LangChain", in: host)) == "昨日暂无新增",
                   "An empty category must announce yesterday when yesterday is selected")
             press("knowledge-library-range-today", in: host)
         }

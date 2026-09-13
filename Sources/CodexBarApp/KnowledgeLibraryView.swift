@@ -19,6 +19,9 @@ struct KnowledgeLibraryView: View {
     var body: some View {
         VStack(spacing: 0) {
             toolbar
+            if model.review != nil {
+                rangeSelector
+            }
             Divider().opacity(0.22)
 
             if let message = model.message ?? model.review?.message {
@@ -93,12 +96,12 @@ struct KnowledgeLibraryView: View {
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("今日新增")
+        .accessibilityLabel(model.articleRange.heading)
     }
 
     private var toolbar: some View {
         HStack(spacing: 6) {
-            Text("今日新增")
+            Text(model.articleRange.heading)
                 .font(.system(size: 14, weight: .medium))
             Spacer(minLength: 8)
             if model.review != nil {
@@ -140,6 +143,40 @@ struct KnowledgeLibraryView: View {
         .padding(.leading, 18)
         .padding(.trailing, 10)
         .padding(.vertical, 8)
+    }
+
+    private var rangeSelector: some View {
+        HStack(spacing: 3) {
+            ForEach(KnowledgeArticleRange.allCases, id: \.rawValue) { range in
+                let isSelected = model.articleRange == range
+                Button {
+                    model.setArticleRange(range)
+                } label: {
+                    Text(range.title)
+                        .font(.system(size: 11, weight: isSelected ? .medium : .regular))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(isSelected ? Color.accentColor.opacity(0.14) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .focusable(true)
+                .focused($focusedItemID, equals: "range:\(range.rawValue)")
+                .keyboardShortcut(activationShortcut(for: "range:\(range.rawValue)"))
+                .accessibilityLabel(range.title)
+                .accessibilityValue(isSelected ? "已选中" : "未选中")
+                .accessibilityIdentifier("knowledge-library-range-\(range.rawValue)")
+            }
+        }
+        .padding(3)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .frame(maxWidth: 300)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 18)
+        .padding(.bottom, 10)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("文章时间范围")
     }
 
     private func categoryRow(_ section: KnowledgeFolderSection) -> some View {
@@ -186,19 +223,19 @@ struct KnowledgeLibraryView: View {
         .keyboardShortcut(activationShortcut(for: "section:\(section.id)"))
         .accessibilityLabel(section.name + (unseenCount > 0 ? "，\(unseenCount) 篇未查看" : ""))
         .accessibilityValue(isSelected ? "已选中" : "未选中")
-        .accessibilityHint("查看今日新增文章并清除此知识库的提醒")
+        .accessibilityHint("查看\(model.articleRange.heading)文章并清除此范围的提醒")
         .accessibilityIdentifier("knowledge-library-row-\(section.id)")
     }
 
     @ViewBuilder private var articleDetail: some View {
         if let section = selectedSection {
-            let articles = model.todayArticles.filter { $0.path.hasPrefix(section.id + "/") }
+            let articles = model.visibleArticles.filter { $0.path.hasPrefix(section.id + "/") }
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(section.name)
                         .font(.system(size: 14, weight: .medium))
                         .lineLimit(2)
-                    Text("今日新增")
+                    Text(model.articleRange.heading)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
@@ -206,7 +243,7 @@ struct KnowledgeLibraryView: View {
                 .padding(.top, 17)
                 .padding(.bottom, 12)
                 if articles.isEmpty {
-                    Text("今日暂无新增")
+                    Text(emptyArticlesMessage)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -222,13 +259,13 @@ struct KnowledgeLibraryView: View {
                         .padding(.bottom, 12)
                     }
                     .id(section.id)
-                    .accessibilityLabel("\(section.name)今日新增文章")
+                    .accessibilityLabel("\(section.name)\(model.articleRange.heading)文章")
                     .accessibilityIdentifier("knowledge-library-article-list")
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         } else {
-            Text("选择知识库查看今日新增")
+            Text("选择知识库查看\(model.articleRange.heading)")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -247,6 +284,11 @@ struct KnowledgeLibraryView: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.primary)
                     .lineLimit(2)
+                if model.articleRange == .lastSevenDays {
+                    Text(collectionDateLabel(for: article))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
                 if let summary = article.summary, !summary.isEmpty {
                     Text(summary)
                         .font(.system(size: 12))
@@ -265,7 +307,9 @@ struct KnowledgeLibraryView: View {
         .focused($focusedItemID, equals: "note:\(article.id)")
         .keyboardShortcut(activationShortcut(for: "note:\(article.id)"))
         .accessibilityLabel(article.title)
-        .accessibilityValue(article.summary ?? "")
+        .accessibilityValue(model.articleRange == .lastSevenDays
+                            ? [collectionDateLabel(for: article), article.summary].compactMap { $0 }.joined(separator: "，")
+                            : article.summary ?? "")
         .accessibilityHint("在 Obsidian 打开文章")
         .accessibilityIdentifier("knowledge-note-\(article.id)")
         .help(article.path)
@@ -273,6 +317,22 @@ struct KnowledgeLibraryView: View {
 
     private func activationShortcut(for id: String) -> KeyboardShortcut? {
         focusedItemID == id ? KeyboardShortcut(.space, modifiers: []) : nil
+    }
+
+    private var emptyArticlesMessage: String {
+        switch model.articleRange {
+        case .today: "今日暂无新增"
+        case .yesterday: "昨日暂无新增"
+        case .lastSevenDays: "近七天暂无新增"
+        }
+    }
+
+    private func collectionDateLabel(for article: KnowledgeArticle) -> String {
+        let format = Date.FormatStyle(locale: Locale(identifier: "zh_CN"),
+                                      calendar: KnowledgeArticle.collectionCalendar,
+                                      timeZone: KnowledgeArticle.collectionCalendar.timeZone)
+            .month(.defaultDigits).day(.defaultDigits)
+        return article.collectedAt.formatted(format) + "收录"
     }
 
     private var emptySections: some View {
@@ -290,9 +350,9 @@ struct KnowledgeLibraryView: View {
 
     private var chooseVault: some View {
         VStack(spacing: 12) {
-            Text("查看知识库今日新增的文章")
+            Text("查看知识库收录的文章")
                 .font(.system(size: 13, weight: .medium))
-            Text("选择 Obsidian 知识库总目录，按分类查看今日收录。")
+            Text("选择 Obsidian 知识库总目录，按分类查看今天、昨天或近七天收录。")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
