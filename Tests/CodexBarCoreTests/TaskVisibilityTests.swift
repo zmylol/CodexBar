@@ -4,6 +4,64 @@ import Foundation
 @MainActor
 func taskVisibilityTestCases() -> [CodexBarTestCase] {
     [
+        CodexBarTestCase(name: "opened roots without conversations remain visible without inventing tasks") {
+            var visibility = VSCodeTaskVisibility()
+            let folder = VSCodeWorkspaceIdentity.folder("/work/new-project")
+            let workspace = VSCodeWorkspaceIdentity.workspace("/work/Team.code-workspace")
+            _ = visibility.update(windows: [
+                VSCodeWindowDescriptor(id: 1, title: "new-project", workspaceFolderPaths: [folder.path], workspace: folder),
+                VSCodeWindowDescriptor(id: 2, title: "Team (Workspace)", workspaceFolderPaths: [], workspace: workspace),
+                VSCodeWindowDescriptor(id: 3, title: "Welcome")
+            ])
+            let rows = visibility.visibleRows(in: [])
+            try expect(Set(rows.map(\.rootPath)) == Set([folder.path, workspace.path]),
+                       "opened roots disappeared because no conversation existed")
+            try expect(rows.allSatisfy { $0.task == nil }, "idle roots invented a session or turn")
+            try expect(rows.first { $0.workspace == workspace }?.isMultiRoot == true,
+                       "empty multi-root workspace lost its identity")
+            try expect(visibility.visibleTasks(in: []).isEmpty, "idle roots became runtime tasks")
+            _ = visibility.update(windows: [])
+            try expect(visibility.visibleRows(in: []).isEmpty, "closed idle roots stayed visible")
+        },
+        CodexBarTestCase(name: "task arrival and removal keep the opened workspace row identity") {
+            let store = TaskStore()
+            let task = visibilityTask("alpha")
+            let identity = VSCodeWorkspaceIdentity.folder(task.cwd)
+            var visibility = VSCodeTaskVisibility()
+            let windows = [VSCodeWindowDescriptor(
+                id: 1, title: "alpha", workspaceFolderPaths: [task.cwd], workspace: identity
+            )]
+            _ = visibility.update(windows: windows)
+            let idle = try require(visibility.visibleRows(in: store.tasks).first, "initial idle root missing")
+            let snapshot = CodexThreadSnapshot(
+                sessionID: task.sessionID, turnID: task.turnID, cwd: task.cwd, title: task.title,
+                status: .completed, startedAt: task.startedAt, updatedAt: task.updatedAt
+            )
+            let reconciler = StartupTaskReconciler(store: store)
+            _ = try await reconciler.reconcile(snapshots: [snapshot], windows: windows)
+            let active = try require(visibility.visibleRows(in: store.tasks).first, "task arrival lost root")
+            let recoveredTask = try require(store.tasks.first, "real task was not recovered")
+            try expect(active.id == idle.id && active.task == recoveredTask, "arrival changed row identity or task")
+            _ = try await store.remove(taskID: recoveredTask.id)
+            _ = try await reconciler.reconcile(snapshots: [snapshot], windows: windows)
+            let removed = try require(visibility.visibleRows(in: store.tasks).first, "task removal hid open root")
+            try expect(removed.id == idle.id && removed.task == nil, "removal resurrected the deleted task")
+            try expect(store.tasks.isEmpty, "idle presentation bypassed the removal record")
+        },
+        CodexBarTestCase(name: "idle roots follow task priority and duplicate windows share one root entry") {
+            let task = visibilityTask("running")
+            let idle = VSCodeWorkspaceIdentity.folder("/work/empty")
+            var visibility = VSCodeTaskVisibility()
+            _ = visibility.update(windows: [
+                VSCodeWindowDescriptor(id: 1, title: "empty", workspaceFolderPaths: [idle.path], workspace: idle),
+                VSCodeWindowDescriptor(id: 2, title: "empty", workspaceFolderPaths: [idle.path], workspace: idle),
+                VSCodeWindowDescriptor(id: 3, title: "running", workspaceFolderPaths: [task.cwd], workspace: .folder(task.cwd))
+            ])
+            let rows = visibility.visibleRows(in: [task])
+            try expect(rows.map(\.rootPath) == [task.cwd, idle.path],
+                       "idle root was missing, duplicated, or displaced a task")
+            try expect(visibility.visibleTasks(in: [task]) == [task], "idle inventory altered live subscriptions")
+        },
         CodexBarTestCase(name: "closing individual and all windows hides their tasks without deleting state") {
             let tasks = [visibilityTask("alpha"), visibilityTask("beta")]
             var visibility = VSCodeTaskVisibility()
