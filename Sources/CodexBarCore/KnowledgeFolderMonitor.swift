@@ -2,15 +2,28 @@ import CoreServices
 import Darwin
 import Foundation
 
+package protocol KnowledgeFolderObservation: Sendable {
+    func stop()
+}
+
 /// Recursive filesystem notifications for an explicitly selected vault, without a polling timer.
 @MainActor
 public final class KnowledgeFolderMonitor {
-    private var stream: KnowledgeFolderEventStream?
+    private var stream: (any KnowledgeFolderObservation)?
+    private let observe: @Sendable (URL, @escaping @MainActor @Sendable () -> Void) throws -> any KnowledgeFolderObservation
     private var generation: UUID?
     private var onChange: (@MainActor @Sendable () -> Void)?
     private var pendingNotification: Task<Void, Never>?
 
-    public init() {}
+    public init() {
+        observe = { root, changed in
+            try KnowledgeFolderEventStream(root: root, context: KnowledgeFolderEventContext(changed: changed))
+        }
+    }
+
+    package init(observe: @escaping @Sendable (URL, @escaping @MainActor @Sendable () -> Void) throws -> any KnowledgeFolderObservation) {
+        self.observe = observe
+    }
 
     /// Start before capturing the initial baseline so edits made during capture trigger another pass.
     public func start(root: URL, onChange: @escaping @MainActor @Sendable () -> Void) throws {
@@ -22,10 +35,10 @@ public final class KnowledgeFolderMonitor {
         let generation = UUID()
         self.generation = generation
         self.onChange = onChange
-        let context = KnowledgeFolderEventContext { [weak self] in
+        let changed: @MainActor @Sendable () -> Void = { [weak self] in
             self?.changed(generation: generation)
         }
-        do { stream = try KnowledgeFolderEventStream(root: root, context: context) }
+        do { stream = try observe(root, changed) }
         catch { stop(); throw error }
     }
 
@@ -34,6 +47,7 @@ public final class KnowledgeFolderMonitor {
         pendingNotification?.cancel()
         pendingNotification = nil
         onChange = nil
+        stream?.stop()
         stream = nil
     }
 
@@ -57,8 +71,8 @@ private final class KnowledgeFolderEventContext: Sendable {
 }
 
 /// Owns the C stream outside actor isolation; invalidation precedes releasing its callback context.
-private final class KnowledgeFolderEventStream: @unchecked Sendable {
-    private let stream: FSEventStreamRef
+private final class KnowledgeFolderEventStream: KnowledgeFolderObservation, @unchecked Sendable {
+    private var stream: FSEventStreamRef?
 
     init(root: URL, context: KnowledgeFolderEventContext) throws {
         var streamContext = FSEventStreamContext(version: 0,
@@ -90,9 +104,13 @@ private final class KnowledgeFolderEventStream: @unchecked Sendable {
         self.stream = stream
     }
 
-    deinit {
+    func stop() {
+        guard let stream else { return }
+        self.stream = nil
         FSEventStreamStop(stream)
         FSEventStreamInvalidate(stream)
         FSEventStreamRelease(stream)
     }
+
+    deinit { stop() }
 }

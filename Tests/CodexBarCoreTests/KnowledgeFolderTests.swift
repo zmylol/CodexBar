@@ -676,13 +676,44 @@ func knowledgeFolderTestCases() -> [CodexBarTestCase] {
             try expect(change.diff?.contains("+new") == true && change.diffFingerprint?.count == 64,
                        "bounded diff lost changed text or content fingerprint")
         },
+        CodexBarTestCase(name: "knowledge folder monitor setup lets queued UI work run") {
+            let root = try knowledgeFolderFixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let gate = FolderMonitorGate()
+            let monitor = KnowledgeFolderMonitor { _, _ in
+                gate.wait()
+                return FolderMonitorObservation {}
+            }
+            defer { monitor.stop() }
+            let uiWork = Task { gate.release() }
+            try await monitor.start(root: root) {}
+            await uiWork.value
+            try expect(gate.completedWithoutTimeout == true,
+                       "folder setup blocked the main actor until filesystem work timed out")
+        },
+        CodexBarTestCase(name: "knowledge folder monitor disposal lets queued UI work run") {
+            let root = try knowledgeFolderFixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let gate = FolderMonitorGate()
+            let monitor = KnowledgeFolderMonitor { _, _ in FolderMonitorObservation { gate.wait() } }
+            try await monitor.start(root: root) {}
+            let uiWork = Task { gate.release() }
+            monitor.stop()
+            await uiWork.value
+            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while gate.completedWithoutTimeout == nil && ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            try expect(gate.completedWithoutTimeout == true,
+                       "folder disposal blocked the main actor until filesystem work timed out")
+        },
         CodexBarTestCase(name: "knowledge folder monitor observes nested writes and stops pending callbacks") {
             let root = try knowledgeFolderFixture()
             defer { try? FileManager.default.removeItem(at: root) }
             try writeFolderNote("before", at: "Nested/Deep/Note.md", root: root)
             let monitor = KnowledgeFolderMonitor()
             let changes = FolderMonitorChanges()
-            try monitor.start(root: root) { changes.count += 1 }
+            try await monitor.start(root: root) { changes.count += 1 }
             defer { monitor.stop() }
             try await Task.sleep(for: .milliseconds(400))
             let baseline = changes.count
@@ -698,13 +729,34 @@ func knowledgeFolderTestCases() -> [CodexBarTestCase] {
             try await Task.sleep(for: .milliseconds(500))
             try expect(changes.count == stopped, "stopped monitor delivered a callback")
             let newChanges = FolderMonitorChanges()
-            try monitor.start(root: root) { newChanges.count += 1 }
+            try await monitor.start(root: root) { newChanges.count += 1 }
             try writeFolderNote("pending", at: "Nested/Deep/Note.md", root: root)
             monitor.stop()
             try await Task.sleep(for: .milliseconds(500))
             try expect(newChanges.count == 0, "stop did not cancel pending delivery after restart")
         }
     ]
+}
+
+private final class FolderMonitorObservation: KnowledgeFolderObservation {
+    private let onStop: @Sendable () -> Void
+    init(_ onStop: @escaping @Sendable () -> Void) { self.onStop = onStop }
+    func stop() { onStop() }
+}
+
+private final class FolderMonitorGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var result: Bool?
+
+    var completedWithoutTimeout: Bool? { lock.withLock { result } }
+
+    func wait() {
+        let completed = semaphore.wait(timeout: .now() + 1) == .success
+        lock.withLock { result = completed }
+    }
+
+    func release() { semaphore.signal() }
 }
 
 private func knowledgeFolderFixture() throws -> URL {
