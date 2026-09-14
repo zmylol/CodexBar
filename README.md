@@ -10,7 +10,7 @@
 
 [![CI](https://github.com/zmylol/CodexBar/actions/workflows/ci.yml/badge.svg)](https://github.com/zmylol/CodexBar/actions/workflows/ci.yml) [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111827?style=flat-square&logo=apple&logoColor=white)](#快速开始) [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?style=flat-square&logo=swift&logoColor=white)](Package.swift) [![MIT License](https://img.shields.io/badge/License-MIT-8B5CF6?style=flat-square)](LICENSE) [![Local First](https://img.shields.io/badge/Local-First-14B8A6?style=flat-square)](PRIVACY.md)
 
-[观看演示](#看看它怎么工作) · [快速开始](#快速开始) · [知识库配置](docs/KNOWLEDGE_SETUP.md) · [使用指南](docs/USER_GUIDE.md) · [反馈想法](https://github.com/zmylol/CodexBar/issues)
+[观看演示](#看看它怎么工作) · [工作区与分支](#工作区与分支并行开发也能分清) · [快速开始](#快速开始) · [知识库配置](docs/KNOWLEDGE_SETUP.md) · [使用指南](docs/USER_GUIDE.md) · [反馈想法](https://github.com/zmylol/CodexBar/issues)
 
 </div>
 
@@ -31,6 +31,25 @@
 - **切换与专注，分别选择：** 点击项目名或预览底部“切到项目”，回到对应窗口，保留其他窗口状态。需要专注时，从项目右侧三点菜单或右键菜单选择“专注此项目（最小化其他窗口）”，最小化其他 VS Code 窗口。
 
 <sub>“可查看”表示当前一轮已停止，可以回看结果；是否达到预期，仍由你验收。</sub>
+
+## 工作区与分支：并行开发也能分清
+
+- **按实际打开的工作区显示：** 已有 Codex 会话归到 VS Code 打开的根目录；本地多项目工作区显示一条工作区入口，支持已保存的 `.code-workspace` 和未命名工作区。同一目录在单独窗口与多项目工作区中同时打开时，各自保留入口。
+- **自动识别 Git worktree 关系：** 同仓库的工作目录连续显示，仓库名只出现一次。各行以分支短名区分，关联工作树带 `WT` 标记；完整分支名和路径可在详情中查看，无需依赖被截断的项目全名。
+- **用树形展示分支来源：** Git 创建记录能确认来源且来源分支窗口也已打开时，父分支在前、子分支缩进连线；从子分支继续创建，也能逐级显示。每个工作目录保留独立状态、详情和窗口切换入口。
+
+例如，下列三个分支的工作目录均已打开，且创建来源可确认时：
+
+```text
+example-project
+└─ main
+   └─ graph-runtime       WT
+      └─ graph-ui         WT
+```
+
+切换分支后自动更新显示，同仓库整组按最高优先级任务的位置排序。父窗口关闭后，只保留实际打开的子分支；来源可确认时注明“创建自…”，不会生成虚拟任务。
+
+父子线表示**创建时的来源**。创建记录只有 `HEAD`、已经过期或无法确认来源时，保持同仓库平级显示；创建工作树时显式填写本地来源分支名，可留下可识别的记录。窄面板最多向下缩进三级，更深的来源用文字说明。[操作与识别规则 →](docs/USER_GUIDE.md#日常操作)
 
 ## 知识库：今天收了什么，一眼读明白
 
@@ -72,11 +91,13 @@ open "$HOME/Applications/CodexBar.app"
 | 使用场景 | 当前支持 |
 | :--- | :--- |
 | **macOS + 官方 VS Code Stable + Codex IDE 扩展** | 任务状态、会话预览、项目窗口切换 |
+| **本地多项目工作区** | 按打开的工作区归并已有会话，支持已保存与未命名工作区 |
+| **同仓库 Git worktree 并行开发** | 分支分组、独立状态与窗口入口；可确认创建来源时显示父子层级 |
 | **Obsidian 知识库** | 按库查看今日收录文章与摘要，可搭配 Codex 桌面端、CLI 或其他工具写入的 Markdown |
 | Codex 桌面端 / Codex CLI 的任务和会话 | 暂未接入 |
 | Cursor / Windsurf / VS Code Insiders / Windows / Linux | 暂不支持 |
 
-每个 VS Code 窗口对应一个主要项目时体验最好。会话预览依赖扩展的内部本地接口；多窗口歧义、远程任务等边界见[支持范围](docs/USER_GUIDE.md#支持范围)。
+窗口切换要求所选根目录或工作区能够唯一匹配。会话预览依赖扩展的内部本地接口；重复窗口、同名歧义、远程任务等边界见[支持范围](docs/USER_GUIDE.md#支持范围)。
 
 <div align="center">
 
