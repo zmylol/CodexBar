@@ -5,15 +5,40 @@ import SwiftUI
 // These in-memory substitutes intentionally replace the runtime-facing app models.
 // No app monitor, file watcher, saved preference, URL opener or network client is created.
 @MainActor final class TaskStore: ObservableObject {
-    @Published var tasks: [CodexTask] = [
-        TaskStore.task("Atlas", title: "实现项目看板", status: .running),
-        TaskStore.task("Studio", title: "选择界面方案", status: .needsAttention),
-        TaskStore.task("Notes", title: "完成搜索体验", status: .ready)
-    ]
+    static let mainTaskID = "atlas-main"
+    static let runtimeTaskID = "atlas-graph-runtime"
+    static let uiTaskID = "atlas-graph-ui"
+    static let studioTaskID = "studio"
 
-    private static func task(_ name: String, title: String, status: CodexTaskStatus) -> CodexTask {
-        CodexTask(id: name, sessionID: "demo-" + name, turnID: "demo-turn",
-                  cwd: "/demo/projects/" + name.lowercased(), workspaceName: name,
+    @Published var tasks: [CodexTask] = TaskStore.initialTasks()
+
+    func resetTasks() { tasks = Self.initialTasks() }
+
+    func setTaskStatus(id: String, status: CodexTaskStatus) {
+        guard let index = tasks.firstIndex(where: { $0.id == id }) else { return }
+        tasks[index].status = status
+        tasks[index].updatedAt = Date()
+        tasks[index].isUnread = status == .ready
+    }
+
+    private static func initialTasks() -> [CodexTask] {
+        [
+            task(mainTaskID, name: "Atlas", folder: "atlas",
+                 title: "项目看板已完成", status: .ready),
+            task(runtimeTaskID, name: "Atlas Graph Runtime", folder: "atlas-graph-runtime",
+                 title: "实现图任务调度", status: .running),
+            task(uiTaskID, name: "Atlas Graph UI", folder: "atlas-graph-ui",
+                 title: "确认图节点的交互方案", status: .needsAttention),
+            task(studioTaskID, name: "Studio", folder: "studio",
+                 title: "完成界面预览", status: .ready)
+        ]
+    }
+
+    private static func task(
+        _ id: String, name: String, folder: String, title: String, status: CodexTaskStatus
+    ) -> CodexTask {
+        CodexTask(id: id, sessionID: "demo-" + id, turnID: "demo-turn-" + id,
+                  cwd: "/demo/projects/" + folder, workspaceName: name,
                   title: title, status: status, startedAt: Date().addingTimeInterval(-90),
                   updatedAt: Date(), isUnread: status == .ready)
     }
@@ -42,25 +67,47 @@ enum PanelPlacement { case topLeft, topRight, bottomLeft, bottomRight }
     let notice: PanelNotice? = nil
     let connectionStatusMessage = "演示连接 · 虚构数据"
     let inboxHealth = CodexInboxHealth(pendingCount: 0, discardedCount: 0)
-    var onActivate: () -> Void = {}
+    var onActivate: (VSCodeTaskRow) -> Void = { _ in }
+    var onRefresh: () -> Void = {}
+    private let workspaceLabels: [String: GitWorkspaceLabel] = [
+        "/demo/projects/atlas": GitWorkspaceLabel(
+            repositoryName: "Atlas", branch: "main", shortBranch: "main",
+            isLinkedWorktree: false, workspaceRoot: "/demo/projects/atlas",
+            repositoryID: "/demo/projects/atlas/.git"
+        ),
+        "/demo/projects/atlas-graph-runtime": GitWorkspaceLabel(
+            repositoryName: "Atlas", branch: "graph-runtime", shortBranch: "graph-r…",
+            isLinkedWorktree: true, workspaceRoot: "/demo/projects/atlas-graph-runtime",
+            sourceBranch: "main", repositoryID: "/demo/projects/atlas/.git"
+        ),
+        "/demo/projects/atlas-graph-ui": GitWorkspaceLabel(
+            repositoryName: "Atlas", branch: "graph-ui", shortBranch: "graph-ui",
+            isLinkedWorktree: true, workspaceRoot: "/demo/projects/atlas-graph-ui",
+            sourceBranch: "graph-runtime", repositoryID: "/demo/projects/atlas/.git"
+        )
+    ]
     var visibleTasks: [CodexTask] { store.tasks }
-    var visibleRows: [VSCodeTaskRow] {
+    private var taskRows: [VSCodeTaskRow] {
         store.tasks.map { task in
             VSCodeTaskRow(id: "workspace:\(task.cwd)", displayName: task.workspaceName,
                           rootPath: task.cwd, isMultiRoot: false, task: task)
         }
     }
     var visibleGroups: [GitWorkspaceGroup] {
-        GitWorkspaceTree.groups(rows: visibleRows, labels: [:])
+        GitWorkspaceTree.groups(rows: taskRows, labels: workspaceLabels)
     }
+    var visibleRows: [VSCodeTaskRow] { visibleGroups.flatMap { $0.rows.map(\.row) } }
     var visibleRowHeights: [CGFloat] {
         CodexBarPanelLayout.rowHeights(groups: visibleGroups)
     }
 
-    func workspaceLabel(for row: VSCodeTaskRow) -> GitWorkspaceLabel? { nil }
-    func activate(_ row: VSCodeTaskRow, minimizeOtherWindows: Bool = false) { onActivate() }
+    func workspaceLabel(for row: VSCodeTaskRow) -> GitWorkspaceLabel? { workspaceLabels[row.rootPath] }
+    func row(forTaskID id: String) -> VSCodeTaskRow? { visibleRows.first { $0.task.id == id } }
+    func setTaskStatus(id: String, status: CodexTaskStatus) { store.setTaskStatus(id: id, status: status) }
+    func resetTasks() { store.resetTasks() }
+    func activate(_ row: VSCodeTaskRow, minimizeOtherWindows: Bool = false) { onActivate(row) }
     func remove(_ task: CodexTask) {}
-    func refreshOpenTasks() {}
+    func refreshOpenTasks() { onRefresh() }
     func clearRead() {}
     func clearOldUnmatchedTasks() {}
     func setPanelDisplayMode(_ mode: CodexBarPanelDisplayMode) { panelDisplayMode = mode }

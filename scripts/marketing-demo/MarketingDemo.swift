@@ -5,34 +5,68 @@ import SwiftUI
 @MainActor private final class DemoState: ObservableObject {
     @Published var scene = 0
     @Published var generation = 0
+    @Published var selectedTaskID = TaskStore.uiTaskID
     let appModel = CodexBarAppModel()
 
     init() {
-        appModel.onActivate = { [weak self] in self?.scene = 1 }
+        appModel.onActivate = { [weak self] row in self?.activate(row) }
         appModel.knowledgeLibrary.onSeen = { [weak self] in
-            if self?.scene == 2 { self?.scene = 3 }
+            if self?.scene == 4 { self?.scene = 5 }
         }
-        appModel.knowledgeLibrary.onArrival = { [weak self] in self?.scene = 4 }
+        appModel.knowledgeLibrary.onArrival = { [weak self] in self?.scene = 6 }
+    }
+
+    var selectedRow: VSCodeTaskRow {
+        appModel.row(forTaskID: selectedTaskID) ?? appModel.visibleRows[0]
+    }
+
+    func activate(_ row: VSCodeTaskRow) {
+        selectedTaskID = row.task.id
+        scene = 2
+    }
+
+    func showPreview(_ row: VSCodeTaskRow) {
+        selectedTaskID = row.task.id
+        scene = 1
+    }
+
+    func continueTask() {
+        appModel.setTaskStatus(id: selectedTaskID, status: .running)
+        if selectedTaskID == TaskStore.uiTaskID {
+            appModel.setTaskStatus(id: TaskStore.runtimeTaskID, status: .ready)
+        }
+        scene = 3
     }
 
     func next() {
-        if scene == 3 { appModel.knowledgeLibrary.refresh() }
-        else if scene == 4 { reset() }
-        else { scene += 1 }
+        switch scene {
+        case 0: showPreview(selectedRow)
+        case 1: activate(selectedRow)
+        case 2: continueTask()
+        case 3: scene = 4
+        case 4: scene = 5
+        case 5: appModel.knowledgeLibrary.refresh()
+        default: reset()
+        }
     }
 
     func reset() {
+        appModel.resetTasks()
         appModel.knowledgeLibrary.reset()
+        selectedTaskID = TaskStore.uiTaskID
         generation += 1
         scene = 0
     }
 
     var title: String {
-        ["几个项目，\n一眼看清。", "读完结果，\n继续创造。", "新知识，\n有数可查。", "点开即看，\n提醒归零。", "新的文章，\n来了就知道。"][scene]
+        ["多个任务，\n一眼分清。", "需要接手，\n先看上下文。", "点击分支，\n回到对应项目。", "继续推进，\n状态各自更新。",
+         "新知识，\n有数可查。", "点开即看，\n提醒归零。", "新的文章，\n来了就知道。"][scene]
     }
     var detail: String {
-        ["执行中、需要处理、可查看回复。\n把 Codex 的进展留在视线里。",
-         "原生会话预览，支持 Markdown。\n工具输出按需展开。",
+        ["独立状态，父子分支。\n谁在执行、谁需要你，扫一眼就知道。",
+         "读取当前分支的回复与工具输出。\n完整分支名、来源和路径就在详情里。",
+         "main、graph-runtime、graph-ui，\n每个工作目录都有自己的入口。",
+         "一个分支继续执行，另一个可以回看。\n同仓库保持成组，任务状态各自独立。",
          "按知识库分类，只看今日收录。\n数字告诉你还有几篇没看。",
          "标题和一段摘要，快速了解内容。\n点击知识库后，它的数字消失。",
          "稍后收录的文章带着摘要到达。\n刚看过的知识库也会再次提醒。"][scene]
@@ -43,13 +77,21 @@ private struct MarketingDemoView: View {
     @ObservedObject var state: DemoState
 
     private var preview: CodexConversationPreview {
-        CodexConversationPreview(sessionID: "demo-Notes", cwd: "/demo/projects/notes", items: [
+        let task = state.selectedRow.task
+        let target = state.appModel.workspaceLabel(for: state.selectedRow)?.branch ?? state.selectedRow.displayName
+        let progress: String
+        switch task.status {
+        case .needsAttention: progress = "方案已准备，等待你确认后继续实现。"
+        case .running: progress = "当前正在执行，新的进展会继续出现在这里。"
+        case .ready: progress = "本轮已停止，可以回到项目检查改动。"
+        }
+        return CodexConversationPreview(sessionID: task.sessionID, cwd: task.cwd, items: [
             CodexConversationItem(id: "request", kind: .user, title: "你",
-                                  text: "给笔记应用加上即时搜索，让找到灵感更轻松。"),
+                                  text: "继续 \(target) 的任务：\(task.title)。"),
             CodexConversationItem(id: "reply", kind: .assistant, title: "Codex",
-                                  text: "### 搜索体验已完成\n现在输入关键词，就能即时找到相关笔记。\n\n- 支持标题与正文搜索\n- 高亮匹配的关键词\n- 键盘方向键切换结果\n\n```swift\nlet matches = notes.search(query)\n```\n\n可以回到项目试一下搜索手感。"),
-            CodexConversationItem(id: "tool", kind: .tool, title: "工具完成 · 演示输出",
-                                  text: "✓ Title search\n✓ Content search\n✓ Keyboard navigation\n3 demo checks passed", detail: "$ run-demo-checks")
+                                  text: "### \(target) 的演示进展\n\(task.title)\n\n- 当前工作目录单独跟踪进度\n- 保留其他分支的任务状态\n- 改动与检查结果可以分别回看\n\n**\(progress)**"),
+            CodexConversationItem(id: "tool", kind: .tool, title: "工具完成 · 演示检查",
+                                  text: "✓ Independent branch state\n✓ Parent and child layout\n✓ Workspace target identity\n3 demo checks passed", detail: "$ run-demo-checks")
         ], historyComplete: true, revision: 1)
     }
 
@@ -98,7 +140,7 @@ private struct MarketingDemoView: View {
 
     private var introduction: some View {
         VStack(alignment: .leading, spacing: 22) {
-            Text(String(format: "%02d", state.scene + 1) + " / 05")
+            Text(String(format: "%02d", state.scene < 4 ? state.scene + 1 : state.scene - 3) + (state.scene < 4 ? " / 04" : " / 03"))
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                 .foregroundStyle(Color(red: 0.47, green: 0.81, blue: 0.88))
             Text(state.title).font(.system(size: 37, weight: .semibold))
@@ -107,17 +149,21 @@ private struct MarketingDemoView: View {
                 .foregroundStyle(.white.opacity(0.68))
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
-                ForEach(0..<5) { index in
-                    Capsule().fill(index == state.scene ? Color.teal : Color.white.opacity(0.15))
-                        .frame(width: index == state.scene ? 26 : 7, height: 5)
+                ForEach(0..<(state.scene < 4 ? 4 : 3), id: \.self) { index in
+                    Capsule().fill(index == (state.scene < 4 ? state.scene : state.scene - 4) ? Color.teal : Color.white.opacity(0.15))
+                        .frame(width: index == (state.scene < 4 ? state.scene : state.scene - 4) ? 26 : 7, height: 5)
                 }
             }.padding(.top, 6)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private var taskBarHeight: CGFloat {
+        CodexBarPanelLayout.height(rowHeights: state.appModel.visibleRowHeights, noticeVisible: false, displayMode: .expanded)
+    }
+
     @ViewBuilder private var stage: some View {
-        if state.scene >= 2 {
+        if state.scene >= 4 {
             KnowledgeLibraryView(model: state.appModel.knowledgeLibrary,
                                  onChooseVault: {}, onHoverChanged: { _ in }, onClose: {})
                 .id(state.generation)
@@ -125,28 +171,35 @@ private struct MarketingDemoView: View {
                 .shadow(color: .black.opacity(0.25), radius: 22, y: 14)
         } else if state.scene == 1 {
             HStack(alignment: .top, spacing: 14) {
-                taskBar.frame(width: 126, height: 112).padding(.top, 60)
-                TaskDetailCard(task: state.appModel.store.tasks[2],
-                               summary: CodexTaskDetailSummary(task: state.appModel.store.tasks[2], plan: nil, activities: []),
+                taskBar.frame(width: 126, height: taskBarHeight).padding(.top, 52)
+                TaskDetailCard(task: state.selectedRow.task,
+                               summary: CodexTaskDetailSummary(task: state.selectedRow.task, plan: nil, activities: []),
                                preview: preview, state: .ready, message: nil, isLoadingHistory: false,
-                               onOpen: {}, onRefreshPreview: {}, onLoadHistory: {})
-                    .frame(width: 420, height: 466)
+                               onOpen: { state.activate(state.selectedRow) }, onRefreshPreview: {}, onLoadHistory: {},
+                               workspaceLabel: state.appModel.workspaceLabel(for: state.selectedRow),
+                               workspaceRow: state.selectedRow)
+                    .frame(width: 420, height: 510)
                     .background(VisualEffectBackground())
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                     .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.white.opacity(0.15)))
             }
             .shadow(color: .black.opacity(0.25), radius: 22, y: 14)
+        } else if state.scene == 2 {
+            HStack(alignment: .top, spacing: 18) {
+                taskBar.frame(width: 126, height: taskBarHeight).padding(.top, 52)
+                workspaceScene.frame(width: 420, height: 420)
+            }
         } else {
             ZStack(alignment: .trailing) {
-                projectBackdrop.frame(width: 480, height: 344)
-                    .rotationEffect(.degrees(-3)).offset(x: -52, y: 18)
-                VStack(spacing: 16) {
-                    taskBar.frame(width: 126, height: 112)
-                        .scaleEffect(1.7)
-                        .frame(width: 215, height: 190)
-                    Text("真实悬浮条 · 放大展示")
-                        .font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
-                }.offset(x: -6, y: -12)
+                projectBackdrop.frame(width: 450, height: 370)
+                    .rotationEffect(.degrees(-3)).offset(x: -80, y: 18)
+                VStack(spacing: 18) {
+                    taskBar.frame(width: 126, height: taskBarHeight)
+                        .scaleEffect(2.2)
+                        .frame(width: 278, height: taskBarHeight * 2.2)
+                    Text("原生任务条 · 放大展示")
+                        .font(.system(size: 10)).foregroundStyle(.white.opacity(0.55))
+                }.offset(x: -12, y: -5)
             }
         }
     }
@@ -154,8 +207,44 @@ private struct MarketingDemoView: View {
     private var taskBar: some View {
         TaskListView(model: state.appModel,
                      onTaskHoverChanged: { _, _, _ in },
-                     onTaskDetailRequested: { _, _ in state.scene = 1 },
-                     onKnowledgeRequested: { state.scene = 2 })
+                     onTaskDetailRequested: { row, _ in state.showPreview(row) },
+                     onKnowledgeRequested: { state.scene = 4 })
+    }
+
+    private var workspaceScene: some View {
+        let row = state.selectedRow
+        let branch = state.appModel.workspaceLabel(for: row)?.branch ?? row.displayName
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 7) {
+                ForEach([Color.red, .yellow, .green], id: \.self) { color in
+                    Circle().fill(color.opacity(0.75)).frame(width: 8, height: 8)
+                }
+                Text(state.appModel.workspaceLabel(for: row).map { $0.repositoryName + " · " + branch } ?? row.displayName)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .lineLimit(1).padding(.leading, 8)
+                Spacer()
+            }.padding(18)
+            Divider().opacity(0.2)
+            VStack(alignment: .leading, spacing: 18) {
+                Label(branch, systemImage: "arrow.triangle.branch")
+                    .font(.system(size: 22, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.teal)
+                Text(row.task.title)
+                    .font(.system(size: 14, weight: .medium))
+                Text("struct BranchCard: View {\n    let branch: Branch\n\n    var body: some View {\n        Text(branch.name)\n    }\n}")
+                    .font(.system(size: 12, design: .monospaced)).lineSpacing(5)
+                    .foregroundStyle(.white.opacity(0.7))
+                Button("继续演示任务", action: state.continueTask)
+                    .buttonStyle(.borderedProminent).tint(.teal)
+                    .accessibilityIdentifier("demo-continue-task")
+                Text("虚构项目窗口 · 切换场景示意")
+                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.5))
+            }.padding(24)
+            Spacer(minLength: 0)
+        }
+        .background(Color(red: 0.07, green: 0.10, blue: 0.15))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.18)))
     }
 
     private var projectBackdrop: some View {
@@ -164,14 +253,14 @@ private struct MarketingDemoView: View {
                 ForEach([Color.red, .yellow, .green], id: \.self) { color in
                     Circle().fill(color.opacity(0.65)).frame(width: 8, height: 8)
                 }
-                Text("YOUR NEXT IDEA").font(.system(size: 9, weight: .medium, design: .monospaced))
+                Text("ATLAS / BRANCH WORKSPACE").font(.system(size: 9, weight: .medium, design: .monospaced))
                     .tracking(1.5).foregroundStyle(.white.opacity(0.4)).padding(.leading, 12)
                 Spacer()
             }.padding(18)
             Divider().opacity(0.15)
             VStack(alignment: .leading, spacing: 15) {
-                Text("Build something\nyou want to use.")
-                    .font(.system(size: 28, weight: .medium)).foregroundStyle(.white.opacity(0.74))
+                Text("main\n  └ graph-runtime\n       └ graph-ui")
+                    .font(.system(size: 21, weight: .medium, design: .monospaced)).foregroundStyle(.white.opacity(0.74))
                     .lineSpacing(4)
                 ForEach([0.8, 1.0, 0.65], id: \.self) { width in
                     Capsule().fill(.white.opacity(0.07)).frame(width: 245 * width, height: 8)
@@ -190,7 +279,7 @@ private struct MarketingDemoView: View {
     private var footer: some View {
         HStack(spacing: 8) {
             Image(systemName: "sparkles").foregroundStyle(.teal)
-            Text("原生界面 · 虚构示例数据 · 合成背景")
+            Text("原生界面 · 虚构数据 · 窗口场景示意")
                 .font(.system(size: 10)).foregroundStyle(.white.opacity(0.46))
             Spacer()
             Button("重播", action: state.reset)

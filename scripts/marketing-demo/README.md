@@ -7,10 +7,13 @@ The fixture compiles the production `TaskListView`, `GitWorkspaceRowContent`,
 `TaskDetailCard` (including Markdown, scroll and tool expansion), and
 `KnowledgeLibraryView` unchanged.
 `DemoModels.swift` replaces the runtime-facing models with fictional in-memory
-data. Its three independent workspace rows use the shared layout projection
-without reading Git metadata. No user defaults, app monitors, file watchers, vaults, VS Code windows,
+data. Its four independent workspace rows use the shared layout and Git tree
+projections with fictional labels: Atlas has `main → graph-runtime → graph-ui`,
+and Studio is a separate project. The fixture does not read Git metadata.
+No user defaults, app monitors, file watchers, vaults, VS Code windows,
 Obsidian URLs, shell commands or network clients are accessed by the demo.
-External navigation controls deliberately do nothing.
+Task navigation selects a matching fictional project card inside the demo;
+other external navigation controls deliberately do nothing.
 
 The opaque window contains a synthetic background. Its demo-only material uses
 `withinWindow`, never the production `behindWindow`, so glass cannot sample the
@@ -22,11 +25,49 @@ the desktop or the user's real CodexBar application. Every frame carries the
 fictional-data label. Generated media belongs in `docs/images/`; the build output
 and raw captures should remain outside the repository.
 
-## README recording
+## Task walkthrough
 
-The README leads with the task workflow illustration in `overview.svg`; its
-knowledge-library section keeps the existing native close-up GIF. Its six interaction states
-come from the native window captures recorded on 2026-09-12:
+The README leads with `docs/images/task-demo.gif`. Its eight native window
+captures were recorded on 2026-09-14:
+
+1. Show the enlarged task strip with three Atlas branches and independent Studio.
+2. Open the **graph-ui** context menu and choose **查看任务详情**. The production
+   preview shows its full branch name, creation source, path and fictional reply.
+3. Expand **工具完成 · 演示检查**, then click **回到最新** to show the complete output.
+4. Click **切到项目** to select the illustrative graph-ui project card.
+5. Click the native **main** row to select its project card.
+6. Click **graph-runtime** to select that worktree's card.
+7. Click **graph-ui** to return to its card.
+8. Click **继续演示任务**: graph-ui becomes running, graph-runtime becomes ready to
+   review, and the remaining tasks retain their statuses.
+
+The frames are held for 2.6 / 3.2 / 2.2 / 2.4 / 1.6 / 1.6 / 1.2 / 3.2 seconds
+(18 seconds total). This is an edited sequence of actual native window captures,
+not a continuous recording of live Codex traffic. Task rows, branch connections,
+context menus and conversation controls use the production views. Project-window
+selection and status changes are in-memory demonstrations; they do not exercise
+real VS Code window activation or actual Git discovery.
+
+Every frame includes **原生界面 · 虚构数据 · 窗口场景示意**. The capture is limited to
+the opaque 1024×760-pixel demo window, excluding the real desktop. UI pixels are
+not reconstructed or redrawn. Source display profiles are converted to generic
+sRGB, then discarded along with all other source metadata. The looping GIF uses
+a shared 256-color palette (192 median-cut colors plus 64 maximum-coverage colors
+to preserve small status indicators), without dithering, and is about 1.04 MB.
+`task-demo-poster.png` shows the
+opening frame. Raw captures remain outside the repository.
+
+The right arrow or **下一幕** advances through overview, preview, illustrative
+project selection and status update, then the knowledge scenes. **重播** restores
+all fixture data. The demo generates no screenshots or recordings itself.
+Review every exported frame and its metadata before publication, then use
+**Cmd+Q** to quit only the demo application.
+
+## Knowledge recording
+
+The independent knowledge-library section keeps the existing native close-up
+GIF. Its six interaction states come from the native window captures recorded
+on 2026-09-12:
 
 1. Open the book button and capture all libraries with their initial unread counts.
 2. Select **Anthropic** to read three article summaries and clear its count.
@@ -38,13 +79,6 @@ come from the native window captures recorded on 2026-09-12:
 The production knowledge view keeps its 600×520-point viewport. Every article in
 the fixture has a fictional summary. The real app extracts this paragraph from
 Markdown; the fixture supplies it in memory without reading any local notes.
-
-The right arrow key also advances a scene. The reset button restores fixture
-data. The demo generates no screenshots or recordings itself.
-
-The README reuses these recorded knowledge interactions in the independent
-knowledge section. The task workflow is explicitly labeled as an illustration;
-it does not claim a new recording of task switching or focus behavior.
 
 The six frames are held for 1.8 / 4.5 / 3.5 / 2.8 / 3.0 / 4.4 seconds
 (20 seconds total). This is an edited sequence of real window captures, not a
@@ -61,12 +95,3 @@ demo after capture.
 
 `knowledge-demo.gif` retains the earlier 17-second cut of the same six knowledge
 states; the README uses the 20-second cut above.
-
-## Optional task walkthrough
-
-For a future task recording, capture the opening task overview, then open the
-**Notes** context menu and choose **查看任务详情**. The production task strip offers
-focus through its row menu, and the conversation preview's navigation button reads **切到项目**.
-Expand **工具完成 · 演示输出**, then click **回到最新** to read the complete result.
-These views use fictional data; the fixture does not exercise real VS Code
-window switching or minimization.

@@ -16,9 +16,9 @@
 
 ## 看看它怎么工作
 
-<img src="docs/images/overview.svg" width="100%" alt="CodexBar 任务流程示意：同时看三个项目的状态，悬停阅读会话与工具结果，再点击切到项目验收。">
+<img src="docs/images/task-demo.gif" width="100%" alt="CodexBar 原生界面操作演示：查看多个任务与 main → graph-runtime → graph-ui 分支层级，展开会话和工具输出，选择各分支入口，再观察独立状态更新。">
 
-<sub>功能界面示意，项目和对话均为虚构样例。窗口切换与专注需要辅助功能授权。</sub>
+<sub>18 秒动图，由原生界面的实际操作截图剪辑而成。任务与对话均为虚构数据，项目窗口为切换场景示意；录制仅包含独立演示窗口，不含真实桌面或会话。<a href="docs/images/task-demo-poster.png">静态预览</a> · <a href="scripts/marketing-demo/README.md">制作说明</a>。实际窗口切换与专注需要辅助功能授权。</sub>
 
 | 1 · 多项目执行 | 2 · 阅读结果 | 3 · 回项目处理 |
 | :--- | :--- | :--- |
