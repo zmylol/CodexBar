@@ -91,7 +91,7 @@ require_safe_directory "$backup_root"
 require_safe_file "$installed_hook"
 
 if [[ -f "$installed_executable" ]] \
-    && /usr/sbin/lsof -t -a -d txt -- "$installed_executable" >/dev/null 2>&1; then
+    && [[ -n "$(/usr/sbin/lsof -t -a -d txt -- "$installed_executable" 2>/dev/null || true)" ]]; then
     print -u2 "CodexBar is currently running. Quit CodexBar and rerun scripts/install-app."
     exit 75
 fi
