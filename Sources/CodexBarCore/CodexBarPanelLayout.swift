@@ -21,7 +21,8 @@ public enum CodexBarPanelLayout {
 
     public static func rowHeight(for row: GitWorkspaceTreeRow) -> CGFloat {
         let showsOrigin = row.label?.sourceBranch != nil && row.parentRowID == nil
-        return showsOrigin || row.depth >= 2 ? branchRowHeight : rowHeight
+        let baseHeight = showsOrigin || row.depth >= 2 ? branchRowHeight : rowHeight
+        return baseHeight + (row.row.task == nil ? 12 : 0)
     }
 
     public static func rowHeights(groups: [GitWorkspaceGroup]) -> [CGFloat] {

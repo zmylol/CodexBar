@@ -47,7 +47,7 @@ struct GitWorkspaceRowContent: View {
                 Text(label?.shortBranch ?? treeRow.row.displayName)
                     .font(.system(
                         size: label == nil ? 12 : 11,
-                        weight: treeRow.row.task.isUnread ? .semibold : .medium,
+                        weight: treeRow.row.task?.isUnread == true ? .semibold : .medium,
                         design: label == nil ? .default : .monospaced
                     ))
                     .lineLimit(treeRow.depth >= 2 ? 2 : 1)
@@ -58,6 +58,12 @@ struct GitWorkspaceRowContent: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                }
+                if treeRow.row.task == nil {
+                    Text("暂无任务")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

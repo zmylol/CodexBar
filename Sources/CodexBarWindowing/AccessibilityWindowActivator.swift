@@ -91,16 +91,17 @@ public final class AccessibilityWindowActivator {
         return snapshot
     }
 
-    /// Raises an existing VS Code Stable window matching `cwd`, preserving other
+    /// Raises an existing VS Code Stable window matching `cwd`, or an explicit
+    /// workspace when no task cwd exists, preserving other
     /// windows unless explicitly asked to minimize them for project focus.
     /// This method never opens a workspace or creates a new VS Code window.
     public func activateWindow(
-        forCWD cwd: String,
+        forCWD cwd: String?,
         workspace: VSCodeWorkspaceIdentity? = nil,
         promptForAccessibility: Bool = false,
         minimizeOtherWindows: Bool = false
     ) async -> VSCodeWindowActivationResult {
-        guard PathNormalizer.normalize(cwd) != nil else {
+        guard let path = cwd ?? workspace?.path, PathNormalizer.normalize(path) != nil else {
             return .windowNotFound
         }
 
@@ -193,7 +194,7 @@ private actor AccessibilityWindowActivationWorker {
     }
 
     func activateWindow(
-        forCWD cwd: String,
+        forCWD cwd: String?,
         workspace: VSCodeWorkspaceIdentity?,
         applicationIdentities: [VSCodeApplicationIdentity],
         minimizeOtherWindows: Bool

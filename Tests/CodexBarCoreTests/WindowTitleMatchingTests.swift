@@ -4,6 +4,33 @@ import CodexBarCore
 @MainActor
 func windowTitleMatchingTestCases() -> [CodexBarTestCase] {
     [
+        CodexBarTestCase(name: "idle workspace activation uses its exact identity without a task cwd") {
+            let identities: [VSCodeWorkspaceIdentity] = [
+                .folder("/work/new-project"), .workspace("/work/Empty.code-workspace"),
+                .untitledWorkspace("/work/Code/Workspaces/123/workspace.json")
+            ]
+            let windows = identities.enumerated().map { index, identity in
+                VSCodeWindowDescriptor(id: index + 1, title: identity.displayName,
+                                       workspaceFolderPaths: [], workspace: identity)
+            }
+            let matcher = VSCodeWindowMatcher()
+            for (index, identity) in identities.enumerated() {
+                try expect(matcher.match(cwd: nil, windows: windows, workspace: identity) == .matched(windows[index]),
+                           "idle workspace incorrectly required a member cwd")
+                try expect(matcher.focusPlan(cwd: nil, windows: windows, workspace: identity) == .planned(
+                    VSCodeWindowFocusPlan(target: windows[index], windowsToMinimize: [])
+                ), "idle workspace activation changed unrelated windows")
+            }
+            let duplicate = VSCodeWindowDescriptor(id: 99, title: windows[1].title,
+                                                   workspaceFolderPaths: [], workspace: identities[1])
+            try expect(matcher.match(cwd: nil, windows: [windows[1], duplicate], workspace: identities[1]) == .ambiguous([windows[1], duplicate]),
+                       "idle activation selected an arbitrary duplicate")
+            try expect(matcher.match(cwd: nil, windows: [windows[0]], workspace: identities[1]) == .notFound,
+                       "closed workspace fell back to a different root")
+            try expect(matcher.match(cwd: nil, windows: windows) == .notFound, "missing target matched a window")
+            try expect(matcher.match(cwd: "", windows: windows, workspace: identities[1]) == .notFound,
+                       "invalid explicit cwd bypassed task matching")
+        },
         CodexBarTestCase(name: "workspace row activation distinguishes a shared folder from its multi-root window") {
             let folder = VSCodeWorkspaceIdentity.folder("/work/shared")
             let group = VSCodeWorkspaceIdentity.workspace("/work/group.code-workspace")

@@ -430,6 +430,10 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         hovering: Bool
     ) {
         guard !knowledgePanel.isVisible, knowledgePanel.attachedSheet == nil else { return }
+        guard row.task != nil else {
+            if hovering { hideTaskDetail(clearTriggers: true) }
+            return
+        }
         detailSelection.updateHover(
             rowID: row.id,
             rowMidY: rowMidY,
@@ -468,7 +472,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
             hideTaskDetail(clearTriggers: false)
             return
         }
-        guard let row = model.visibleRows.first(where: { $0.id == target.rowID }) else {
+        guard let row = model.visibleRows.first(where: { $0.id == target.rowID }), row.task != nil else {
             detailSelection.clear()
             hideTaskDetail(clearTriggers: false)
             return
@@ -487,7 +491,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
 
     private func focusTaskDetail(_ row: VSCodeTaskRow, rowMidY: CGFloat) {
         guard !knowledgePanel.isVisible, knowledgePanel.attachedSheet == nil else { return }
-        guard let currentRow = model.visibleRows.first(where: { $0.id == row.id }) else { return }
+        guard let currentRow = model.visibleRows.first(where: { $0.id == row.id }), currentRow.task != nil else { return }
         if !detailPanel.isKeyWindow {
             taskListResponder = panel.firstResponder
         }
@@ -564,7 +568,10 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     }
 
     private func showTaskDetail(_ row: VSCodeTaskRow, rowMidY: CGFloat) {
-        let task = row.task
+        guard let task = row.task else {
+            hideTaskDetail(clearTriggers: true)
+            return
+        }
         detailHideTask?.cancel()
         detailHideTask = nil
         let retainsPreview = detailSessionID == task.sessionID && displayedDetailTarget?.rowID == row.id
@@ -626,7 +633,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
               target.rowID == rowID,
               let row = model.visibleRows.first(where: { $0.id == rowID }),
               detailSessionID == sessionID,
-              row.task.sessionID == sessionID
+              row.task?.sessionID == sessionID
         else {
             return
         }

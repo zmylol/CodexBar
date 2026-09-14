@@ -70,15 +70,22 @@ public struct VSCodeWindowMatcher: Sendable {
     public init() {}
 
     public func match(
-        cwd: String,
+        cwd: String?,
         windows: [VSCodeWindowDescriptor],
         workspace: VSCodeWorkspaceIdentity? = nil
     ) -> VSCodeWindowMatchResult {
+        let candidates = workspace.map { identity in windows.filter { $0.workspace == identity } } ?? windows
+        guard let cwd else {
+            guard let workspace, PathNormalizer.normalize(workspace.path) != nil else { return .notFound }
+            switch candidates.count {
+            case 0: return .notFound
+            case 1: return .matched(candidates[0])
+            default: return .ambiguous(candidates)
+            }
+        }
         guard let normalizedPath = PathNormalizer.normalize(cwd) else {
             return .notFound
         }
-
-        let candidates = workspace.map { identity in windows.filter { $0.workspace == identity } } ?? windows
         return match(normalizedCWD: normalizedPath, windows: candidates)
     }
 
@@ -113,7 +120,7 @@ public struct VSCodeWindowMatcher: Sendable {
     }
 
     package func focusPlan(
-        cwd: String,
+        cwd: String?,
         windows: [VSCodeWindowDescriptor],
         workspace: VSCodeWorkspaceIdentity? = nil,
         minimizeOtherWindows: Bool = false

@@ -20,13 +20,19 @@ import SwiftUI
         appModel.row(forTaskID: selectedTaskID) ?? appModel.visibleRows[0]
     }
 
+    var selectedTask: CodexTask {
+        appModel.store.tasks.first { $0.id == selectedTaskID } ?? appModel.store.tasks[0]
+    }
+
     func activate(_ row: VSCodeTaskRow) {
-        selectedTaskID = row.task.id
+        guard let task = row.task else { return }
+        selectedTaskID = task.id
         scene = 2
     }
 
     func showPreview(_ row: VSCodeTaskRow) {
-        selectedTaskID = row.task.id
+        guard let task = row.task else { return }
+        selectedTaskID = task.id
         scene = 1
     }
 
@@ -77,7 +83,7 @@ private struct MarketingDemoView: View {
     @ObservedObject var state: DemoState
 
     private var preview: CodexConversationPreview {
-        let task = state.selectedRow.task
+        let task = state.selectedTask
         let target = state.appModel.workspaceLabel(for: state.selectedRow)?.branch ?? state.selectedRow.displayName
         let progress: String
         switch task.status {
@@ -172,8 +178,8 @@ private struct MarketingDemoView: View {
         } else if state.scene == 1 {
             HStack(alignment: .top, spacing: 14) {
                 taskBar.frame(width: 126, height: taskBarHeight).padding(.top, 52)
-                TaskDetailCard(task: state.selectedRow.task,
-                               summary: CodexTaskDetailSummary(task: state.selectedRow.task, plan: nil, activities: []),
+                TaskDetailCard(task: state.selectedTask,
+                               summary: CodexTaskDetailSummary(task: state.selectedTask, plan: nil, activities: []),
                                preview: preview, state: .ready, message: nil, isLoadingHistory: false,
                                onOpen: { state.activate(state.selectedRow) }, onRefreshPreview: {}, onLoadHistory: {},
                                workspaceLabel: state.appModel.workspaceLabel(for: state.selectedRow),
@@ -229,7 +235,7 @@ private struct MarketingDemoView: View {
                 Label(branch, systemImage: "arrow.triangle.branch")
                     .font(.system(size: 22, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.teal)
-                Text(row.task.title)
+                Text(state.selectedTask.title)
                     .font(.system(size: 14, weight: .medium))
                 Text("struct BranchCard: View {\n    let branch: Branch\n\n    var body: some View {\n        Text(branch.name)\n    }\n}")
                     .font(.system(size: 12, design: .monospaced)).lineSpacing(5)

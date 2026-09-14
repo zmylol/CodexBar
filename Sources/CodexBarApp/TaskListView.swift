@@ -227,22 +227,32 @@ struct TaskListView: View {
             let parents = Set(group.rows.compactMap(\.parentRowID))
             ForEach(group.rows) { treeRow in
                 let row = treeRow.row
-                let task = row.task
-                CompactTaskRow(
-                    treeRow: treeRow,
-                    hasChildren: parents.contains(row.id),
-                    activities: activityStore.nodes(for: task),
-                    plan: activityStore.plan(for: task),
-                    knowledgePendingCount: knowledgeStore.pendingCounts[task.sessionID] ?? 0,
-                    coordinateSpaceName: Self.coordinateSpaceName,
-                    action: { model.activate(row) },
-                    focusAction: { model.activate(row, minimizeOtherWindows: true) },
-                    deleteAction: { model.remove(task) },
-                    onHoverChanged: onTaskHoverChanged,
-                    onFocusChanged: onTaskFocusChanged,
-                    onDetailRequested: onTaskDetailRequested,
-                    onPositionChanged: onTaskPositionChanged
-                )
+                if let task = row.task {
+                    CompactTaskRow(
+                        treeRow: treeRow,
+                        task: task,
+                        hasChildren: parents.contains(row.id),
+                        activities: activityStore.nodes(for: task),
+                        plan: activityStore.plan(for: task),
+                        knowledgePendingCount: knowledgeStore.pendingCounts[task.sessionID] ?? 0,
+                        coordinateSpaceName: Self.coordinateSpaceName,
+                        action: { model.activate(row) },
+                        focusAction: { model.activate(row, minimizeOtherWindows: true) },
+                        deleteAction: { model.remove(task) },
+                        onHoverChanged: onTaskHoverChanged,
+                        onFocusChanged: onTaskFocusChanged,
+                        onDetailRequested: onTaskDetailRequested,
+                        onPositionChanged: onTaskPositionChanged
+                    )
+                } else {
+                    IdleWorkspaceRow(
+                        treeRow: treeRow,
+                        hasChildren: parents.contains(row.id),
+                        coordinateSpaceName: Self.coordinateSpaceName,
+                        action: { model.activate(row) },
+                        onHoverChanged: onTaskHoverChanged
+                    )
+                }
             }
         }
     }
@@ -298,6 +308,73 @@ private final class PanelDragHandleView: NSView {
     }
 }
 
+private struct IdleWorkspaceRow: View {
+    let treeRow: GitWorkspaceTreeRow
+    let hasChildren: Bool
+    let coordinateSpaceName: String
+    let action: () -> Void
+    let onHoverChanged: (VSCodeTaskRow, CGFloat, Bool) -> Void
+
+    @State private var isHovered = false
+    @FocusState private var isFocused: Bool
+
+    private var row: VSCodeTaskRow { treeRow.row }
+    private var workspaceLabel: GitWorkspaceLabel? { treeRow.label }
+
+    private var workspaceDescription: String {
+        guard let workspaceLabel else {
+            return row.displayName + (row.isMultiRoot ? "，多项目工作区" : "")
+        }
+        return "\(workspaceLabel.repositoryName)，\(row.displayName)，分支 \(workspaceLabel.branch)"
+            + (workspaceLabel.isLinkedWorktree ? "，关联工作树" : "，主工作目录")
+            + (workspaceLabel.sourceBranch.map { "，创建自 \($0)" } ?? "")
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let rowMidY = geometry.frame(in: .named(coordinateSpaceName)).midY
+            Button(action: action) {
+                GitWorkspaceRowContent(
+                    treeRow: treeRow,
+                    hasChildren: hasChildren,
+                    statusSymbol: "circle",
+                    statusColor: .secondary,
+                    knowledgePendingCount: 0,
+                    showsWorktreeBadge: true
+                )
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .focused($isFocused)
+            .background {
+                if isHovered || isFocused {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.10))
+                        .padding(.horizontal, 3)
+                }
+            }
+            .overlay {
+                if isFocused {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(Color.accentColor.opacity(0.85), lineWidth: 1.5)
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 1)
+                }
+            }
+            .onHover { hovering in
+                isHovered = hovering
+                onHoverChanged(row, rowMidY, hovering)
+            }
+            .accessibilityLabel("\(workspaceDescription)，暂无任务")
+            .accessibilityValue(row.rootPath)
+            .accessibilityHint("切换到对应的 VS Code 窗口")
+            .accessibilityInputLabels([row.displayName, workspaceLabel?.branch ?? row.displayName])
+            .help("\(workspaceDescription)\n暂无任务\n\(row.rootPath)")
+        }
+        .frame(height: CodexBarPanelLayout.rowHeight(for: treeRow))
+    }
+}
+
 private struct CompactTaskRow: View {
     private enum FocusedControl: Hashable {
         case task
@@ -305,9 +382,9 @@ private struct CompactTaskRow: View {
     }
 
     let treeRow: GitWorkspaceTreeRow
+    let task: CodexTask
     let hasChildren: Bool
     private var row: VSCodeTaskRow { treeRow.row }
-    private var task: CodexTask { row.task }
     private var workspaceLabel: GitWorkspaceLabel? { treeRow.label }
     let activities: [CodexTaskActivity]
     let plan: CodexTaskPlan?
@@ -513,8 +590,8 @@ struct TaskHoverDetailView: View {
 
     var body: some View {
         Group {
-            if let row = model.visibleRows.first(where: { $0.id == rowID }) {
-                let task = row.task
+            if let row = model.visibleRows.first(where: { $0.id == rowID }),
+               let task = row.task {
                 let summary = CodexTaskDetailSummary(
                     task: task,
                     plan: activityStore.plan(for: task),

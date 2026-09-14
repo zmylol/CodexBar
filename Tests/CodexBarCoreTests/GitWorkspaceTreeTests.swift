@@ -4,6 +4,25 @@ import Foundation
 @MainActor
 func gitWorkspaceTreeTestCases() -> [CodexBarTestCase] {
     [
+        CodexBarTestCase(name: "an opened idle parent keeps its active child branch hierarchy and readable height") {
+            let parent = VSCodeTaskRow(workspace: .folder("/work/main"))
+            let child = gitTreeRow("feature", status: .running)
+            let labels = [
+                parent.rootPath: gitTreeLabel(parent, branch: "main"),
+                child.rootPath: gitTreeLabel(child, branch: "feature", source: "main", linked: true)
+            ]
+            let groups = GitWorkspaceTree.groups(rows: [child, parent], labels: labels)
+            let rows = groups.flatMap(\.rows)
+            try expect(rows.map(\.id) == [parent.id, child.id], "idle parent was dropped or moved below its child")
+            try expect(rows[0].row.task == nil && rows[1].row.task == child.task,
+                       "grouping fabricated or changed a task")
+            try expect(rows[1].parentRowID == parent.id && rows[1].depth == 1,
+                       "task absence removed the creation-source connection")
+            try expect(CodexBarPanelLayout.rowHeight(for: rows[0]) == CodexBarPanelLayout.rowHeight + 12,
+                       "idle status caption has no layout space")
+            try expect(CodexBarPanelLayout.rowHeight(for: rows[1]) == CodexBarPanelLayout.rowHeight,
+                       "active child gained an idle caption gap")
+        },
         CodexBarTestCase(name: "Git tree groups repositories at their first task priority position") {
             let child = gitTreeRow("child")
             let neighbor = gitTreeRow("neighbor")

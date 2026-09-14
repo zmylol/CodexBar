@@ -233,7 +233,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 return
             }
             let result = await activator.activateWindow(
-                forCWD: task.cwd,
+                forCWD: task?.cwd,
                 workspace: row.workspace,
                 promptForAccessibility: false,
                 minimizeOtherWindows: minimizeOtherWindows
@@ -247,12 +247,12 @@ final class CodexBarAppModel: NSObject, ObservableObject {
 
     private func handleVSCodeActivationResult(
         _ result: VSCodeWindowActivationResult,
-        for task: CodexTask
+        for task: CodexTask?
     ) async {
         switch result {
         case .activated:
             do {
-                _ = try await store.markRead(taskID: task.id)
+                if let task { _ = try await store.markRead(taskID: task.id) }
                 guard !Task.isCancelled else {
                     return
                 }
@@ -262,7 +262,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
             }
         case let .activatedWithUnminimizedWindows(_, windows):
             do {
-                _ = try await store.markRead(taskID: task.id)
+                if let task { _ = try await store.markRead(taskID: task.id) }
                 guard !Task.isCancelled else {
                     return
                 }

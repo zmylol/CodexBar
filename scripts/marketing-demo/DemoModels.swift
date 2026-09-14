@@ -102,7 +102,7 @@ enum PanelPlacement { case topLeft, topRight, bottomLeft, bottomRight }
     }
 
     func workspaceLabel(for row: VSCodeTaskRow) -> GitWorkspaceLabel? { workspaceLabels[row.rootPath] }
-    func row(forTaskID id: String) -> VSCodeTaskRow? { visibleRows.first { $0.task.id == id } }
+    func row(forTaskID id: String) -> VSCodeTaskRow? { visibleRows.first { $0.task?.id == id } }
     func setTaskStatus(id: String, status: CodexTaskStatus) { store.setTaskStatus(id: id, status: status) }
     func resetTasks() { store.resetTasks() }
     func activate(_ row: VSCodeTaskRow, minimizeOtherWindows: Bool = false) { onActivate(row) }

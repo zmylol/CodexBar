@@ -3,7 +3,7 @@ public struct VSCodeTaskRow: Identifiable, Equatable, Sendable {
     public let displayName: String
     public let rootPath: String
     public let isMultiRoot: Bool
-    public let task: CodexTask
+    public let task: CodexTask?
     public let workspace: VSCodeWorkspaceIdentity?
 
     public init(
@@ -15,6 +15,16 @@ public struct VSCodeTaskRow: Identifiable, Equatable, Sendable {
         self.rootPath = rootPath
         self.isMultiRoot = isMultiRoot
         self.task = task
+        self.workspace = workspace
+    }
+
+    /// An opened workspace can exist before its first task or after a task is removed.
+    public init(workspace: VSCodeWorkspaceIdentity) {
+        self.id = "workspace:\(workspace.path)"
+        self.displayName = workspace.displayName
+        self.rootPath = workspace.path
+        self.isMultiRoot = workspace.isMultiRoot
+        self.task = nil
         self.workspace = workspace
     }
 }
@@ -107,6 +117,10 @@ public struct VSCodeTaskVisibility: Sendable {
                     task: task
                 )
             }
+            if seen.insert(row.id).inserted { rows.append(row) }
+        }
+        for workspace in knownWindows.compactMap(\.workspace).sorted(by: { $0.path < $1.path }) {
+            let row = VSCodeTaskRow(workspace: workspace)
             if seen.insert(row.id).inserted { rows.append(row) }
         }
         return rows
