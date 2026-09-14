@@ -1,5 +1,5 @@
 public enum CodexTaskRefreshOutcome: Equatable, Sendable {
-    case completed(currentTaskCount: Int, changedCount: Int)
+    case completed(currentWorkspaceCount: Int, changedCount: Int)
     case noOpenWindows
     case failed
     case persistenceFailed
@@ -15,11 +15,11 @@ public enum CodexTaskRefreshFeedback {
         }
 
         switch outcome {
-        case let .completed(currentTaskCount, changedCount):
+        case let .completed(currentWorkspaceCount, changedCount):
             if changedCount == 0 {
-                return "刷新完成，没有变化。当前列表共 \(currentTaskCount) 个任务。"
+                return "刷新完成，没有变化。当前列表共 \(currentWorkspaceCount) 个工作区。"
             }
-            return "刷新完成，更新 \(changedCount) 个任务。当前列表共 \(currentTaskCount) 个任务。"
+            return "刷新完成，更新 \(changedCount) 个任务。当前列表共 \(currentWorkspaceCount) 个工作区。"
         case .noOpenWindows:
             return "刷新完成，未发现已打开的 VS Code 窗口。"
         case .failed:

@@ -32,7 +32,13 @@ codex app-server
 StartupTaskReconciler → TaskStore
 ```
 
-启动历史恢复固定只查询并验证 `vscode` 来源，通过 cwd 与当前窗口标题保守匹配，再用 `thread/turns/list(itemsView: notLoaded)` 读取最新 turn 元数据。它不会执行周期性全局扫描，也不会重新添加已删除行或覆盖更新的 Hook turn。
+启动历史恢复固定只查询并验证 `vscode` 来源，通过 cwd 与当前窗口保守匹配，再用 `thread/turns/list(itemsView: notLoaded)` 读取最新 turn 元数据。普通窗口使用标题；已保存的本地多根工作区由 `VSCodeWorkspaceMetadata` 补充规范化的文件夹路径，显示、恢复与实际激活共用同一匹配规则。只有明确属于工作区的不同 cwd 才可同时恢复到同一个窗口，纯标题同名歧义仍拒绝。它不会执行周期性全局扫描，也不会重新添加已删除行或覆盖更新的 Hook turn。
+
+`VSCodeWorkspaceMetadata` 同时为普通文件夹窗口补充实际打开的根目录身份。`VSCodeTaskVisibility.visibleRows` 按根目录或工作区配置路径归并为显示入口，名称来自打开的根；每组采用已排序任务中的首个会话，原始 cwd/sessionID 保持不变。`visibleTasks` 保留所有匹配成员用于运行状态、知识库和预览同步，面板高度与行计数使用归并后的入口。首次未知窗口时隐藏历史任务，后续读取失败保留最近成功的窗口集合。
+
+VS Code 本地 `Workspaces/<id>/workspace.json` 由当前窗口记录关联到未命名工作区。同一会话目录可以属于多个已打开根入口，详情选择使用行 ID，实际激活同时校验工作区身份和真实 cwd。恢复阶段允许全部候选身份明确的共享成员恢复一次；混入纯标题歧义时仍拒绝恢复。
+
+`GitWorkspaceIdentityReader` 通过 `.git`/gitfile、`commondir` 和 HEAD 自动识别仓库与工作树；`GitBranchOriginReader` 有界读取本地 refs、packed-refs 和分支 reflog，仅接受完整初始创建记录可确认的本地来源。缺失、过期、复制/重命名或歧义记录不推断父分支。`GitWorkspaceMonitor` 在后台读取并监听 HEAD、分支日志及父目录变化。`GitWorkspaceTree` 只投影真实窗口行：同仓库连续归组，唯一可见来源在前、子分支缩进，循环和歧义保持平级，最多三层缩进。原始任务与窗口身份不变，多根工作区不归到成员仓库。仓库标题高度计入首个工作区，固定高度模式仍按五个工作区计算。
 
 窗口同步使用 `NSWorkspace` 的应用生命周期通知，以及 `AXObserver` 的窗口创建、销毁和标题变化通知。AX 注册与监听维护在独立的休眠 RunLoop 线程执行，收到事件后异步核对窗口；没有定时窗口扫描。监听注册失败只在当前事件后有限重试，之后提示手动刷新。从系统设置返回应用、切换空间或唤醒也会重新核对监听和授权。
 
@@ -82,7 +88,7 @@ StartupTaskReconciler → TaskStore
 - VS Code 实时进程在发现和动作前都必须通过 Microsoft Team 签名要求；
 - 不执行 `code -r`，不创建窗口，不猜测歧义目标；
 - App Server 有可执行文件签名、symlink、响应大小、消息数和超时限制；
-- App Server 恢复只读查询 thread/turn 元数据且不加载 items；启动、系统窗口事件和手动刷新可枚举现有窗口，只有用户明确点击后才会前置窗口；普通切换保留其他窗口的最小化状态，仅项目行右侧靶心图标“专注此项目”会最小化其他标准 VS Code 窗口；
+- App Server 恢复只读查询 thread/turn 元数据且不加载 items；启动、系统窗口事件和手动刷新可枚举现有窗口，只有用户明确点击后才会前置窗口；普通切换保留其他窗口的最小化状态，仅项目三点菜单或右键菜单中的“专注此项目（最小化其他窗口）”会最小化其他标准 VS Code 窗口；
 - 动态计划不监听其他客户端的 App Server，也不轮询完整 thread items 或 transcript；它只由 VS Code Hook 在 `update_plan` 发生时推送，并用独立的同步 matcher 与本地高精度到达时间保证连续快照顺序；
 - App Server 失败日志使用固定、无任务字段的消息，并以一分钟为最小间隔。
 

@@ -6,16 +6,16 @@ func openTaskRefreshFeedbackTestCases() -> [CodexBarTestCase] {
         CodexBarTestCase(name: "manual refresh describes every terminal outcome") {
             try expect(
                 CodexTaskRefreshFeedback.message(
-                    for: .completed(currentTaskCount: 5, changedCount: 0),
+                    for: .completed(currentWorkspaceCount: 5, changedCount: 0),
                     reportCompletion: true
-                ) == "刷新完成，没有变化。当前列表共 5 个任务。",
+                ) == "刷新完成，没有变化。当前列表共 5 个工作区。",
                 "an unchanged manual refresh has no useful feedback"
             )
             try expect(
                 CodexTaskRefreshFeedback.message(
-                    for: .completed(currentTaskCount: 6, changedCount: 2),
+                    for: .completed(currentWorkspaceCount: 6, changedCount: 2),
                     reportCompletion: true
-                ) == "刷新完成，更新 2 个任务。当前列表共 6 个任务。",
+                ) == "刷新完成，更新 2 个任务。当前列表共 6 个工作区。",
                 "a changed manual refresh does not summarize its result"
             )
             try expect(
@@ -42,8 +42,8 @@ func openTaskRefreshFeedbackTestCases() -> [CodexBarTestCase] {
         },
         CodexBarTestCase(name: "automatic recovery never shows manual refresh feedback") {
             let outcomes: [CodexTaskRefreshOutcome] = [
-                .completed(currentTaskCount: 5, changedCount: 0),
-                .completed(currentTaskCount: 6, changedCount: 2),
+                .completed(currentWorkspaceCount: 5, changedCount: 0),
+                .completed(currentWorkspaceCount: 6, changedCount: 2),
                 .noOpenWindows,
                 .failed,
                 .persistenceFailed

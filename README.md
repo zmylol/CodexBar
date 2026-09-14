@@ -2,76 +2,49 @@
 
 <h1>CodexBar</h1>
 
-### Codex 在推进，你随时看得见。
+### 看进展，读回复，需要时再接手。
 
-一条 macOS 原生悬浮条，汇总 **VS Code 中多个 Codex 项目的进展**；一个独立阅读入口，按 **Obsidian 知识库** 展示今日新文章与摘要。
+一条 macOS 原生悬浮条，汇总 **VS Code 中多个 Codex 项目的进展**，悬停读回复，点击回项目验收。
+
+另有独立的 **Obsidian 知识库阅读入口**，按库查看文章与摘要，支持今天、昨天和近七天补读。
 
 [![CI](https://github.com/zmylol/CodexBar/actions/workflows/ci.yml/badge.svg)](https://github.com/zmylol/CodexBar/actions/workflows/ci.yml) [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111827?style=flat-square&logo=apple&logoColor=white)](#快速开始) [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?style=flat-square&logo=swift&logoColor=white)](Package.swift) [![MIT License](https://img.shields.io/badge/License-MIT-8B5CF6?style=flat-square)](LICENSE) [![Local First](https://img.shields.io/badge/Local-First-14B8A6?style=flat-square)](PRIVACY.md)
 
-[观看演示](#看看它怎么工作) · [快速开始](#快速开始) · [使用指南](docs/USER_GUIDE.md) · [反馈想法](https://github.com/zmylol/CodexBar/issues)
+[观看演示](#看看它怎么工作) · [快速开始](#快速开始) · [知识库配置](docs/KNOWLEDGE_SETUP.md) · [使用指南](docs/USER_GUIDE.md) · [反馈想法](https://github.com/zmylol/CodexBar/issues)
 
 </div>
 
 ## 看看它怎么工作
 
-<img src="docs/images/demo.gif" width="100%" alt="CodexBar 原生界面实录：查看多项目状态，展开会话和工具输出，按知识库阅读今日文章标题与摘要；点击知识库清除未查看篇数，稍后收到新文章再次提醒。">
+<img src="docs/images/overview.svg" width="100%" alt="CodexBar 任务流程示意：同时看三个项目的状态，悬停阅读会话与工具结果，再点击切到项目验收。">
 
-<sub>实际操作当前原生视图，截取关键帧制成循环动图。项目、会话、文章及到达事件使用虚构样例，背景为独立演示场景，不含个人桌面或真实知识库。<a href="docs/images/demo-poster.png">静态预览</a> · <a href="scripts/marketing-demo/README.md">制作说明</a></sub>
+<sub>功能界面示意，项目和对话均为虚构样例。窗口切换与专注需要辅助功能授权。</sub>
 
-## 四件常做的事，少几次窗口切换
+| 1 · 多项目执行 | 2 · 阅读结果 | 3 · 回项目处理 |
+| :--- | :--- | :--- |
+| 在不同 VS Code 项目里安排任务，扫一眼执行与等待状态 | 悬停阅读回复，展开工具输出，决定是否接手 | 点击项目名或“切到项目”验收；需要时从项目菜单进入专注 |
 
-<table><tr><td width="50%" valign="top">
+## 三个动作，少几次窗口切换
 
-### ◉ 同时看多个项目
-
-集中显示执行中、需要处理和可查看状态。悬浮条可拖动、停靠屏幕四角，任务多时滚动或自动展开。
-
-</td><td width="50%" valign="top">
-
-### ≋ 直接读回复和输出
-
-悬停查看回复，展开命令与工具结果，翻阅历史。支持 Markdown、代码块和文字选择。
-
-</td></tr><tr><td width="50%" valign="top">
-
-### ↗ 点击回到对应项目
-
-恢复并前置对应的 VS Code 窗口，保留其他窗口状态。需要专注时，点击项目右侧靶心图标，收起其他 VS Code 窗口。
-
-</td><td width="50%" valign="top">
-
-### ◇ 按知识库读今日文章
-
-左侧选知识库，右侧看新文章标题与摘要。点击文章，在 Obsidian 打开全文。
-
-</td></tr></table>
+- **同时看多个项目：** 集中显示执行中、需要处理和可查看状态。悬浮条可拖动、停靠屏幕四角，任务多时滚动或自动展开。
+- **直接读回复和输出：** 悬停查看回复，展开命令与工具结果，翻阅历史。支持 Markdown、代码块和文字选择。
+- **切换与专注，分别选择：** 点击项目名或预览底部“切到项目”，回到对应窗口，保留其他窗口状态。需要专注时，从项目右侧三点菜单或右键菜单选择“专注此项目（最小化其他窗口）”，最小化其他 VS Code 窗口。
 
 <sub>“可查看”表示当前一轮已停止，可以回看结果；是否达到预期，仍由你验收。</sub>
 
-## 接上你的 Vibe Coding 流程
-
-| 1 · 交给 Codex | 2 · 看进展 | 3 · 验收与迭代 |
-| :--- | :--- | :--- |
-| 在不同 VS Code 项目里安排任务 | 继续手头工作，扫一眼状态，悬停读回复 | 点击回到项目验收，补充反馈，进入下一轮 |
-
 ## 知识库：今天收了什么，一眼读明白
 
-知识库入口独立使用，无需接入 VS Code 任务。自动化可以在一天内分批收录；CodexBar 监听本地文件，按北京时间的 `collected` 日期展示今日文章。
+知识库入口独立使用，无需接入 VS Code 任务。自动化可以在一天内分批收录；CodexBar 监听本地文件，按北京时间的 `collected` 日期展示文章。默认查看今天，也可切换到昨天或近七天补读。
 
-**左侧显示知识库名与未查看篇数；点击清除该库数字，右侧保留文章。** 新文章到达后再次提醒，旧文修改或补写摘要不会重复提醒。
+<p align="center"><img src="docs/images/demo.gif" width="616" alt="知识库原生界面实录：按库查看今日文章与一段摘要，点击清除未读数字，新文章到达后再次提醒。"></p>
+
+<sub>20 秒看完知识库阅读流程。动图由原生视图的实际操作截图剪辑而成，文章与到达事件均为虚构样例，不含个人桌面或真实知识库。<a href="docs/images/demo-poster.png">静态预览</a> · <a href="scripts/marketing-demo/README.md">制作说明</a></sub>
+
+**左侧显示当前范围内各知识库的未查看篇数；点击清除该库数字，右侧保留文章。** 切换日期范围不会自动清除提醒，近七天的已查看记录在重启后保留。新文章到达后再次提醒，旧文修改或补写摘要不会重复提醒；书本入口只提示今天的新文章。
 
 摘要直接读取 Markdown 中已有的摘要首段，没有就只显示标题。CodexBar 不生成或核验摘要，质量取决于写入文章的自动化或工具。[文章格式与提醒规则 →](docs/USER_GUIDE.md#自动化分批收录文章到达就显示)
 
 **想配置自己的每日知识流？** [配置攻略 →](docs/KNOWLEDGE_SETUP.md) 提供目录结构、可复制的文章示例、每日任务提示词，以及摘要写作与复核要求。
-
-<details>
-<summary>展开知识库近景演示：选分类、读摘要、新文章提醒</summary>
-
-<p align="center"><img src="docs/images/knowledge-demo.gif" width="616" alt="知识库原生视图近景：左侧按库显示未查看篇数，点击后清除该库数字；右侧保留今日文章与摘要，稍后新文章到达再次提醒。"></p>
-
-<sub>从原生视图实录的关键帧裁切制作，文章和到达事件使用虚构样例数据。</sub>
-
-</details>
 
 **原生磨砂玻璃，适配浅色与深色。** SwiftUI + AppKit 构建，无第三方 Swift Package 依赖。无需 CodexBar 账号，无遥测或主动上传内容的网络客户端；会话预览和知识库正文在内存中处理，任务元数据及偏好保存在本机。官方 Codex 服务遵循其自身数据规则。[隐私说明 →](PRIVACY.md)
 
@@ -86,11 +59,13 @@ scripts/install-app
 open "$HOME/Applications/CodexBar.app"
 ```
 
-**使用 VS Code 任务功能：** 再运行 `scripts/install-hooks`，在 Codex 扩展设置中重新加载、审核并信任 Hooks；在 macOS 辅助功能设置中允许 CodexBar 切换窗口。[完整安装步骤 →](docs/USER_GUIDE.md#开始使用)
+**使用 VS Code 任务功能：** 在应用菜单“连接与设置”中选择“安装或更新任务连接…”，或运行 `scripts/install-hooks`，在 Codex 扩展设置中重新加载、审核并信任 Hooks；在 macOS 辅助功能设置中允许 CodexBar 切换窗口。[完整安装步骤 →](docs/USER_GUIDE.md#开始使用)
 
 **只看知识库：** 点书本入口，自动识别或选择 Obsidian 总目录，其一级文件夹作为知识库分类。无需安装 Hooks；文章需带有有效的 `type: article` 和 `collected` 信息。[连接与文章格式 →](docs/USER_GUIDE.md#按知识库查看今日新增文章)
 
-<sub>本地构建使用 ad-hoc 签名，尚未进行 Developer ID 签名或 Apple 公证。更新已有安装时，请先退出 CodexBar；可能需要重新授权辅助功能。</sub>
+<sub>源码安装使用 ad-hoc 签名，更新前请先退出 CodexBar；可能需要重新授权辅助功能。维护者可按<a href="docs/RELEASING.md">分发流程</a>准备 Developer ID 签名、公证与校验和；尚未完成真实公证的候选不能当作正式发布包。</sub>
+
+**连接遇到问题：** 菜单“连接与设置”显示连接状态和待处理事件，可刷新、打开辅助功能设置或查看[连接指南](docs/USER_GUIDE.md#连接状态与排查)。
 
 ### 适合你的环境吗？
 

@@ -95,6 +95,10 @@ CodexBar 在用户明确点击项目、预览底部“切到项目”或项目�
 
 应用启动恢复也会使用窗口标题来匹配已打开项目；执行窗口操作前会再次验证进程身份。CodexBar 不安装全局键盘监听，不读取或记录其他应用的键盘输入。
 
+窗口识别还会读取 VS Code 的 `User/globalStorage/storage.json` 中已打开窗口的本地根目录或工作区配置路径，以及对应 `.code-workspace` 或同一 VS Code 数据目录下 `Workspaces/<id>/workspace.json` 的 `folders` 路径。根目录身份与成员关系仅在内存中用于任务归并显示、恢复和窗口切换，不写入任务快照或日志，不读取项目源码，也不访问远程工作区 URI。
+
+Git 工作树关系来自本地 `.git`、`commondir`、HEAD、refs 和 reflog 元数据。分支日志最多读取 128 KiB，packed-refs 最多读取 1 MiB，用于确认分支创建来源；只将仓库、分支和来源用于内存中的列表展示，不保存或上传 reflog 内容，不读取提交对象或项目源码。
+
 ## 删除数据
 
 默认卸载应用和 CodexBar 管理的 Hook，但保留本地数据：

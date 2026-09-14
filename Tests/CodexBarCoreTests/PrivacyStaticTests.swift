@@ -249,7 +249,7 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             try expect(
                 viewSource.contains("model.isRecoveringOpenTasks")
                     && viewSource.contains("正在同步已打开的 VS Code Codex 任务")
-                    && viewSource.contains("model.visibleTasks.count"),
+                    && viewSource.contains("model.visibleRows.count"),
                 "the compact header does not expose recovery progress and the final task count"
             )
         },
@@ -314,13 +314,13 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
             try expect(
                 headerSource.contains("HStack(spacing: 3)")
                     && headerSource.contains(".padding(.leading, 6)")
-                    && !headerSource.contains("Text(\"· \\(model.visibleTasks.count)\")")
+                    && !headerSource.contains("Text(\"· \\(model.visibleRows.count)\")")
                     && hiddenMenuIndicatorCount >= 2,
                 "the compact bar does not adapt its header and menus to the narrow width"
             )
             try expect(
                 viewSource.contains(
-                    ".accessibilityValue(\"\\(model.visibleTasks.count) 个任务\")"
+                    ".accessibilityValue(\"\\(model.visibleRows.count) 个工作区\")"
                 ),
                 "the task bar does not expose its task count to VoiceOver"
             )
@@ -329,8 +329,8 @@ func privacyStaticTestCases() -> [CodexBarTestCase] {
                    of: "Button(action: onKnowledgeRequested)"
                )?.lowerBound {
                 try expect(
-                    menuPosition < knowledgePosition,
-                    "the knowledge entry is not the rightmost header action"
+                    knowledgePosition < menuPosition,
+                    "the permanent knowledge entry must precede the rightmost menu action"
                 )
             } else {
                 throw TestFailure(description: "header action positions were not found")

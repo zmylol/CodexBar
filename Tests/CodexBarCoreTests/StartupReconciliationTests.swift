@@ -4,6 +4,46 @@ import CodexBarCore
 @MainActor
 func startupReconciliationTestCases() -> [CodexBarTestCase] {
     [
+        CodexBarTestCase(name: "recovers multiple explicit folders in one workspace and excludes unrelated same-name history") {
+            let store = TaskStore()
+            let paths = ["/work/sources/project-alpha", "/work/sources/project-beta"]
+            let snapshots = (paths + ["/other/project-alpha"]).enumerated().map { index, cwd in
+                startupSnapshot(session: "workspace-session-\(index)", cwd: cwd, updatedAt: 100)
+            }
+            let windows = [VSCodeWindowDescriptor(
+                id: 1, title: "Example-Workspace (Workspace) — Visual Studio Code", workspaceFolderPaths: paths
+            )]
+            try expect(try await StartupTaskReconciler(store: store).reconcile(
+                snapshots: snapshots, windows: windows
+            ) == 2, "multi-root workspace did not recover both tasks")
+            try expect(Set(store.tasks.map(\.cwd)) == Set(paths), "unrelated same-name history was recovered")
+        },
+        CodexBarTestCase(name: "shared folder and untitled workspace recover one real task and still reject title ambiguity") {
+            let cwd = "/work/project-alpha"
+            let windows = [
+                VSCodeWindowDescriptor(id: 2, title: "project-alpha", workspaceFolderPaths: [cwd],
+                                       workspace: .folder(cwd)),
+                VSCodeWindowDescriptor(id: 1, title: "Untitled (Workspace)", workspaceFolderPaths: [cwd],
+                                       workspace: .untitledWorkspace("/work/Code/Workspaces/123/workspace.json"))
+            ]
+            let snapshot = startupSnapshot(updatedAt: 100)
+            let store = TaskStore()
+            let reconciler = StartupTaskReconciler(store: store)
+            try expect(try await reconciler.reconcile(snapshots: [snapshot], windows: windows) == 1,
+                       "explicit shared membership was rejected as ambiguous")
+            let task = try require(store.tasks.first, "shared member task missing")
+            try expect(store.tasks.count == 1 && task.cwd == cwd && task.sessionID == snapshot.sessionID
+                       && task.id == "\(snapshot.sessionID):\(snapshot.turnID)",
+                       "shared membership duplicated or rewrote the task identity")
+            try expect(try await reconciler.reconcile(snapshots: [snapshot], windows: windows.reversed()) == 0,
+                       "window enumeration order duplicated a recovered task")
+            let uncertainStore = TaskStore()
+            let uncertainWindows = windows + [VSCodeWindowDescriptor(id: 3, title: "project-alpha")]
+            try expect(try await StartupTaskReconciler(store: uncertainStore).reconcile(
+                snapshots: [snapshot], windows: uncertainWindows
+            ) == 0, "a title-only candidate made uncertain history recoverable")
+            try expect(uncertainStore.tasks.isEmpty, "uncertain shared membership recovered a task")
+        },
         CodexBarTestCase(name: "recovers the latest VS Code turn for an already-open workspace") {
             let store = TaskStore()
             let windows = [

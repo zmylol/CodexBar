@@ -1,11 +1,11 @@
 import CoreGraphics
 
 public struct CodexBarDetailTarget: Equatable, Sendable {
-    public let cwd: String
+    public let rowID: String
     public let rowMidY: CGFloat
 
-    public init(cwd: String, rowMidY: CGFloat) {
-        self.cwd = cwd
+    public init(rowID: String, rowMidY: CGFloat) {
+        self.rowID = rowID
         self.rowMidY = rowMidY
     }
 }
@@ -21,25 +21,25 @@ public struct CodexBarDetailSelection: Equatable, Sendable {
     public init() {}
 
     public mutating func updateHover(
-        cwd: String,
+        rowID: String,
         rowMidY: CGFloat,
         active: Bool
     ) {
         if active {
-            hovered = CodexBarDetailTarget(cwd: cwd, rowMidY: rowMidY)
-        } else if hovered?.cwd == cwd {
+            hovered = CodexBarDetailTarget(rowID: rowID, rowMidY: rowMidY)
+        } else if hovered?.rowID == rowID {
             hovered = nil
         }
     }
 
     public mutating func updateFocus(
-        cwd: String,
+        rowID: String,
         rowMidY: CGFloat,
         active: Bool
     ) {
         if active {
-            focused = CodexBarDetailTarget(cwd: cwd, rowMidY: rowMidY)
-        } else if focused?.cwd == cwd {
+            focused = CodexBarDetailTarget(rowID: rowID, rowMidY: rowMidY)
+        } else if focused?.rowID == rowID {
             focused = nil
         }
     }
@@ -47,5 +47,11 @@ public struct CodexBarDetailSelection: Equatable, Sendable {
     public mutating func clear() {
         hovered = nil
         focused = nil
+    }
+
+    public mutating func updatePosition(rowID: String, rowMidY: CGFloat) {
+        let target = CodexBarDetailTarget(rowID: rowID, rowMidY: rowMidY)
+        if hovered?.rowID == rowID { hovered = target }
+        if focused?.rowID == rowID { focused = target }
     }
 }

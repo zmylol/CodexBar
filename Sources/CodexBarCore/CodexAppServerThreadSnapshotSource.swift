@@ -175,10 +175,16 @@ public actor CodexAppServerThreadSnapshotSource: CodexThreadSnapshotLoading {
         let matcher = VSCodeWindowMatcher()
         var latestByCWD: [String: AppServerThread] = [:]
         for thread in threads {
-            guard case let .matched(window) = matcher.match(
-                cwd: thread.cwd,
-                windows: windows
-            ) else {
+            let window: VSCodeWindowDescriptor
+            switch matcher.match(cwd: thread.cwd, windows: windows) {
+            case let .matched(candidate):
+                window = candidate
+            case let .ambiguous(candidates):
+                guard candidates.allSatisfy({ $0.workspace != nil }),
+                      let candidate = candidates.min(by: { $0.id < $1.id }) else { continue }
+                // Shared roots identify one session even when several windows contain it.
+                window = candidate
+            case .notFound:
                 continue
             }
             let matched = thread.withWindowID(window.id)
@@ -197,9 +203,11 @@ public actor CodexAppServerThreadSnapshotSource: CodexThreadSnapshotLoading {
             threadsByWindowID[windowID, default: []].append(thread)
         }
 
-        // A title containing the same final path component cannot distinguish two cwd values.
-        let selectedThreads = threadsByWindowID.values.compactMap { candidates in
-            candidates.count == 1 ? candidates[0] : nil
+        let workspaceWindowIDs = Set(windows.filter { $0.workspaceFolderPaths != nil }.map(\.id))
+        // Explicit workspace membership can identify several folders in one window;
+        // title-only matches still cannot distinguish paths with the same name.
+        let selectedThreads = threadsByWindowID.flatMap { windowID, candidates in
+            candidates.count == 1 || workspaceWindowIDs.contains(windowID) ? candidates : []
         }
         guard selectedThreads.count <= Self.maximumWindows else {
             throw CodexAppServerSnapshotError.responseLimitExceeded

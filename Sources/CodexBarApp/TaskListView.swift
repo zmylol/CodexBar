@@ -13,17 +13,19 @@ struct TaskListView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
-    let onTaskHoverChanged: (CodexTask, CGFloat, Bool) -> Void
-    let onTaskFocusChanged: (CodexTask, CGFloat, Bool) -> Void
-    let onTaskDetailRequested: (CodexTask, CGFloat) -> Void
+    let onTaskHoverChanged: (VSCodeTaskRow, CGFloat, Bool) -> Void
+    let onTaskFocusChanged: (VSCodeTaskRow, CGFloat, Bool) -> Void
+    let onTaskDetailRequested: (VSCodeTaskRow, CGFloat) -> Void
+    let onTaskPositionChanged: (VSCodeTaskRow, CGFloat) -> Void
     private let onDismissTaskDetail: () -> Void
     let onKnowledgeRequested: () -> Void
 
     init(
         model: CodexBarAppModel,
-        onTaskHoverChanged: @escaping (CodexTask, CGFloat, Bool) -> Void = { _, _, _ in },
-        onTaskFocusChanged: @escaping (CodexTask, CGFloat, Bool) -> Void = { _, _, _ in },
-        onTaskDetailRequested: @escaping (CodexTask, CGFloat) -> Void = { _, _ in },
+        onTaskHoverChanged: @escaping (VSCodeTaskRow, CGFloat, Bool) -> Void = { _, _, _ in },
+        onTaskFocusChanged: @escaping (VSCodeTaskRow, CGFloat, Bool) -> Void = { _, _, _ in },
+        onTaskDetailRequested: @escaping (VSCodeTaskRow, CGFloat) -> Void = { _, _ in },
+        onTaskPositionChanged: @escaping (VSCodeTaskRow, CGFloat) -> Void = { _, _ in },
         onDismissTaskDetail: @escaping () -> Void = {},
         onKnowledgeRequested: @escaping () -> Void = {}
     ) {
@@ -35,6 +37,7 @@ struct TaskListView: View {
         self.onTaskHoverChanged = onTaskHoverChanged
         self.onTaskFocusChanged = onTaskFocusChanged
         self.onTaskDetailRequested = onTaskDetailRequested
+        self.onTaskPositionChanged = onTaskPositionChanged
         self.onDismissTaskDetail = onDismissTaskDetail
         self.onKnowledgeRequested = onKnowledgeRequested
     }
@@ -71,12 +74,12 @@ struct TaskListView: View {
                 .allowsHitTesting(false)
         }
         .ignoresSafeArea()
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: model.visibleTasks)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: model.visibleRows)
         .onExitCommand(perform: onDismissTaskDetail)
         .onDisappear(perform: onDismissTaskDetail)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("CodexBar VS Code 任务")
-        .accessibilityValue("\(model.visibleTasks.count) 个任务")
+        .accessibilityValue("\(model.visibleRows.count) 个工作区")
     }
 
     private var header: some View {
@@ -92,6 +95,30 @@ struct TaskListView: View {
                     .allowsHitTesting(false)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Button(action: onKnowledgeRequested) {
+                Image(systemName: "book.closed")
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(width: 24, height: 24, alignment: .center)
+                    .overlay(alignment: .topTrailing) {
+                        if library.unseenChangeCount > 0 {
+                            Circle()
+                                .fill(Color.accentColor)
+                                .frame(width: 6, height: 6)
+                                .padding(2)
+                                .accessibilityHidden(true)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .fixedSize()
+            .accessibilityLabel("知识库")
+            .accessibilityValue("\(library.unseenChangeCount) 篇今日新增文章未查看")
+            .accessibilityHint("打开知识库列表，点击某个知识库查看文章并清除该库提醒")
+            .accessibilityInputLabels(["知识库", "打开知识库"])
+            .accessibilityIdentifier("knowledge-library-open")
+            .help(library.unseenChangeCount > 0 ? "\(library.unseenChangeCount) 篇今日新增文章，点击查看" : "知识库 · 今日新增")
             Menu {
                 Menu("连接与设置") {
                     Text(model.connectionStatusMessage)
@@ -140,32 +167,8 @@ struct TaskListView: View {
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
-            .fixedSize()
+            .frame(width: 24, height: 24)
             .accessibilityLabel("CodexBar 菜单")
-            Button(action: onKnowledgeRequested) {
-                Image(systemName: "book.closed")
-                    .font(.system(size: 11, weight: .medium))
-                    .frame(width: 24, height: 24, alignment: .center)
-                    .overlay(alignment: .topTrailing) {
-                        if library.unseenChangeCount > 0 {
-                            Circle()
-                                .fill(Color.accentColor)
-                                .frame(width: 6, height: 6)
-                                .padding(2)
-                                .accessibilityHidden(true)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.borderless)
-            .fixedSize()
-            .accessibilityLabel("知识库")
-            .accessibilityValue("\(library.unseenChangeCount) 篇今日新增文章未查看")
-            .accessibilityHint("打开知识库列表，点击某个知识库查看文章并清除该库提醒")
-            .accessibilityInputLabels(["知识库", "打开知识库"])
-            .accessibilityIdentifier("knowledge-library-open")
-            .help(library.unseenChangeCount > 0 ? "\(library.unseenChangeCount) 篇今日新增文章，点击查看" : "知识库 · 今日新增")
         }
         .padding(.leading, 6)
         .padding(.trailing, 4)
@@ -174,8 +177,8 @@ struct TaskListView: View {
 
     @ViewBuilder
     private var content: some View {
-        let sortedTasks = model.visibleSortedTasks
-        let rowCount = sortedTasks.count
+        let rows = model.visibleRows
+        let rowCount = rows.count
         VStack(spacing: 0) {
             if let notice = model.notice {
                 noticeView(notice)
@@ -199,14 +202,14 @@ struct TaskListView: View {
             } else {
                 GeometryReader { geometry in
                     if model.panelDisplayMode == .expanded,
-                       CGFloat(rowCount) * CodexBarPanelLayout.rowHeight <= geometry.size.height {
+                       model.visibleRowHeights.reduce(0, +) <= geometry.size.height {
                         VStack(spacing: 0) {
-                            taskRows(sortedTasks)
+                            taskGroups(model.visibleGroups)
                         }
                     } else {
                         ScrollView {
                             LazyVStack(spacing: 0) {
-                                taskRows(sortedTasks)
+                                taskGroups(model.visibleGroups)
                             }
                         }
                         .scrollIndicators(.hidden)
@@ -216,21 +219,31 @@ struct TaskListView: View {
         }
     }
 
-    private func taskRows(_ tasks: [CodexTask]) -> some View {
-        ForEach(tasks, id: \.cwd) { task in
-            CompactTaskRow(
-                task: task,
-                activities: activityStore.nodes(for: task),
-                plan: activityStore.plan(for: task),
-                knowledgePendingCount: knowledgeStore.pendingCounts[task.sessionID] ?? 0,
-                coordinateSpaceName: Self.coordinateSpaceName,
-                action: { model.activate(task) },
-                focusAction: { model.activate(task, minimizeOtherWindows: true) },
-                deleteAction: { model.remove(task) },
-                onHoverChanged: onTaskHoverChanged,
-                onFocusChanged: onTaskFocusChanged,
-                onDetailRequested: onTaskDetailRequested
-            )
+    private func taskGroups(_ groups: [GitWorkspaceGroup]) -> some View {
+        ForEach(groups) { group in
+            if let repositoryName = group.repositoryName {
+                GitRepositoryHeader(name: repositoryName)
+            }
+            let parents = Set(group.rows.compactMap(\.parentRowID))
+            ForEach(group.rows) { treeRow in
+                let row = treeRow.row
+                let task = row.task
+                CompactTaskRow(
+                    treeRow: treeRow,
+                    hasChildren: parents.contains(row.id),
+                    activities: activityStore.nodes(for: task),
+                    plan: activityStore.plan(for: task),
+                    knowledgePendingCount: knowledgeStore.pendingCounts[task.sessionID] ?? 0,
+                    coordinateSpaceName: Self.coordinateSpaceName,
+                    action: { model.activate(row) },
+                    focusAction: { model.activate(row, minimizeOtherWindows: true) },
+                    deleteAction: { model.remove(task) },
+                    onHoverChanged: onTaskHoverChanged,
+                    onFocusChanged: onTaskFocusChanged,
+                    onDetailRequested: onTaskDetailRequested,
+                    onPositionChanged: onTaskPositionChanged
+                )
+            }
         }
     }
 
@@ -288,11 +301,14 @@ private final class PanelDragHandleView: NSView {
 private struct CompactTaskRow: View {
     private enum FocusedControl: Hashable {
         case task
-        case focusProject
         case menu
     }
 
-    let task: CodexTask
+    let treeRow: GitWorkspaceTreeRow
+    let hasChildren: Bool
+    private var row: VSCodeTaskRow { treeRow.row }
+    private var task: CodexTask { row.task }
+    private var workspaceLabel: GitWorkspaceLabel? { treeRow.label }
     let activities: [CodexTaskActivity]
     let plan: CodexTaskPlan?
     let knowledgePendingCount: Int
@@ -300,13 +316,27 @@ private struct CompactTaskRow: View {
     let action: () -> Void
     let focusAction: () -> Void
     let deleteAction: () -> Void
-    let onHoverChanged: (CodexTask, CGFloat, Bool) -> Void
-    let onFocusChanged: (CodexTask, CGFloat, Bool) -> Void
-    let onDetailRequested: (CodexTask, CGFloat) -> Void
+    let onHoverChanged: (VSCodeTaskRow, CGFloat, Bool) -> Void
+    let onFocusChanged: (VSCodeTaskRow, CGFloat, Bool) -> Void
+    let onDetailRequested: (VSCodeTaskRow, CGFloat) -> Void
+    let onPositionChanged: (VSCodeTaskRow, CGFloat) -> Void
 
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @State private var isHovered = false
     @FocusState private var focusedControl: FocusedControl?
+
+    private var rowHeight: CGFloat {
+        CodexBarPanelLayout.rowHeight(for: treeRow)
+    }
+
+    private var workspaceDescription: String {
+        guard let workspaceLabel else {
+            return row.displayName + (row.isMultiRoot ? "，多项目工作区" : "")
+        }
+        return "\(workspaceLabel.repositoryName)，\(row.displayName)，分支 \(workspaceLabel.branch)"
+            + (workspaceLabel.isLinkedWorktree ? "，关联工作树" : "，主工作目录")
+            + (workspaceLabel.sourceBranch.map { "，创建自 \($0)" } ?? "")
+    }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -319,41 +349,22 @@ private struct CompactTaskRow: View {
             GeometryReader { geometry in
                 let rowMidY = geometry.frame(in: .named(coordinateSpaceName)).midY
 
-                HStack(spacing: 0) {
+                ZStack(alignment: .topTrailing) {
                     Button(action: action) {
-                        HStack(spacing: 7) {
-                            Image(systemName: task.status.symbolName)
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundStyle(task.status.color)
-                                .frame(width: 10)
-                                .accessibilityHidden(true)
-                            Text(task.workspaceName)
-                                .font(.system(
-                                    size: 12,
-                                    weight: task.isUnread ? .semibold : .medium
-                                ))
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                            Spacer(minLength: 2)
-                            if knowledgePendingCount > 0 {
-                                Text("\(knowledgePendingCount) 待回看")
-                                    .font(.system(size: 9, weight: .medium))
-                                    .foregroundStyle(Color.accentColor)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 2)
-                                    .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 4))
-                                    .fixedSize()
-                            }
-                        }
-                        .padding(.leading, 10)
-                        .padding(.trailing, 4)
-                        .frame(height: CodexBarPanelLayout.rowHeight)
-                        .contentShape(Rectangle())
+                        GitWorkspaceRowContent(
+                            treeRow: treeRow,
+                            hasChildren: hasChildren,
+                            statusSymbol: task.status.symbolName,
+                            statusColor: task.status.color,
+                            knowledgePendingCount: knowledgePendingCount,
+                            showsWorktreeBadge: !showsTaskMenu
+                        )
                     }
                     .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .focused($focusedControl, equals: .task)
                     .accessibilityLabel(
-                        "\(task.workspaceName)，\(task.status.label)，\(task.title)"
+                        "\(workspaceDescription)，\(task.status.label)，\(task.title)"
                     )
                     .accessibilityValue(
                         "\(task.isUnread ? "未读，" : "")\(accessibilityTimeText)"
@@ -361,34 +372,14 @@ private struct CompactTaskRow: View {
                             + (knowledgePendingCount > 0 ? "，\(knowledgePendingCount) 篇笔记待回看" : "")
                     )
                     .accessibilityHint("切换到对应的 VS Code 窗口，按右方向键查看任务详情")
-                    .accessibilityInputLabels([task.workspaceName, task.title])
-
-                    Button(action: focusAction) {
-                        Image(systemName: "scope")
-                            .font(.system(size: 11, weight: .medium))
-                            .frame(width: 24, height: 24)
-                            .contentShape(Rectangle())
-                            .overlay {
-                                if focusedControl == .focusProject {
-                                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                        .stroke(Color.accentColor, lineWidth: 1.5)
-                                        .padding(2)
-                                        .allowsHitTesting(false)
-                                }
-                            }
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .fixedSize()
-                    .focused($focusedControl, equals: .focusProject)
-                    .accessibilityLabel("\(task.workspaceName)，专注此项目")
-                    .accessibilityHint("切换到此项目并最小化其他 VS Code 窗口")
-                    .accessibilityIdentifier("task-focus-project-\(task.sessionID)")
-                    .help("专注此项目：最小化其他 VS Code 窗口")
+                    .accessibilityInputLabels([row.displayName, workspaceLabel?.branch ?? row.displayName, task.title])
+                    .help("\(workspaceDescription)\n\(row.rootPath)")
 
                     Menu {
-                        Button("查看任务详情") { onDetailRequested(task, rowMidY) }
-                        Button("删除任务", role: .destructive, action: deleteAction)
+                        Button("查看任务详情") { onDetailRequested(row, rowMidY) }
+                        Button("专注此项目（最小化其他窗口）", action: focusAction)
+                            .accessibilityHint("切换到此项目并最小化其他 VS Code 窗口")
+                        Button("删除当前任务", role: .destructive, action: deleteAction)
                     } label: {
                         Image(systemName: "ellipsis")
                             .font(.system(size: 9, weight: .semibold))
@@ -404,13 +395,15 @@ private struct CompactTaskRow: View {
                     }
                     .menuStyle(.borderlessButton)
                     .menuIndicator(.hidden)
-                    .fixedSize()
+                    .frame(width: 24, height: 24)
+                    .padding(.trailing, 4)
+                    .padding(.top, (rowHeight - 24) / 2)
                     .focused($focusedControl, equals: .menu)
                     .opacity(showsTaskMenu ? 1 : 0)
                     .allowsHitTesting(showsTaskMenu)
-                    .accessibilityLabel("\(task.workspaceName) 任务菜单")
+                    .accessibilityLabel("\(workspaceDescription) 任务菜单")
                 }
-                .frame(height: CodexBarPanelLayout.rowHeight)
+                .frame(width: geometry.size.width, height: rowHeight)
                 .background {
                     if isHovered || isRowFocused {
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -427,23 +420,35 @@ private struct CompactTaskRow: View {
                     }
                 }
                 .contentShape(Rectangle())
+                .onAppear {
+                    onPositionChanged(row, rowMidY)
+                }
                 .onHover { hovering in
                     isHovered = hovering
-                    onHoverChanged(task, rowMidY, hovering)
+                    onHoverChanged(row, rowMidY, hovering)
                 }
                 .onChange(of: focusedControl) { focusedControl in
-                    onFocusChanged(task, rowMidY, focusedControl != nil)
+                    onFocusChanged(row, rowMidY, focusedControl != nil)
+                }
+                .onChange(of: rowMidY) { position in
+                    onPositionChanged(row, position)
+                }
+                .onChange(of: task.id) { _ in
+                    if isHovered { onHoverChanged(row, rowMidY, true) }
+                    if isRowFocused { onFocusChanged(row, rowMidY, true) }
                 }
                 .onMoveCommand { direction in
-                    if direction == .right { onDetailRequested(task, rowMidY) }
+                    if direction == .right { onDetailRequested(row, rowMidY) }
                 }
                 .contextMenu {
-                    Button("查看任务详情") { onDetailRequested(task, rowMidY) }
-                    Button("删除任务", role: .destructive, action: deleteAction)
+                    Button("查看任务详情") { onDetailRequested(row, rowMidY) }
+                    Button("专注此项目（最小化其他窗口）", action: focusAction)
+                        .accessibilityHint("切换到此项目并最小化其他 VS Code 窗口")
+                    Button("删除当前任务", role: .destructive, action: deleteAction)
                 }
             }
         }
-        .frame(height: CodexBarPanelLayout.rowHeight)
+        .frame(height: rowHeight)
     }
 
     private var showsTaskMenu: Bool {
@@ -456,12 +461,13 @@ private struct CompactTaskRow: View {
 }
 
 struct TaskHoverDetailView: View {
+    @ObservedObject private var model: CodexBarAppModel
     @ObservedObject private var store: TaskStore
     @ObservedObject private var activityStore: LiveTaskActivityStore
     @ObservedObject private var previewStore: ConversationPreviewStore
     @ObservedObject private var knowledgeStore: KnowledgeReviewStore
 
-    let cwd: String
+    let rowID: String
     let onOpen: () -> Void
     let onHoverChanged: (Bool) -> Void
     let onPreferredHeightChanged: (CGFloat) -> Void
@@ -474,11 +480,12 @@ struct TaskHoverDetailView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     init(
+        model: CodexBarAppModel,
         store: TaskStore,
         activityStore: LiveTaskActivityStore,
         previewStore: ConversationPreviewStore,
         knowledgeStore: KnowledgeReviewStore,
-        cwd: String,
+        rowID: String,
         onRefreshPreview: @escaping () -> Void,
         onLoadHistory: @escaping () -> Void,
         onToggleReview: @escaping (KnowledgeNoteChange, CodexTask) -> Void,
@@ -488,11 +495,12 @@ struct TaskHoverDetailView: View {
         onPreferredHeightChanged: @escaping (CGFloat) -> Void,
         onDismiss: @escaping () -> Void
     ) {
+        self.model = model
         self.store = store
         self.activityStore = activityStore
         self.previewStore = previewStore
         self.knowledgeStore = knowledgeStore
-        self.cwd = cwd
+        self.rowID = rowID
         self.onOpen = onOpen
         self.onHoverChanged = onHoverChanged
         self.onPreferredHeightChanged = onPreferredHeightChanged
@@ -505,7 +513,8 @@ struct TaskHoverDetailView: View {
 
     var body: some View {
         Group {
-            if let task = store.tasks.first(where: { $0.cwd == cwd }) {
+            if let row = model.visibleRows.first(where: { $0.id == rowID }) {
+                let task = row.task
                 let summary = CodexTaskDetailSummary(
                     task: task,
                     plan: activityStore.plan(for: task),
@@ -524,6 +533,8 @@ struct TaskHoverDetailView: View {
                     onOpen: onOpen,
                     onRefreshPreview: onRefreshPreview,
                     onLoadHistory: onLoadHistory,
+                    workspaceLabel: model.workspaceLabel(for: row),
+                    workspaceRow: row,
                     knowledge: knowledgeStore.review(for: task),
                     onToggleReview: { onToggleReview($0, task) },
                     onOpenNote: { onOpenNote($0, task) }
@@ -551,7 +562,7 @@ struct TaskHoverDetailView: View {
         .onAppear { onPreferredHeightChanged(520) }
         .onExitCommand(perform: onDismiss)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(store.tasks.first(where: { $0.cwd == cwd })?.workspaceName ?? "任务") 任务详情")
+        .accessibilityLabel("\(model.visibleRows.first(where: { $0.id == rowID })?.displayName ?? "任务") 任务详情")
     }
 }
 

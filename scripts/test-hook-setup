@@ -97,6 +97,30 @@ class BundledHookSetupTests(unittest.TestCase):
         self.invoke(ok=False)
         self.assertEqual(self.hooks.read_bytes(), original)
 
+    def test_tracking_failure_preserves_hooks_and_allows_retry_after_moving_app(self):
+        managed = Path(self.env["CODEXBAR_SUPPORT_ROOT"]) / "HookConfigOriginal/managed-executables"
+        managed.parent.mkdir(parents=True)
+        managed.write_text(str(self.root / "previous-helper") + "\n")
+        managed.chmod(0o400)
+        original = self.hooks.read_bytes()
+
+        result = self.invoke(ok=False)
+        self.assertIn("managed-executables", result.stderr)
+        self.assertEqual(self.hooks.read_bytes(), original, "Tracking failure changed hooks.json")
+
+        managed.chmod(0o600)
+        moved_app = self.applications / "CodexBar Moved.app"
+        self.app.rename(moved_app)
+        self.invoke(app=moved_app)
+        configuration = json.loads(self.hooks.read_text())
+        commands = [handler["command"] for groups in configuration["hooks"].values()
+                    for group in groups for handler in group["hooks"]]
+        helper = moved_app / "Contents/Helpers/codexbar-hook"
+        expected = "'" + str(helper).replace("'", "'\\''") + "' --codexbar-managed"
+        self.assertEqual(commands.count(expected), 7)
+        self.assertEqual(len(commands), 8, "Retry left stale managed handlers")
+        self.assertIn("/opt/example/keep", commands)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

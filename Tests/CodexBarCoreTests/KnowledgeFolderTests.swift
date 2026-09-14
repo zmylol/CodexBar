@@ -301,6 +301,70 @@ func knowledgeFolderTestCases() -> [CodexBarTestCase] {
             let snapshot = try await folderTracker(root).capture()
             try expect(Set(snapshot.articles.map(\.title)) == ["标题：保留冒号", "回退标题"], "article title fallback exposed a path or filename extension")
         },
+        CodexBarTestCase(name: "knowledge folder accepts inline comments after quoted article metadata") {
+            let root = try knowledgeFolderFixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let fields: [(String, String, String, String)] = [
+                ("'article' # 类型", "'2026-09-11' # 日期", "'Agent''s # 标题' # 说明", "Agent's # 标题"),
+                (#""article" # 类型"#, #""2026-09-11" # 日期"#,
+                 #""Agent \"memory\" # 标题" # 说明"#, "Agent \"memory\" # 标题"),
+                ("article\t# 类型", "2026-09-11\t# 日期", "Agent's title\t# 说明", "Agent's title")
+            ]
+            for (index, field) in fields.enumerated() {
+                try writeFolderNote("---\ntype: \(field.0)\ncollected: \(field.1)\ntitle: \(field.2)\n---\n正文",
+                                    at: "Notes/Comment-\(index).md", root: root)
+            }
+            let snapshot = try await folderTracker(root).capture()
+            for (index, field) in fields.enumerated() {
+                let article = snapshot.articles.first { $0.path == "Notes/Comment-\(index).md" }
+                try expect(article?.title == field.3 && article?.collectedAt == knowledgeCollectionDate(2026, 9, 11),
+                           "inline comment rejected article metadata or corrupted a quoted title for case \(index)")
+            }
+        },
+        CodexBarTestCase(name: "knowledge folder ignores example and comment headings when choosing article titles") {
+            let root = try knowledgeFolderFixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let bodies = [
+                "```markdown\n# 示例标题\n```\n正文",
+                "~~~~markdown\n# 示例标题\n~~~\n# 仍然是示例\n~~~~\n正文",
+                "<!--\n# 注释标题\n-->\n正文",
+                "<!--\n# 注释标题\n    -->\n正文",
+                "```行内代码```\n正文",
+                "    # 缩进代码标题\n\n正文",
+                "\t# 缩进代码标题\n\n正文",
+                "    <!-- 代码中的注释标记\n\n正文",
+                "Use `<!--` to start an HTML comment.\n\n正文",
+                "Use ``<!-- ` example`` in inline code.\n\n正文"
+            ]
+            for (index, body) in bodies.enumerated() {
+                let metadata = "---\ntype: article\ncollected: 2026-09-11\ntitle: 文章标题\n---\n"
+                try writeFolderNote(metadata + body, at: "Notes/Fallback-\(index).md", root: root)
+                try writeFolderNote(metadata + body + "\n# 正文标题", at: "Notes/Heading-\(index).md", root: root)
+            }
+            let snapshot = try await folderTracker(root).capture()
+            try expect(snapshot.articles.count == bodies.count * 2, "title extraction removed valid articles")
+            for article in snapshot.articles {
+                let expected = article.path.contains("Fallback-") ? "文章标题" : "正文标题"
+                try expect(article.title == expected, "code or comment became the title of \(article.path)")
+            }
+        },
+        CodexBarTestCase(name: "knowledge folder keeps the complete first heading across inline formatting") {
+            let root = try knowledgeFolderFixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            try writeFolderNote("""
+                ---
+                type: article
+                collected: 2026-09-11
+                ---
+                > # 引用中的标题
+
+                # 文章 **标题** 与 `code` [链接](https://example.com)
+                # 后续标题
+                """, at: "Notes/Formatted.md", root: root)
+            let snapshot = try await folderTracker(root).capture()
+            try expect(snapshot.articles.first?.title == "文章 标题 与 code 链接",
+                       "formatted runs were truncated or a quoted or later heading entered the title")
+        },
         CodexBarTestCase(name: "knowledge folder starts with a baseline and emits only later note changes") {
             let root = try knowledgeFolderFixture()
             defer { try? FileManager.default.removeItem(at: root) }

@@ -194,7 +194,8 @@ public struct CodexHookEventSource: CodexEventSource, @unchecked Sendable {
                 fileManager: fileManager
             )
         }
-        if pendingEvents.isEmpty, !inboxSnapshot.urls.isEmpty {
+        // An evicted cache can be empty while newly published events still await a scan.
+        if pendingEvents.isEmpty, !inboxSnapshot.urls.isEmpty || !cachedLifecycleEvents.isEmpty {
             return try self.pendingEvents()
         }
         return pendingEvents

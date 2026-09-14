@@ -4,6 +4,68 @@ import CodexBarCore
 @MainActor
 func appServerSnapshotSourceTestCases() -> [CodexBarTestCase] {
     [
+        CodexBarTestCase(name: "app-server loads multiple explicit workspace folders but rejects ambiguous title history") {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("CodexBarWorkspaceAppServerTests-\(UUID().uuidString)", isDirectory: true)
+            let executable = root.appendingPathComponent("fake-codex")
+            defer { try? FileManager.default.removeItem(at: root) }
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let script = fakeAppServerScript
+                .replacingOccurrences(of: "/work/project-alpha", with: "/work/sources/project-alpha")
+                .replacingOccurrences(of: "/work/interrupted", with: "/work/sources/project-beta")
+                .replacingOccurrences(of: "/work/failed", with: "/other/project-alpha")
+            try script.write(to: executable, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: 0o700)], ofItemAtPath: executable.path
+            )
+            let source = CodexAppServerThreadSnapshotSource(
+                executableURL: executable, executableValidator: { _ in true }
+            )
+            let paths = ["/work/sources/project-alpha", "/work/sources/project-beta"]
+            let snapshots = try await source.loadSnapshots(matching: [VSCodeWindowDescriptor(
+                id: 1, title: "Example-Workspace (Workspace) — Visual Studio Code", workspaceFolderPaths: paths
+            )])
+            try expect(Set(snapshots.map(\.cwd)) == Set(paths),
+                       "multi-root recovery lost a member or included unrelated same-name history")
+            try expect(snapshots.first(where: { $0.cwd == paths[0] })?.sessionID == "latest-session",
+                       "workspace recovery did not select the latest thread for each cwd")
+            let ambiguous = try await source.loadSnapshots(matching: [
+                VSCodeWindowDescriptor(id: 1, title: "project-alpha — Visual Studio Code")
+            ])
+            try expect(ambiguous.isEmpty, "title-only ambiguity recovered unrelated folders")
+        },
+        CodexBarTestCase(name: "app-server recovers shared folder and untitled membership once without relaxing title ambiguity") {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("CodexBarSharedWorkspaceAppServerTests-\(UUID().uuidString)", isDirectory: true)
+            let executable = root.appendingPathComponent("fake-codex")
+            defer { try? FileManager.default.removeItem(at: root) }
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try fakeAppServerScript.write(to: executable, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: 0o700)], ofItemAtPath: executable.path
+            )
+            let source = CodexAppServerThreadSnapshotSource(
+                executableURL: executable, executableValidator: { _ in true }
+            )
+            let cwd = "/work/project-alpha"
+            let windows = [
+                VSCodeWindowDescriptor(id: 2, title: "project-alpha", workspaceFolderPaths: [cwd],
+                                       workspace: .folder(cwd)),
+                VSCodeWindowDescriptor(id: 1, title: "Untitled (Workspace)", workspaceFolderPaths: [cwd],
+                                       workspace: .untitledWorkspace("/work/Code/Workspaces/123/workspace.json"))
+            ]
+            let snapshots = try await source.loadSnapshots(matching: windows)
+            let snapshot = try require(snapshots.first, "explicit shared member snapshot missing")
+            try expect(snapshots.count == 1 && snapshot.cwd == cwd && snapshot.sessionID == "latest-session"
+                       && snapshot.turnID == "latest-turn", "shared membership duplicated or rewrote the latest snapshot")
+            let reordered = try await source.loadSnapshots(matching: windows.reversed())
+            try expect(reordered.count == 1 && reordered.first?.sessionID == snapshot.sessionID,
+                       "window enumeration order changed shared snapshot recovery")
+            let uncertain = try await source.loadSnapshots(matching:
+                windows + [VSCodeWindowDescriptor(id: 3, title: "project-alpha")]
+            )
+            try expect(uncertain.isEmpty, "a title-only candidate made uncertain thread history recoverable")
+        },
         CodexBarTestCase(name: "loads the latest persisted VS Code turn through app-server") {
             let root = FileManager.default.temporaryDirectory
                 .appendingPathComponent("CodexBarAppServerTests-\(UUID().uuidString)", isDirectory: true)

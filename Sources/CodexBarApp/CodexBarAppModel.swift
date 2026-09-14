@@ -12,6 +12,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     @Published private var taskVisibility = VSCodeTaskVisibility()
     @Published private(set) var isRecoveringOpenTasks = false
     @Published private(set) var runtimeConnectionState = CodexRuntimeConnectionState.idle
+    @Published private(set) var workspaceLabels: [String: GitWorkspaceLabel] = [:]
     @Published private(set) var inboxHealth = CodexInboxHealth(pendingCount: 0, discardedCount: 0)
     @Published private(set) var notice: PanelNotice? {
         didSet {
@@ -28,7 +29,19 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     let knowledgeStore = KnowledgeReviewStore()
     let knowledgeLibrary: KnowledgeLibraryModel
     var visibleTasks: [CodexTask] { taskVisibility.visibleTasks(in: store.tasks) }
-    var visibleSortedTasks: [CodexTask] { taskVisibility.visibleTasks(in: store.sortedTasks) }
+    var visibleGroups: [GitWorkspaceGroup] {
+        GitWorkspaceTree.groups(rows: taskVisibility.visibleRows(in: store.sortedTasks), labels: workspaceLabels)
+    }
+    var visibleRows: [VSCodeTaskRow] { visibleGroups.flatMap { $0.rows.map(\.row) } }
+    var visibleRowHeights: [CGFloat] {
+        CodexBarPanelLayout.rowHeights(groups: visibleGroups)
+    }
+    func workspaceLabel(for row: VSCodeTaskRow) -> GitWorkspaceLabel? {
+        row.isMultiRoot ? nil : workspaceLabels[row.rootPath]
+    }
+    private var visibleGitRoots: Set<String> {
+        Set(visibleRows.filter { !$0.isMultiRoot }.map(\.rootPath))
+    }
     var hasNoOpenWindows: Bool { taskVisibility.hasNoOpenWindows }
     var connectionStatusMessage: String {
         guard AccessibilityAuthorization.isTrusted else { return "需要辅助功能授权" }
@@ -52,6 +65,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     private let inboxMonitor: CodexInboxMonitor
     private let windowMonitor: VSCodeWindowMonitor
     private let runtimeMonitor = CodexRuntimeStatusMonitor()
+    private let workspaceMonitor = GitWorkspaceMonitor()
     private lazy var previewCoordinator = ConversationPreviewCoordinator(store: previewStore, monitor: runtimeMonitor)
     private lazy var runtimeEvents = makeRuntimeEventCoordinator()
     private var knowledgeWorker = KnowledgeReviewWorker()
@@ -107,6 +121,11 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         stop()
         isStarted = true
         knowledgeLibrary.start()
+        workspaceMonitor.start(cwds: visibleGitRoots) { [weak self] labels in
+            guard let self, isStarted else { return }
+            workspaceLabels = labels
+            notifyPresentationChanged(animated: true)
+        }
         if store.recoverySnapshotURL != nil {
             showNotice(message: "任务状态文件损坏，已隔离并重建。")
         }
@@ -164,6 +183,8 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         endConversationPreview()
         runtimeMonitor.onConnectionStateChange = nil
         runtimeMonitor.stop()
+        workspaceMonitor.stop()
+        workspaceLabels = [:]
         runtimeConnectionState = .idle
         runtimeEvents.stop()
         knowledgeSynchronizationTask?.cancel()
@@ -204,7 +225,8 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         }
     }
 
-    func activate(_ task: CodexTask, minimizeOtherWindows: Bool = false) {
+    func activate(_ row: VSCodeTaskRow, minimizeOtherWindows: Bool = false) {
+        let task = row.task
         windowActivationTask?.cancel()
         windowActivationTask = Task { [weak self] in
             guard let self else {
@@ -212,6 +234,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
             }
             let result = await activator.activateWindow(
                 forCWD: task.cwd,
+                workspace: row.workspace,
                 promptForAccessibility: false,
                 minimizeOtherWindows: minimizeOtherWindows
             )
@@ -267,6 +290,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     func refreshOpenTasks() {
         startInboxMonitoring()
         runtimeMonitor.refresh()
+        workspaceMonitor.refresh()
         synchronizeKnowledgeSessions(refresh: true)
         processInbox()
         windowMonitor.refreshObservers()
@@ -440,6 +464,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     private func handleWindowEnvironmentChange() {
         guard isStarted else { return }
         runtimeMonitor.retryDiscovery()
+        workspaceMonitor.refresh()
         windowEventGeneration &+= 1
         if startupRecoveryTask == nil,
            accessibilityRecoveryTrigger.isWaitingForGrant,
@@ -532,6 +557,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
             endConversationPreview()
         }
         runtimeMonitor.setSessions(Set(visibleTasks.map(\.sessionID)))
+        workspaceMonitor.setCWDs(visibleGitRoots)
         synchronizeKnowledgeSessions()
     }
 
@@ -865,7 +891,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 }
                 showRefreshFeedback(
                     .completed(
-                        currentTaskCount: visibleTasks.count,
+                        currentWorkspaceCount: visibleRows.count,
                         changedCount: changedCount
                     ),
                     reportCompletion: reportCompletion
@@ -939,7 +965,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     private func notifyPresentationChanged(animated: Bool) {
         synchronizeRuntimeSessions()
         activityStore.synchronize(with: store.tasks)
-        onPresentationChanged?(visibleTasks.count, notice != nil, animated)
+        onPresentationChanged?(visibleRows.count, notice != nil, animated)
     }
 }
 

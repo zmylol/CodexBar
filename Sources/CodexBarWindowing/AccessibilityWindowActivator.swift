@@ -44,7 +44,7 @@ public final class AccessibilityWindowActivator {
                 messagingTimeout: Self.messagingTimeout,
                 codeSignatureValidator: codeSignatureValidator
             )
-        ) ?? []
+        ).map { VSCodeWorkspaceMetadata.enrich($0) } ?? []
     }
 
     /// Enumerates descriptors without making Accessibility calls on the main actor.
@@ -75,7 +75,7 @@ public final class AccessibilityWindowActivator {
                     messagingTimeout: messagingTimeout,
                     codeSignatureValidator: codeSignatureValidator
                 )
-            )
+            ).map { VSCodeWorkspaceMetadata.enrich($0) }
         }
         let snapshot = await withTaskCancellationHandler {
             await enumerationTask.value
@@ -96,6 +96,7 @@ public final class AccessibilityWindowActivator {
     /// This method never opens a workspace or creates a new VS Code window.
     public func activateWindow(
         forCWD cwd: String,
+        workspace: VSCodeWorkspaceIdentity? = nil,
         promptForAccessibility: Bool = false,
         minimizeOtherWindows: Bool = false
     ) async -> VSCodeWindowActivationResult {
@@ -114,6 +115,7 @@ public final class AccessibilityWindowActivator {
 
         return await activationWorker.activateWindow(
             forCWD: cwd,
+            workspace: workspace,
             applicationIdentities: applicationIdentities,
             minimizeOtherWindows: minimizeOtherWindows
         )
@@ -192,6 +194,7 @@ private actor AccessibilityWindowActivationWorker {
 
     func activateWindow(
         forCWD cwd: String,
+        workspace: VSCodeWorkspaceIdentity?,
         applicationIdentities: [VSCodeApplicationIdentity],
         minimizeOtherWindows: Bool
     ) -> VSCodeWindowActivationResult {
@@ -207,7 +210,7 @@ private actor AccessibilityWindowActivationWorker {
             return .windowNotFound
         }
 
-        switch matcher.match(cwd: cwd, windows: initialWindows.map(\.descriptor)) {
+        switch matcher.match(cwd: cwd, windows: initialWindows.map(\.descriptor), workspace: workspace) {
         case .notFound:
             return .windowNotFound
         case let .ambiguous(candidates):
@@ -226,6 +229,7 @@ private actor AccessibilityWindowActivationWorker {
         switch matcher.focusPlan(
             cwd: cwd,
             windows: refreshedWindows.map(\.descriptor),
+            workspace: workspace,
             minimizeOtherWindows: minimizeOtherWindows
         ) {
         case .notFound:
@@ -305,7 +309,14 @@ private actor AccessibilityWindowActivationWorker {
             }
         }
 
-        return result
+        let descriptors = VSCodeWorkspaceMetadata.enrich(result.map(\.descriptor))
+        return zip(result, descriptors).map { window, descriptor in
+            AccessibilityWindow(
+                descriptor: descriptor,
+                element: window.element,
+                applicationIdentity: window.applicationIdentity
+            )
+        }
     }
 
     private func isCurrentApplication(_ identity: VSCodeApplicationIdentity) -> Bool {

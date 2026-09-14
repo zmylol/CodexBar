@@ -44,6 +44,101 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
                 "a notice widened the persistent panel contract"
             )
         },
+        CodexBarTestCase(name: "sizes mixed project rows in their displayed order") {
+            try expect(CodexBarPanelLayout.branchRowHeight == 40, "branch labels need two-line row space")
+            let rowHeights: [CGFloat] = [28, 40, 28, 40, 28, 40]
+            try expect(
+                CodexBarPanelLayout.height(rowHeights: rowHeights, noticeVisible: false) == 192,
+                "scrolling mode did not sum the first five mixed rows"
+            )
+            try expect(
+                CodexBarPanelLayout.height(
+                    rowHeights: rowHeights,
+                    noticeVisible: true,
+                    displayMode: .expanded
+                ) == 316,
+                "expanded mode did not include all mixed rows and the notice"
+            )
+            try expect(
+                CodexBarPanelLayout.height(rowHeights: [40, 28], noticeVisible: false) == 96,
+                "a branch row clipped the following project"
+            )
+        },
+        CodexBarTestCase(name: "preserves empty state and screen limits for mixed project rows") {
+            try expect(
+                CodexBarPanelLayout.height(rowHeights: [], noticeVisible: false) == 84,
+                "mixed rows changed the empty state height"
+            )
+            try expect(
+                CodexBarPanelLayout.height(
+                    rowHeights: [40, 28, 40, 28, 40, 28],
+                    noticeVisible: true,
+                    displayMode: .expanded,
+                    maximumHeight: 180
+                ) == 180,
+                "mixed rows overflowed the available screen height"
+            )
+            try expect(
+                CodexBarPanelLayout.height(taskCount: Int.max, noticeVisible: false) == 168,
+                "legacy task count sizing should stay bounded without allocating rows"
+            )
+        },
+        CodexBarTestCase(name: "repository headings preserve the five workspace scroll limit") {
+            let rows = (0..<6).map { index in
+                let path = "/layout/work-\(index)"
+                return VSCodeTaskRow(
+                    id: path, displayName: "work-\(index)", rootPath: path, isMultiRoot: false,
+                    task: CodexTask(
+                        id: path, sessionID: path, turnID: "turn", cwd: path,
+                        workspaceName: "project", title: "task", status: .ready,
+                        startedAt: Date(), updatedAt: Date(), isUnread: false
+                    )
+                )
+            }
+            let parent = GitWorkspaceLabel(
+                repositoryName: "project", branch: "main", shortBranch: "main",
+                isLinkedWorktree: false, workspaceRoot: rows[0].rootPath, repositoryID: "/repo/.git"
+            )
+            let child = GitWorkspaceLabel(
+                repositoryName: "project", branch: "feature", shortBranch: "feature",
+                isLinkedWorktree: true, workspaceRoot: rows[1].rootPath,
+                sourceBranch: "main", repositoryID: "/repo/.git"
+            )
+            let labels = [rows[0].rootPath: parent, rows[1].rootPath: child]
+            let groups = GitWorkspaceTree.groups(rows: rows, labels: labels)
+            let heights = CodexBarPanelLayout.rowHeights(groups: groups)
+            try expect(heights.count == 6, "repository heading counted as an extra workspace")
+            try expect(heights == [46, 28, 28, 28, 28, 28], "tree geometry clips a heading or branch")
+            try expect(CodexBarPanelLayout.height(rowHeights: heights, noticeVisible: false) == 186,
+                       "scrolling no longer fits five actual workspaces")
+            try expect(CodexBarPanelLayout.height(rowHeights: heights, noticeVisible: false, displayMode: .expanded) == 214,
+                       "expanded panel dropped a workspace or repository heading")
+            let onlyChild = GitWorkspaceTree.groups(rows: [rows[1]], labels: labels)
+            try expect(CodexBarPanelLayout.rowHeights(groups: onlyChild) == [58],
+                       "closed parent source caption has insufficient vertical space")
+        },
+        CodexBarTestCase(name: "preserves the top edge when branch labels increase row heights") {
+            let frame = CodexBarPanelLayout.panelFrame(
+                currentFrame: CGRect(x: 900, y: 600, width: 126, height: 84),
+                rowHeights: [40, 28],
+                noticeVisible: false,
+                displayMode: .expanded,
+                visibleFrame: CGRect(x: 18, y: 42, width: 1164, height: 840)
+            )
+            try expect(frame == CGRect(x: 900, y: 588, width: 126, height: 96),
+                       "a branch label moved the panel top or clipped a row")
+            let screen = CGRect(x: 18, y: 42, width: 1164, height: 180)
+            let clamped = CodexBarPanelLayout.panelFrame(
+                currentFrame: CGRect(x: 2000, y: 900, width: 126, height: 168),
+                rowHeights: [40, 40, 40, 40, 40, 40],
+                noticeVisible: true,
+                displayMode: .expanded,
+                visibleFrame: screen
+            )
+            try expect(clamped.height == screen.height && clamped.minY == screen.minY
+                       && clamped.maxX == screen.maxX,
+                       "mixed row growth did not stay within the visible display")
+        },
         CodexBarTestCase(name: "expands the panel to show every task when the screen has room") {
             try expect(
                 CodexBarPanelLayout.height(

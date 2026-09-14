@@ -71,24 +71,29 @@ private actor StartupTaskRecoveryWorker {
             guard !Task.isCancelled else {
                 return []
             }
-            guard case let .matched(window) = matcher.match(
-                cwd: snapshot.cwd,
-                windows: windows
-            ) else {
+            let window: VSCodeWindowDescriptor
+            switch matcher.match(cwd: snapshot.cwd, windows: windows) {
+            case let .matched(candidate):
+                window = candidate
+            case let .ambiguous(candidates):
+                guard candidates.allSatisfy({ $0.workspace != nil }),
+                      let candidate = candidates.min(by: { $0.id < $1.id }) else { continue }
+                // Shared roots identify one session even when several windows contain it.
+                window = candidate
+            case .notFound:
                 continue
             }
             candidatesByWindowID[window.id, default: []].append(snapshot)
         }
 
-        return candidatesByWindowID.values.compactMap { candidates -> CodexTask? in
-            // Two distinct cwd values can share the same final path component.
-            // A window title cannot disambiguate them, so fail closed.
-            guard candidates.count == 1,
-                  let snapshot = candidates.first
-            else {
-                return nil
+        let workspaceWindowIDs = Set(windows.filter { $0.workspaceFolderPaths != nil }.map(\.id))
+        return candidatesByWindowID.flatMap { windowID, candidates -> [CodexTask] in
+            // Explicit folder membership supports multiple tasks in one workspace.
+            // A title alone cannot distinguish different paths with the same name.
+            guard candidates.count == 1 || workspaceWindowIDs.contains(windowID) else {
+                return []
             }
-            return task(from: snapshot)
+            return candidates.compactMap { task(from: $0) }
         }
     }
 

@@ -44,9 +44,21 @@ enum PanelPlacement { case topLeft, topRight, bottomLeft, bottomRight }
     let inboxHealth = CodexInboxHealth(pendingCount: 0, discardedCount: 0)
     var onActivate: () -> Void = {}
     var visibleTasks: [CodexTask] { store.tasks }
-    var visibleSortedTasks: [CodexTask] { store.tasks }
+    var visibleRows: [VSCodeTaskRow] {
+        store.tasks.map { task in
+            VSCodeTaskRow(id: "workspace:\(task.cwd)", displayName: task.workspaceName,
+                          rootPath: task.cwd, isMultiRoot: false, task: task)
+        }
+    }
+    var visibleGroups: [GitWorkspaceGroup] {
+        GitWorkspaceTree.groups(rows: visibleRows, labels: [:])
+    }
+    var visibleRowHeights: [CGFloat] {
+        CodexBarPanelLayout.rowHeights(groups: visibleGroups)
+    }
 
-    func activate(_ task: CodexTask, minimizeOtherWindows: Bool = false) { onActivate() }
+    func workspaceLabel(for row: VSCodeTaskRow) -> GitWorkspaceLabel? { nil }
+    func activate(_ row: VSCodeTaskRow, minimizeOtherWindows: Bool = false) { onActivate() }
     func remove(_ task: CodexTask) {}
     func refreshOpenTasks() {}
     func clearRead() {}

@@ -38,17 +38,32 @@ public struct KnowledgeArticle: Identifiable, Equatable, Sendable {
         }
         guard fields["type"] == "article", let collected = fields["collected"],
               let date = Self.collectionDate(collected) else { return nil }
-        let heading = lines[(end + 1)...].lazy.compactMap { line -> String? in
-            let text = line.trimmingCharacters(in: .whitespaces)
-            guard text.hasPrefix("# ") || text.hasPrefix("#\t") else { return nil }
-            let title = text.dropFirst().trimmingCharacters(in: .whitespaces)
-            return title.isEmpty ? nil : title
-        }.first
+        let heading = Self.heading(in: lines[(end + 1)...])
         let metadataTitle = fields["title"].flatMap { $0.isEmpty ? nil : $0 }
         let filename = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         self.init(path: path, title: Self.boundedText(heading ?? metadataTitle ?? filename, maximumBytes: 1_024),
                   collectedAt: date,
                   summary: Self.summary(in: lines[(end + 1)...]).map { Self.boundedText($0, maximumBytes: 4 * 1_024) })
+    }
+
+    private static func heading(in lines: ArraySlice<String>) -> String? {
+        guard let markdown = try? AttributedString(markdown: lines.joined(separator: "\n")) else { return nil }
+        var headingID: Int?
+        var title = ""
+        for run in markdown.runs {
+            guard let components = run.presentationIntent?.components,
+                  components.count == 1,
+                  let component = components.first,
+                  case .header(level: 1) = component.kind else {
+                if headingID != nil { break }
+                continue
+            }
+            if let headingID, headingID != component.identity { break }
+            headingID = component.identity
+            title += String(markdown[run.range].characters)
+        }
+        let trimmed = title.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     /// Article indexes retain bounded display text even when the full note is outside the body cache.
@@ -143,15 +158,37 @@ public struct KnowledgeArticle: Identifiable, Equatable, Sendable {
     }
 
     private static func scalar(_ input: String) -> String {
-        let value = input.trimmingCharacters(in: .whitespaces)
+        var value = input.trimmingCharacters(in: .whitespaces)
+        // Comments start outside a quoted scalar and require whitespace before '#'.
+        var quote: Character? = value.first.flatMap { $0 == "'" || $0 == "\"" ? $0 : nil }
+        var escaped = false
+        var index = quote == nil ? value.startIndex : value.index(after: value.startIndex)
+        while index < value.endIndex {
+            let character = value[index]
+            if let activeQuote = quote {
+                if activeQuote == "\"", escaped {
+                    escaped = false
+                } else if activeQuote == "\"", character == "\\" {
+                    escaped = true
+                } else if character == activeQuote {
+                    let next = value.index(after: index)
+                    if activeQuote == "'", next < value.endIndex, value[next] == "'" {
+                        index = next
+                    } else {
+                        quote = nil
+                    }
+                }
+            } else if character == "#", index == value.startIndex || value[value.index(before: index)].isWhitespace {
+                value = value[..<index].trimmingCharacters(in: .whitespaces)
+                break
+            }
+            index = value.index(after: index)
+        }
         if value.hasPrefix("'"), value.hasSuffix("'"), value.count >= 2 {
             return String(value.dropFirst().dropLast()).replacingOccurrences(of: "''", with: "'")
         }
         if value.hasPrefix("\""), let decoded = try? JSONDecoder().decode(String.self, from: Data(value.utf8)) {
             return decoded
-        }
-        if let comment = value.range(of: " #") {
-            return value[..<comment.lowerBound].trimmingCharacters(in: .whitespaces)
         }
         return value
     }

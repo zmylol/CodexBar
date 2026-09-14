@@ -32,6 +32,7 @@ PLIST
     Sources/CodexBarApp/KnowledgeChangesView.swift \
     Sources/CodexBarApp/TaskDetailCard.swift \
     Sources/CodexBarApp/KnowledgeLibraryView.swift \
+    Sources/CodexBarApp/GitWorkspaceRowContent.swift \
     Sources/CodexBarApp/TaskListView.swift \
     "$script_dir/DemoModels.swift" "$script_dir/MarketingDemo.swift" \
     -o "$app_dir/Contents/MacOS/CodexBarPublicDemo"

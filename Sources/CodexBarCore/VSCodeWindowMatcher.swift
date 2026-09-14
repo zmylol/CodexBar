@@ -1,12 +1,43 @@
 import Foundation
 
+public enum VSCodeWorkspaceIdentity: Equatable, Sendable {
+    case folder(String)
+    case workspace(String)
+    case untitledWorkspace(String)
+
+    public var path: String {
+        switch self {
+        case let .folder(path), let .workspace(path), let .untitledWorkspace(path): return path
+        }
+    }
+
+    public var displayName: String {
+        if case .untitledWorkspace = self { return "未命名工作区" }
+        let url = URL(fileURLWithPath: path)
+        return isMultiRoot ? url.deletingPathExtension().lastPathComponent : url.lastPathComponent
+    }
+
+    public var isMultiRoot: Bool {
+        if case .folder = self { return false }
+        return true
+    }
+}
+
 public struct VSCodeWindowDescriptor: Equatable, Sendable {
     public let id: Int
     public let title: String
+    /// Canonical workspace folders; nil permits title matching, while an empty list does not.
+    public let workspaceFolderPaths: [String]?
+    public let workspace: VSCodeWorkspaceIdentity?
 
-    public init(id: Int, title: String) {
+    public init(
+        id: Int, title: String, workspaceFolderPaths: [String]? = nil,
+        workspace: VSCodeWorkspaceIdentity? = nil
+    ) {
         self.id = id
         self.title = title
+        self.workspaceFolderPaths = workspaceFolderPaths
+        self.workspace = workspace
     }
 }
 
@@ -40,13 +71,15 @@ public struct VSCodeWindowMatcher: Sendable {
 
     public func match(
         cwd: String,
-        windows: [VSCodeWindowDescriptor]
+        windows: [VSCodeWindowDescriptor],
+        workspace: VSCodeWorkspaceIdentity? = nil
     ) -> VSCodeWindowMatchResult {
         guard let normalizedPath = PathNormalizer.normalize(cwd) else {
             return .notFound
         }
 
-        return match(normalizedCWD: normalizedPath, windows: windows)
+        let candidates = workspace.map { identity in windows.filter { $0.workspace == identity } } ?? windows
+        return match(normalizedCWD: normalizedPath, windows: candidates)
     }
 
     /// TaskStore paths are already canonical; presentation must not resolve them on disk again.
@@ -59,8 +92,14 @@ public struct VSCodeWindowMatcher: Sendable {
             return .notFound
         }
 
-        let candidates = windows.filter {
-            title(workspaceTitle($0.title), containsWorkspaceNameAtBoundary: workspaceName)
+        let candidates = windows.filter { window in
+            if let folders = window.workspaceFolderPaths {
+                return folders.contains { folder in
+                    normalizedCWD == folder
+                        || normalizedCWD.hasPrefix(folder == "/" ? folder : folder + "/")
+                }
+            }
+            return title(workspaceTitle(window.title), containsWorkspaceNameAtBoundary: workspaceName)
         }
 
         switch candidates.count {
@@ -76,9 +115,10 @@ public struct VSCodeWindowMatcher: Sendable {
     package func focusPlan(
         cwd: String,
         windows: [VSCodeWindowDescriptor],
+        workspace: VSCodeWorkspaceIdentity? = nil,
         minimizeOtherWindows: Bool = false
     ) -> VSCodeWindowFocusPlanResult {
-        switch match(cwd: cwd, windows: windows) {
+        switch match(cwd: cwd, windows: windows, workspace: workspace) {
         case .notFound:
             return .notFound
         case let .ambiguous(candidates):
@@ -91,7 +131,7 @@ public struct VSCodeWindowMatcher: Sendable {
         }
     }
 
-    private func workspaceTitle(_ title: String) -> String {
+    package func workspaceTitle(_ title: String) -> String {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let productName = "Visual Studio Code"
         guard trimmed.caseInsensitiveCompare(productName) != .orderedSame else { return "" }
@@ -106,7 +146,7 @@ public struct VSCodeWindowMatcher: Sendable {
         return trimmed
     }
 
-    private func title(
+    package func title(
         _ title: String,
         containsWorkspaceNameAtBoundary workspaceName: String
     ) -> Bool {

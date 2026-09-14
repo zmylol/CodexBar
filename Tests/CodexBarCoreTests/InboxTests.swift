@@ -108,6 +108,37 @@ func inboxTestCases() -> [CodexBarTestCase] {
             try expect(remaining.count == 37, "events arriving while draining a snapshot were missed")
             try expect(remaining.suffix(2).map(\.event.name) == [.userPromptSubmit, .preToolUse], "new activity overtook its unscanned prompt")
         },
+        CodexBarTestCase(name: "rescans new lifecycle events after retention removes the remaining inbox snapshot") {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let paths = CodexBarPaths(rootDirectory: root)
+            let policy = CodexInboxRetentionPolicy(maximumFileCount: 26, maximumBytes: 32_768, maximumAge: 604_800)
+            let writer = InboxWriter(paths: paths, retentionPolicy: policy)
+            let source = CodexHookEventSource(paths: paths, retentionPolicy: policy)
+            for timestamp in 100..<126 {
+                _ = try writer.write(inboxEvent(.stop, timestamp: TimeInterval(timestamp)))
+            }
+            let first = try source.pendingEvents()
+            try expect(first.count == 25, "the first snapshot did not leave a cached remainder")
+            try source.markProcessed(first)
+            for timestamp in 200..<225 {
+                _ = try writer.write(inboxEvent(.stop, timestamp: TimeInterval(timestamp)))
+            }
+            _ = try writer.write(inboxEvent(.userPromptSubmit, timestamp: 225))
+            _ = try writer.write(inboxActionEvent(timestamp: 226))
+
+            var remaining: [PendingCodexEvent] = []
+            while true {
+                let pending = try source.pendingEvents()
+                if pending.isEmpty { break }
+                remaining.append(contentsOf: pending)
+                try source.markProcessed(pending)
+            }
+
+            try expect(remaining.count == 27, "an evicted cached remainder hid the new lifecycle snapshot")
+            try expect(remaining.suffix(2).map(\.event.name) == [.userPromptSubmit, .preToolUse], "new activity overtook its unscanned prompt")
+            try expect(try archiveFileCount(in: paths.inbox) == 0, "a successful drain left reliable events on disk")
+        },
         CodexBarTestCase(name: "coordinates concurrent reliable inbox writes and persistent discard counts") {
             let root = temporaryDirectory()
             defer { try? FileManager.default.removeItem(at: root) }

@@ -12,6 +12,8 @@ struct TaskDetailCard: View {
     let onOpen: () -> Void
     let onRefreshPreview: () -> Void
     let onLoadHistory: () -> Void
+    var workspaceLabel: GitWorkspaceLabel? = nil
+    var workspaceRow: VSCodeTaskRow? = nil
     var knowledge: KnowledgeVaultReview? = nil
     var onToggleReview: (KnowledgeNoteChange) -> Void = { _ in }
     var onOpenNote: (KnowledgeNoteChange) -> Void = { _ in }
@@ -172,12 +174,41 @@ struct TaskDetailCard: View {
     private var header: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(knowledge?.vault.name ?? task.workspaceName)
+                Text(workspaceRow?.displayName ?? knowledge?.vault.name ?? task.workspaceName)
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
                 Text(knowledge == nil ? "会话预览" : "知识库 · 已识别变更")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
+                if let workspaceLabel {
+                    Label(
+                        workspaceLabel.branch + (workspaceLabel.isLinkedWorktree ? " · Worktree" : ""),
+                        systemImage: "arrow.triangle.branch"
+                    )
+                    .font(.system(size: 11, weight: .medium))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    if let sourceBranch = workspaceLabel.sourceBranch {
+                        Text("创建自 \(sourceBranch)")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .help("根据 Git 分支创建记录识别；表示创建时的来源")
+                    }
+                }
+                if workspaceLabel != nil || workspaceRow != nil {
+                    Text(workspaceRow?.rootPath ?? task.cwd)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let workspaceRow, workspaceRow.rootPath != task.cwd {
+                    Text("当前会话：\(task.workspaceName)")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .help(task.cwd)
+                }
             }
             Spacer(minLength: 4)
             Label(task.status.label, systemImage: task.status.symbolName)

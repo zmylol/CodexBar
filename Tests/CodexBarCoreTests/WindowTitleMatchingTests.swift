@@ -4,6 +4,65 @@ import CodexBarCore
 @MainActor
 func windowTitleMatchingTestCases() -> [CodexBarTestCase] {
     [
+        CodexBarTestCase(name: "workspace row activation distinguishes a shared folder from its multi-root window") {
+            let folder = VSCodeWorkspaceIdentity.folder("/work/shared")
+            let group = VSCodeWorkspaceIdentity.workspace("/work/group.code-workspace")
+            let windows = [
+                VSCodeWindowDescriptor(id: 1, title: "shared", workspaceFolderPaths: ["/work/shared"], workspace: folder),
+                VSCodeWindowDescriptor(id: 2, title: "group (Workspace)", workspaceFolderPaths: ["/work/shared"], workspace: group)
+            ]
+            let matcher = VSCodeWindowMatcher()
+            try expect(matcher.match(cwd: "/work/shared", windows: windows, workspace: folder) == .matched(windows[0]),
+                       "single-folder row selected its multi-root window")
+            let plan = matcher.focusPlan(cwd: "/work/shared", windows: windows, workspace: group, minimizeOtherWindows: true)
+            try expect(plan == .planned(VSCodeWindowFocusPlan(target: windows[1], windowsToMinimize: [windows[0]])),
+                       "workspace focus did not retain the target identity and minimize the other window")
+            try expect(matcher.match(cwd: "/work/shared", windows: [windows[0]], workspace: group) == .notFound,
+                       "closing the selected workspace fell back to a different open root")
+        },
+        CodexBarTestCase(name: "duplicate windows for one workspace remain ambiguous during explicit activation") {
+            let identity = VSCodeWorkspaceIdentity.folder("/work/shared")
+            let windows = [1, 2].map {
+                VSCodeWindowDescriptor(id: $0, title: "shared", workspaceFolderPaths: ["/work/shared"], workspace: identity)
+            }
+            try expect(VSCodeWindowMatcher().match(cwd: "/work/shared", windows: windows, workspace: identity) == .ambiguous(windows),
+                       "workspace identity selected an arbitrary duplicate window")
+        },
+        CodexBarTestCase(name: "matches multi-root workspace members and descendants by their full paths") {
+            let window = VSCodeWindowDescriptor(
+                id: 1, title: "Example-Workspace (Workspace) — Visual Studio Code",
+                workspaceFolderPaths: ["/work/sources/project-alpha", "/work/sources/project-beta"]
+            )
+            let matcher = VSCodeWindowMatcher()
+            for cwd in ["/work/sources/project-alpha", "/work/sources/project-beta", "/work/sources/project-alpha/src"] {
+                try expect(matcher.match(cwd: cwd, windows: [window]) == .matched(window),
+                           "workspace member or nested task was hidden")
+            }
+            for cwd in ["/other/project-alpha", "/work/sources/project-alpha-copy", "/work/sources", "/work/Example-Workspace"] {
+                try expect(matcher.match(cwd: cwd, windows: [window]) == .notFound,
+                           "unrelated task matched workspace metadata or title fallback")
+            }
+        },
+        CodexBarTestCase(name: "known empty workspace membership prevents title fallback") {
+            let window = VSCodeWindowDescriptor(
+                id: 1, title: "project-alpha — Visual Studio Code", workspaceFolderPaths: []
+            )
+            try expect(VSCodeWindowMatcher().match(cwd: "/work/project-alpha", windows: [window]) == .notFound,
+                       "unresolved workspace metadata fell back to its title")
+        },
+        CodexBarTestCase(name: "shared workspace membership remains ambiguous until its other window closes") {
+            let windows = [
+                VSCodeWindowDescriptor(id: 1, title: "First Workspace", workspaceFolderPaths: ["/work/project-alpha"]),
+                VSCodeWindowDescriptor(id: 2, title: "Second Workspace", workspaceFolderPaths: ["/work/project-alpha"])
+            ]
+            let matcher = VSCodeWindowMatcher()
+            try expect(matcher.match(cwd: "/work/project-alpha", windows: windows) == .ambiguous(windows),
+                       "shared workspace folder selected an arbitrary window")
+            try expect(matcher.match(cwd: "/work/project-alpha", windows: [windows[0]]) == .matched(windows[0]),
+                       "remaining workspace window did not match")
+            try expect(matcher.match(cwd: "/work/project-alpha", windows: []) == .notFound,
+                       "closed workspace still matched")
+        },
         CodexBarTestCase(name: "normalizes paths and resolves symlinks") {
             let root = FileManager.default.temporaryDirectory
                 .appendingPathComponent("CodexBarPathTests-\(UUID().uuidString)", isDirectory: true)

@@ -31,8 +31,8 @@ codexbar_assert_config_unchanged "$initial_fingerprint"
 codexbar_capture_original_once
 codexbar_backup_current
 codexbar_assert_config_unchanged "$initial_fingerprint"
-codexbar_atomic_write "$updated_json"
 codexbar_record_managed_executable
+codexbar_atomic_write "$updated_json"
 codexbar_warn_inline_hooks
 
 print "Installed CodexBar $capture_mode hooks in $codexbar_hooks_file"
