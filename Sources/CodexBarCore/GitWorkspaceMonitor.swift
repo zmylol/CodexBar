@@ -105,8 +105,8 @@ public final class GitWorkspaceMonitor {
             let id = watch.id
             source.setEventHandler { [weak self] in
                 Task { @MainActor [weak self] in
-                    guard let self, watches[path]?.id == id else { return }
-                    metadataChanged()
+                    guard let self, self.watches[path]?.id == id else { return }
+                    self.metadataChanged()
                 }
             }
             source.setCancelHandler { close(descriptor) }
