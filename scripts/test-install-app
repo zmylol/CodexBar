@@ -50,6 +50,24 @@ set -e
 /bin/kill -TERM "$running_app_pid"
 wait "$running_app_pid" 2>/dev/null || true
 running_app_pid=""
+
+# Some macOS lsof scans succeed without reporting an owning process.
+empty_lsof_scripts="$test_root/empty-lsof"
+/bin/mkdir -p "$empty_lsof_scripts"
+/bin/cat > "$empty_lsof_scripts/lsof" <<'LSOF_STUB'
+#!/bin/zsh
+exit 0
+LSOF_STUB
+/usr/bin/sed "s@/usr/sbin/lsof@$empty_lsof_scripts/lsof@g" \
+    "$script_dir/install-app" > "$empty_lsof_scripts/install-app"
+/bin/ln -s "$script_dir/build-app" "$empty_lsof_scripts/build-app"
+/bin/chmod +x "$empty_lsof_scripts/lsof" "$empty_lsof_scripts/install-app"
+if ! "$empty_lsof_scripts/install-app" > "$test_root/empty-lsof.stdout" 2> "$test_root/empty-lsof.stderr"; then
+    print -u2 "Installer rejected an exited app when lsof succeeded without any process IDs"
+    /bin/cat "$test_root/empty-lsof.stderr" >&2
+    exit 1
+fi
+
 "$script_dir/install-app" >/dev/null
 /usr/bin/touch "$CODEXBAR_APPLICATIONS_ROOT/CodexBar.app/Contents/Resources/stale-install-artifact"
 for backup_index in {1..7}; do
