@@ -6,40 +6,59 @@ package protocol KnowledgeFolderObservation: Sendable {
     func stop()
 }
 
+package typealias KnowledgeFolderObserver = @Sendable (
+    URL, DispatchQueue, @escaping @MainActor @Sendable () -> Void
+) throws -> any KnowledgeFolderObservation
+
 /// Recursive filesystem notifications for an explicitly selected vault, without a polling timer.
 @MainActor
 public final class KnowledgeFolderMonitor {
-    private var stream: (any KnowledgeFolderObservation)?
-    private let observe: @Sendable (URL, @escaping @MainActor @Sendable () -> Void) throws -> any KnowledgeFolderObservation
+    private var worker: KnowledgeFolderMonitorWorker?
+    private let observe: KnowledgeFolderObserver
     private var generation: UUID?
     private var onChange: (@MainActor @Sendable () -> Void)?
     private var pendingNotification: Task<Void, Never>?
 
     public init() {
-        observe = { root, changed in
-            try KnowledgeFolderEventStream(root: root, context: KnowledgeFolderEventContext(changed: changed))
+        observe = { root, queue, changed in
+            try KnowledgeFolderEventStream(root: root, queue: queue,
+                                          context: KnowledgeFolderEventContext(changed: changed))
         }
     }
 
-    package init(observe: @escaping @Sendable (URL, @escaping @MainActor @Sendable () -> Void) throws -> any KnowledgeFolderObservation) {
+    package init(observe: @escaping KnowledgeFolderObserver) {
         self.observe = observe
     }
 
     /// Start before capturing the initial baseline so edits made during capture trigger another pass.
-    public func start(root: URL, onChange: @escaping @MainActor @Sendable () -> Void) throws {
+    public func start(root: URL, onChange: @escaping @MainActor @Sendable () -> Void) async throws {
         stop()
-        var status = stat()
-        guard root.isFileURL, lstat(root.path, &status) == 0, status.st_mode & S_IFMT == S_IFDIR else {
-            throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: root.path])
-        }
+        try Task.checkCancellation()
         let generation = UUID()
+        let worker = KnowledgeFolderMonitorWorker(observe: observe)
+        self.worker = worker
         self.generation = generation
         self.onChange = onChange
         let changed: @MainActor @Sendable () -> Void = { [weak self] in
             self?.changed(generation: generation)
         }
-        do { stream = try observe(root, changed) }
-        catch { stop(); throw error }
+        do {
+            try await withTaskCancellationHandler {
+                try await worker.start(root: root, changed: changed)
+            } onCancel: { [weak self] in
+                worker.stop()
+                Task { @MainActor [weak self] in
+                    guard self?.generation == generation else { return }
+                    self?.stop()
+                }
+            }
+            try Task.checkCancellation()
+            guard self.generation == generation else { throw CancellationError() }
+        } catch {
+            worker.stop()
+            if self.generation == generation { stop() }
+            throw error
+        }
     }
 
     public func stop() {
@@ -47,8 +66,8 @@ public final class KnowledgeFolderMonitor {
         pendingNotification?.cancel()
         pendingNotification = nil
         onChange = nil
-        stream?.stop()
-        stream = nil
+        worker?.stop()
+        worker = nil
     }
 
     deinit { pendingNotification?.cancel() }
@@ -64,6 +83,50 @@ public final class KnowledgeFolderMonitor {
     }
 }
 
+/// Each selection owns its queue so a blocked old filesystem cannot delay a new selection.
+private final class KnowledgeFolderMonitorWorker: Sendable {
+    private let queue = DispatchQueue(label: "com.codexbar.knowledge-folder", qos: .utility)
+    private let state: State
+
+    init(observe: @escaping KnowledgeFolderObserver) { state = State(observe: observe) }
+
+    func start(root: URL, changed: @escaping @MainActor @Sendable () -> Void) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            queue.async { [state, queue] in
+                do {
+                    guard !state.stopped else { throw CancellationError() }
+                    var status = stat()
+                    guard root.isFileURL, lstat(root.path, &status) == 0,
+                          status.st_mode & S_IFMT == S_IFDIR else {
+                        throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: root.path])
+                    }
+                    state.observation = try state.observe(root, queue, changed)
+                    continuation.resume()
+                } catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+
+    func stop() { queue.async { [state] in state.stop() } }
+
+    deinit { queue.async { [state] in state.stop() } }
+
+    /// Accessed only by the worker's queue, including cleanup after the worker is released.
+    private final class State: @unchecked Sendable {
+        let observe: KnowledgeFolderObserver
+        var observation: (any KnowledgeFolderObservation)?
+        var stopped = false
+
+        init(observe: @escaping KnowledgeFolderObserver) { self.observe = observe }
+
+        func stop() {
+            stopped = true
+            observation?.stop()
+            observation = nil
+        }
+    }
+}
+
 private final class KnowledgeFolderEventContext: Sendable {
     let changed: @MainActor @Sendable () -> Void
 
@@ -74,7 +137,7 @@ private final class KnowledgeFolderEventContext: Sendable {
 private final class KnowledgeFolderEventStream: KnowledgeFolderObservation, @unchecked Sendable {
     private var stream: FSEventStreamRef?
 
-    init(root: URL, context: KnowledgeFolderEventContext) throws {
+    init(root: URL, queue: DispatchQueue, context: KnowledgeFolderEventContext) throws {
         var streamContext = FSEventStreamContext(version: 0,
             info: Unmanaged.passUnretained(context).toOpaque(),
             retain: { info in
@@ -95,7 +158,7 @@ private final class KnowledgeFolderEventStream: KnowledgeFolderObservation, @unc
         }, &streamContext, [root.path] as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.15, flags) else {
             throw CocoaError(.fileReadUnknown, userInfo: [NSFilePathErrorKey: root.path])
         }
-        FSEventStreamSetDispatchQueue(stream, .main)
+        FSEventStreamSetDispatchQueue(stream, queue)
         guard FSEventStreamStart(stream) else {
             FSEventStreamInvalidate(stream)
             FSEventStreamRelease(stream)

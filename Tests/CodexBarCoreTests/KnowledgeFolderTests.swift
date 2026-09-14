@@ -680,7 +680,7 @@ func knowledgeFolderTestCases() -> [CodexBarTestCase] {
             let root = try knowledgeFolderFixture()
             defer { try? FileManager.default.removeItem(at: root) }
             let gate = FolderMonitorGate()
-            let monitor = KnowledgeFolderMonitor { _, _ in
+            let monitor = KnowledgeFolderMonitor { _, _, _ in
                 gate.wait()
                 return FolderMonitorObservation {}
             }
@@ -695,7 +695,7 @@ func knowledgeFolderTestCases() -> [CodexBarTestCase] {
             let root = try knowledgeFolderFixture()
             defer { try? FileManager.default.removeItem(at: root) }
             let gate = FolderMonitorGate()
-            let monitor = KnowledgeFolderMonitor { _, _ in FolderMonitorObservation { gate.wait() } }
+            let monitor = KnowledgeFolderMonitor { _, _, _ in FolderMonitorObservation { gate.wait() } }
             try await monitor.start(root: root) {}
             let uiWork = Task { gate.release() }
             monitor.stop()
@@ -706,6 +706,92 @@ func knowledgeFolderTestCases() -> [CodexBarTestCase] {
             }
             try expect(gate.completedWithoutTimeout == true,
                        "folder disposal blocked the main actor until filesystem work timed out")
+        },
+        CodexBarTestCase(name: "knowledge folder monitor keeps a new selection independent of blocked old setup") {
+            for oldSetupFails in [false, true] {
+                let oldRoot = try knowledgeFolderFixture()
+                let newRoot = try knowledgeFolderFixture()
+                defer {
+                    try? FileManager.default.removeItem(at: oldRoot)
+                    try? FileManager.default.removeItem(at: newRoot)
+                }
+                let gate = FolderMonitorGate()
+                let observations = FolderMonitorObservations()
+                let monitor = KnowledgeFolderMonitor { root, _, changed in
+                    observations.record(root, changed: changed)
+                    if root == oldRoot {
+                        gate.wait()
+                        if oldSetupFails { throw CocoaError(.fileReadUnknown) }
+                    }
+                    return FolderMonitorObservation { observations.stopped(root) }
+                }
+                defer { monitor.stop(); gate.release() }
+                let oldChanges = FolderMonitorChanges()
+                let newChanges = FolderMonitorChanges()
+                let oldStart = Task { try await monitor.start(root: oldRoot) { oldChanges.count += 1 } }
+                try await waitForFolderMonitor { gate.hasStarted }
+                monitor.stop()
+                try await monitor.start(root: newRoot) { newChanges.count += 1 }
+                try expect(gate.completedWithoutTimeout == nil,
+                           "the replacement folder waited for blocked setup of the old folder")
+                gate.release()
+                do {
+                    try await oldStart.value
+                    throw TestFailure(description: "obsolete folder startup returned success")
+                } catch is CancellationError {
+                    try expect(!oldSetupFails, "old setup error was unexpectedly replaced")
+                } catch is CocoaError {
+                    try expect(oldSetupFails, "successful old setup returned a filesystem error")
+                }
+                await observations.notify(oldRoot)
+                await observations.notify(newRoot)
+                try await waitForFolderMonitor { newChanges.count == 1 }
+                try expect(oldChanges.count == 0 && observations.stopCount(newRoot) == 0,
+                           "an obsolete startup delivered changes or stopped the new observation")
+                if !oldSetupFails {
+                    try await waitForFolderMonitor { observations.stopCount(oldRoot) == 1 }
+                }
+            }
+        },
+        CodexBarTestCase(name: "knowledge folder monitor cancellation disposes an in-flight observation") {
+            let root = try knowledgeFolderFixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let gate = FolderMonitorGate()
+            let observations = FolderMonitorObservations()
+            let changes = FolderMonitorChanges()
+            let monitor = KnowledgeFolderMonitor { root, _, changed in
+                observations.record(root, changed: changed)
+                gate.wait()
+                return FolderMonitorObservation { observations.stopped(root) }
+            }
+            defer { monitor.stop(); gate.release() }
+            let start = Task { try await monitor.start(root: root) { changes.count += 1 } }
+            try await waitForFolderMonitor { gate.hasStarted }
+            start.cancel()
+            gate.release()
+            do {
+                try await start.value
+                throw TestFailure(description: "cancelled folder startup returned success")
+            } catch is CancellationError {}
+            try await waitForFolderMonitor { observations.stopCount(root) == 1 }
+            await observations.notify(root)
+            try await Task.sleep(for: .milliseconds(180))
+            try expect(changes.count == 0, "cancelled startup resumed filesystem notifications")
+        },
+        CodexBarTestCase(name: "knowledge folder monitor release disposes its observation without blocking UI") {
+            let root = try knowledgeFolderFixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let gate = FolderMonitorGate()
+            var monitor: KnowledgeFolderMonitor? = KnowledgeFolderMonitor { _, _, _ in
+                FolderMonitorObservation { gate.wait() }
+            }
+            try await monitor?.start(root: root) {}
+            let uiWork = Task { gate.release() }
+            monitor = nil
+            await uiWork.value
+            try await waitForFolderMonitor { gate.completedWithoutTimeout != nil }
+            try expect(gate.completedWithoutTimeout == true,
+                       "monitor release retained itself or disposed the filesystem observer on the main actor")
         },
         CodexBarTestCase(name: "knowledge folder monitor observes nested writes and stops pending callbacks") {
             let root = try knowledgeFolderFixture()
@@ -748,15 +834,45 @@ private final class FolderMonitorGate: @unchecked Sendable {
     private let lock = NSLock()
     private let semaphore = DispatchSemaphore(value: 0)
     private var result: Bool?
+    private var started = false
 
     var completedWithoutTimeout: Bool? { lock.withLock { result } }
+    var hasStarted: Bool { lock.withLock { started } }
 
     func wait() {
+        lock.withLock { started = true }
         let completed = semaphore.wait(timeout: .now() + 1) == .success
         lock.withLock { result = completed }
     }
 
     func release() { semaphore.signal() }
+}
+
+private final class FolderMonitorObservations: @unchecked Sendable {
+    private let lock = NSLock()
+    private var callbacks: [URL: @MainActor @Sendable () -> Void] = [:]
+    private var stops: [URL: Int] = [:]
+
+    func record(_ root: URL, changed: @escaping @MainActor @Sendable () -> Void) {
+        lock.withLock { callbacks[root] = changed }
+    }
+
+    func stopped(_ root: URL) { lock.withLock { stops[root, default: 0] += 1 } }
+    func stopCount(_ root: URL) -> Int { lock.withLock { stops[root, default: 0] } }
+
+    func notify(_ root: URL) async {
+        let callback = lock.withLock { callbacks[root] }
+        await callback?()
+    }
+}
+
+@MainActor
+private func waitForFolderMonitor(_ condition: () -> Bool) async throws {
+    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    while !condition() && ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    try expect(condition(), "folder monitor did not complete its pending operation")
 }
 
 private func knowledgeFolderFixture() throws -> URL {

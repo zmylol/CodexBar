@@ -27,7 +27,7 @@ final class KnowledgeLibraryModel: ObservableObject {
     private let now: () -> Date
     private let defaults: UserDefaults
     private let registryURL: URL?
-    private let monitor = KnowledgeFolderMonitor()
+    private var monitor: KnowledgeFolderMonitor?
     private var worker: KnowledgeLibraryWorker?
     private var selectionGeneration: UUID?
     private var scanTask: Task<Void, Never>?
@@ -238,10 +238,17 @@ final class KnowledgeLibraryModel: ObservableObject {
             }
             disconnect()
             let nextWorker = KnowledgeLibraryWorker(vault: vault)
+            let monitor = KnowledgeFolderMonitor()
+            self.monitor = monitor
             // Observe before creating the baseline, so edits during initial reading
             // schedule a second pass instead of falling between setup and observation.
-            try monitor.start(root: URL(fileURLWithPath: vault.rootPath, isDirectory: true)) { [weak self] in
+            try await monitor.start(root: URL(fileURLWithPath: vault.rootPath, isDirectory: true)) { [weak self] in
                 self?.refresh()
+            }
+            guard !Task.isCancelled, selectionGeneration == selection else {
+                monitor.stop()
+                if self.monitor === monitor { self.monitor = nil }
+                return
             }
             worker = nextWorker
             dayTask = Task { [weak self] in
@@ -390,7 +397,8 @@ final class KnowledgeLibraryModel: ObservableObject {
     }
 
     private func disconnect() {
-        monitor.stop()
+        monitor?.stop()
+        monitor = nil
         dayTask?.cancel()
         dayTask = nil
         scanTask?.cancel()
