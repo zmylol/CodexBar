@@ -127,6 +127,8 @@ import SwiftUI
         if hasAccessibilityTree {
             check(element("knowledge-library-empty-sections", in: host) != nil,
                   "A connected vault without categories must show the empty categories state")
+            check(element("knowledge-library-manage-directories", in: host) != nil,
+                  "Directory management must remain available when the connected vault has no visible categories")
         }
         model.sections = [
             KnowledgeFolderSection(relativePath: "Anthropic", name: "Anthropic", noteCount: 251),

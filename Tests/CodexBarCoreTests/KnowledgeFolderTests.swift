@@ -5,6 +5,95 @@ import CodexBarCore
 @MainActor
 func knowledgeFolderTestCases() -> [CodexBarTestCase] {
     [
+        CodexBarTestCase(name: "knowledge folder exclusions match exact top-level names and preserve empty categories") {
+            let root = try knowledgeFolderFixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            for path in ["Sandbox/Hidden.md", "实验项目/Hidden.md", "Sandbox Notes/Visible.md", "Notes/Sandbox/Visible.md"] {
+                try writeFolderNote(collectedArticle(path, on: "2026-09-11"), at: path, root: root)
+            }
+            try FileManager.default.createDirectory(at: root.appendingPathComponent("Empty"), withIntermediateDirectories: true)
+            let tracker = KnowledgeFolderTracker(vault: ObsidianVault(rootPath: root.path, name: "Library"),
+                                                 excludedDirectories: ["Sandbox", "实验项目"])
+            let snapshot = try await tracker.capture()
+            try expect(snapshot.sections.map(\.relativePath) == ["Empty", "Notes", "Sandbox Notes"],
+                       "explicit exclusions hid an empty category or a prefix sibling, or remained in the sidebar")
+            try expect(Set(snapshot.articles.map(\.path)) == ["Sandbox Notes/Visible.md", "Notes/Sandbox/Visible.md"]
+                       && snapshot.noteCount == 2 && snapshot.warnings.isEmpty,
+                       "excluded notes entered the inventory or a nested matching name was excluded")
+        },
+        CodexBarTestCase(name: "knowledge folder exclusions skip inaccessible oversized deep and over-budget subtrees") {
+            let root = try knowledgeFolderFixture()
+            let blocked = root.appendingPathComponent("Blocked")
+            defer {
+                try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: blocked.path)
+                try? FileManager.default.removeItem(at: root)
+            }
+            try writeFolderNote("unreadable", at: "Blocked/Private.md", root: root)
+            try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: blocked.path)
+            try writeFolderNote(String(repeating: "x", count: KnowledgeFolderTracker.maximumNoteBytes + 1),
+                                at: "Sandbox/Oversized.md", root: root)
+            let deepPath = "Sandbox/" + Array(repeating: "Nested", count: 130).joined(separator: "/") + "/Deep.md"
+            try writeFolderNote("deep", at: deepPath, root: root)
+            for index in 0...KnowledgeFolderTracker.maximumNotes {
+                try Data().write(to: root.appendingPathComponent("Sandbox/Note-\(index).md"))
+            }
+            try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("ExcludedLink"),
+                                                       withDestinationURL: blocked)
+            try writeFolderNote(collectedArticle("Visible", on: "2026-09-11"), at: "Notes/Visible.md", root: root)
+            let tracker = KnowledgeFolderTracker(vault: ObsidianVault(rootPath: root.path, name: "Library"),
+                                                 excludedDirectories: ["Blocked", "Sandbox", "ExcludedLink"])
+            let snapshot = try await tracker.capture()
+            try expect(snapshot.sections.map(\.relativePath) == ["Notes"] && snapshot.noteCount == 1
+                       && snapshot.articles.map(\.path) == ["Notes/Visible.md"] && snapshot.warnings.isEmpty,
+                       "excluded subtrees were opened, consumed scan budgets, or produced warnings")
+        },
+        CodexBarTestCase(name: "knowledge folder exclusions reject paths without normalizing other directory names") {
+            let root = try knowledgeFolderFixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            for name in ["Projects", "Notes", "Hidden", " Space "] {
+                try writeFolderNote("visible", at: "\(name)/Note.md", root: root)
+            }
+            let invalid: Set<String> = ["", ".", "..", ".Hidden", "Projects/", "./Projects", "Notes/../Projects",
+                                        "/Projects", "Projects\u{0}suffix", " Space"]
+            let tracker = KnowledgeFolderTracker(vault: ObsidianVault(rootPath: root.path, name: "Library"),
+                                                 excludedDirectories: invalid)
+            let snapshot = try await tracker.capture()
+            try expect(Set(snapshot.sections.map(\.relativePath)) == ["Projects", "Notes", "Hidden", " Space "]
+                       && snapshot.noteCount == 4 && snapshot.warnings.isEmpty,
+                       "invalid or trimmed exclusions unexpectedly matched a directory")
+        },
+        CodexBarTestCase(name: "knowledge folder exclusions never publish edits inside excluded directories") {
+            let root = try knowledgeFolderFixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            try writeFolderNote(collectedArticle("Hidden", on: "2026-09-11"), at: "Sandbox/Hidden.md", root: root)
+            try writeFolderNote("before", at: "Notes/Visible.md", root: root)
+            let tracker = KnowledgeFolderTracker(vault: ObsidianVault(rootPath: root.path, name: "Library"),
+                                                 excludedDirectories: ["Sandbox"])
+            _ = try await tracker.capture()
+            try writeFolderNote(collectedArticle("Edited", on: "2026-09-12"), at: "Sandbox/Hidden.md", root: root)
+            try writeFolderNote(collectedArticle("Added", on: "2026-09-12"), at: "Sandbox/Added.md", root: root)
+            try writeFolderNote("after", at: "Notes/Visible.md", root: root)
+            let edited = try await tracker.capture()
+            try expect(edited.changes.map(\.path) == ["Notes/Visible.md"] && edited.changes.first?.kind == "update"
+                       && edited.articles.isEmpty && edited.articleMoves.isEmpty && edited.noteCount == 1,
+                       "excluded edits entered articles, changes, or move tracking")
+            try FileManager.default.removeItem(at: root.appendingPathComponent("Sandbox"))
+            let deleted = try await tracker.capture()
+            try expect(deleted.changes.isEmpty, "deleting an excluded directory produced a change")
+        },
+        CodexBarTestCase(name: "knowledge folder exclusions can be restored by creating a fresh tracker") {
+            let root = try knowledgeFolderFixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            try writeFolderNote(collectedArticle("Restored", on: "2026-09-11"), at: "Sandbox/Article.md", root: root)
+            let vault = ObsidianVault(rootPath: root.path, name: "Library")
+            let excluded = try await KnowledgeFolderTracker(vault: vault, excludedDirectories: ["Sandbox"]).capture()
+            let restored = try await KnowledgeFolderTracker(vault: vault).capture()
+            try expect(excluded.sections.isEmpty && excluded.articles.isEmpty && excluded.noteCount == 0,
+                       "excluded tracker retained the hidden directory")
+            try expect(restored.sections.map(\.relativePath) == ["Sandbox"] && restored.noteCount == 1
+                       && restored.articles.map(\.path) == ["Sandbox/Article.md"] && restored.changes.isEmpty,
+                       "restoring a directory failed or invented changes in a new baseline")
+        },
         CodexBarTestCase(name: "knowledge folder publishes collected articles in its first baseline") {
             let root = try knowledgeFolderFixture()
             defer { try? FileManager.default.removeItem(at: root) }

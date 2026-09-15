@@ -53,6 +53,7 @@ struct KnowledgeLibraryModelChecks {
         try await sectionBadges()
         try await rootFilesAreIgnored()
         let regressions: [(String, @MainActor () async throws -> Void)] = [
+            ("directory exclusions persist and stay within their vault", directoryExclusions),
             ("uncached article moves", uncachedArticleMoves),
             ("replacement root state", replacementRootState),
             ("article reading ranges", articleReadingRanges),
@@ -72,6 +73,71 @@ struct KnowledgeLibraryModelChecks {
         }
         precondition(failures.isEmpty, failures.joined(separator: "\n"))
         print("PASS independent knowledge library: no VS Code dependency, folder baseline, diff/review, stale-action guard, invalid selection, stop and restoration")
+    }
+
+    private static func directoryExclusions() async throws {
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent("knowledge-exclusions-\(UUID())")
+            .resolvingSymlinksInPath()
+        let root = parent.appendingPathComponent("First")
+        let other = parent.appendingPathComponent("Second")
+        let suite = "codexbar-exclusions-\(UUID())"
+        let registry = parent.appendingPathComponent("missing.json")
+        let date = ISO8601DateFormatter().date(from: "2026-09-13T12:00:00+08:00")!
+        for vault in [root, other] {
+            try FileManager.default.createDirectory(at: vault.appendingPathComponent(".obsidian"), withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: vault.appendingPathComponent("Empty"), withIntermediateDirectories: true)
+            try writeNote(articleText("Project note", collected: "2026-09-13"), path: "Projects/Note.md", root: vault)
+            try writeNote(articleText("News", collected: "2026-09-13"), path: "News/Article.md", root: vault)
+        }
+        let model = KnowledgeLibraryModel(defaultsSuiteName: suite, registryURL: registry, now: { date })
+        defer {
+            model.stop()
+            try? FileManager.default.removeItem(at: parent)
+            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        }
+        await model.selectVault(root)
+        model.markUpdatesSeen(in: "News")
+        await model.setSectionExcluded("Projects", excluded: true)
+        try requireState(model.excludedDirectories == ["Projects"]
+                         && model.sections.map(\.id) == ["Empty", "News"]
+                         && model.todayArticles.map(\.path) == ["News/Article.md"]
+                         && model.noteCount == 1 && model.unseenChangeCount == 0,
+                         "Excluding a directory must drop its notes and articles while preserving empty categories and receipts")
+        try requireState(FileManager.default.fileExists(atPath: root.appendingPathComponent("Projects/Note.md").path),
+                         "Excluding a directory changed the user's files")
+        try writeNote(articleText("New excluded article", collected: "2026-09-13"), path: "Projects/New.md", root: root)
+        await model.refreshNow()
+        try requireState(model.noteCount == 1 && model.review?.notes.isEmpty == true,
+                         "An excluded subtree continued to contribute scans or changes")
+        model.stop()
+        let restored = KnowledgeLibraryModel(defaultsSuiteName: suite, registryURL: registry, now: { date })
+        defer { restored.stop() }
+        await restored.restoreNow()
+        try requireState(restored.excludedDirectories == ["Projects"]
+                         && restored.sections.map(\.id) == ["Empty", "News"]
+                         && restored.unseenChangeCount == 0,
+                         "Restart lost exclusions or reset unrelated article acknowledgements")
+        await restored.selectVault(other)
+        try requireState(restored.excludedDirectories.isEmpty && restored.sections.count == 3,
+                         "An exclusion leaked to a different vault with the same directory name")
+        await restored.selectVault(root)
+        try requireState(restored.excludedDirectories == ["Projects"] && restored.noteCount == 1,
+                         "Returning to a vault lost its saved exclusions")
+        await restored.setSectionExcluded("../News", excluded: true)
+        try requireState(restored.excludedDirectories == ["Projects"], "A path outside the category list became an exclusion")
+        await restored.setSectionExcluded("Projects", excluded: false)
+        try requireState(restored.excludedDirectories.isEmpty && restored.noteCount == 3
+                         && restored.sections.map(\.id) == ["Empty", "News", "Projects"]
+                         && restored.review?.notes.isEmpty == true && restored.unseenCount(in: "News") == 0,
+                         "Restoring a directory failed to reindex it or invented note changes/reset unrelated receipts")
+        for directory in ["Empty", "News", "Projects"] {
+            await restored.setSectionExcluded(directory, excluded: true)
+        }
+        try requireState(restored.review != nil && restored.sections.isEmpty && restored.todayArticles.isEmpty
+                         && restored.managedDirectoryNames == ["Empty", "News", "Projects"],
+                         "Excluding everything removed the connected vault or the restore choices")
+        await restored.setSectionExcluded("Empty", excluded: false)
+        try requireState(restored.sections.map(\.id) == ["Empty"], "An empty excluded category could not be restored")
     }
 
     private static func uncachedArticleMoves() async throws {
