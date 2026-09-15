@@ -10,6 +10,8 @@ final class KnowledgeLibraryModel: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var message: String?
     @Published private(set) var sections: [KnowledgeFolderSection] = []
+    @Published private(set) var excludedDirectories: Set<String> = []
+    @Published private var knownDirectoryNames: Set<String> = []
     @Published private(set) var noteCount = 0
     @Published private(set) var unseenChangeCount = 0
     @Published private(set) var todayArticles: [KnowledgeArticle] = []
@@ -18,6 +20,7 @@ final class KnowledgeLibraryModel: ObservableObject {
 
     private static let folderKey = "codexbar.knowledgeLibraryFolder"
     private static let receiptKey = "codexbar.knowledgeArticleReceipts"
+    private static let exclusionsKey = "codexbar.knowledgeExcludedDirectories"
     @Published private var seenArticleIDs: Set<String> = []
     private var receiptDates: [String: Double]
     private var readingScope: String?
@@ -36,6 +39,10 @@ final class KnowledgeLibraryModel: ObservableObject {
     private var restoreTask: Task<Void, Never>?
     private var vaultPicker: NSOpenPanel?
     var isChoosingVault: Bool { vaultPicker != nil }
+
+    var managedDirectoryNames: [String] {
+        knownDirectoryNames.union(excludedDirectories).sorted()
+    }
 
     init(defaultsSuiteName: String? = nil, registryURL: URL? = nil, now: @escaping () -> Date = { Date() }) {
         defaults = defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
@@ -237,7 +244,8 @@ final class KnowledgeLibraryModel: ObservableObject {
                 return
             }
             disconnect()
-            let nextWorker = KnowledgeLibraryWorker(vault: vault)
+            excludedDirectories = savedExclusions(for: vault.rootPath)
+            let nextWorker = KnowledgeLibraryWorker(vault: vault, excludedDirectories: excludedDirectories)
             let monitor = KnowledgeFolderMonitor()
             self.monitor = monitor
             // Observe before creating the baseline, so edits during initial reading
@@ -270,6 +278,44 @@ final class KnowledgeLibraryModel: ObservableObject {
                 ? "请选择 Obsidian 中打开的整个知识库文件夹，而不是其中的分类目录。"
                 : "无法开始记录这个知识库，请检查文件夹是否仍存在且可读取。"
         }
+    }
+
+    private func savedExclusions(for rootPath: String) -> Set<String> {
+        let saved = defaults.dictionary(forKey: Self.exclusionsKey) as? [String: [String]] ?? [:]
+        return Set(saved[rootPath] ?? []).filter {
+            !$0.isEmpty && !$0.hasPrefix(".") && !$0.contains("/") && !$0.contains("\0")
+        }
+    }
+
+    func setSectionExcluded(_ directory: String, excluded: Bool) async {
+        guard !isChoosingVault, let vault = review?.vault, worker != nil,
+              managedDirectoryNames.contains(directory), excludedDirectories.contains(directory) != excluded else { return }
+        var next = excludedDirectories
+        if excluded { next.insert(directory) } else { next.remove(directory) }
+        var saved = defaults.dictionary(forKey: Self.exclusionsKey) as? [String: [String]] ?? [:]
+        if next.isEmpty { saved.removeValue(forKey: vault.rootPath) }
+        else { saved[vault.rootPath] = next.sorted() }
+        defaults.set(saved, forKey: Self.exclusionsKey)
+        // Keep restore choices available if rereading a restored directory fails.
+        knownDirectoryNames.formUnion(managedDirectoryNames)
+        excludedDirectories = next
+
+        scanTask?.cancel()
+        scanTask = nil
+        scanID = nil
+        scanRequested = false
+        receivedRevision = -1
+        worker = KnowledgeLibraryWorker(vault: vault, excludedDirectories: next)
+        // A new scan scope establishes a fresh baseline; exclusions are not file deletions.
+        review = KnowledgeVaultReview(vault: vault, notes: [], isLoading: true, message: nil)
+        sections.removeAll { next.contains($0.id) }
+        articles.removeAll { article in
+            article.path.firstIndex(of: "/").map { next.contains(String(article.path[..<$0])) } ?? false
+        }
+        noteCount = sections.reduce(0) { $0 + $1.noteCount }
+        restoreSeenArticles()
+        refreshToday()
+        await refreshNow()
     }
 
     func refresh() {
@@ -391,6 +437,7 @@ final class KnowledgeLibraryModel: ObservableObject {
         restoreSeenArticles()
         refreshToday()
         if noteCount != next.noteCount { noteCount = next.noteCount }
+        knownDirectoryNames = Set(next.sections.map(\.id))
         if sections != next.sections {
             sections = next.sections
         }
@@ -406,6 +453,8 @@ final class KnowledgeLibraryModel: ObservableObject {
         scanID = nil
         scanRequested = false
         worker = nil
+        excludedDirectories = []
+        knownDirectoryNames = []
         receivedRevision = -1
         readingScope = nil
         review = nil
@@ -447,8 +496,8 @@ private actor KnowledgeLibraryWorker {
     private var rootFingerprint: String?
     private var articleMoves: [String: String] = [:]
 
-    init(vault: ObsidianVault) {
-        tracker = KnowledgeFolderTracker(vault: vault)
+    init(vault: ObsidianVault, excludedDirectories: Set<String> = []) {
+        tracker = KnowledgeFolderTracker(vault: vault, excludedDirectories: excludedDirectories)
         ledger = KnowledgeReviewLedger(vault: vault, scopeID: UUID().uuidString)
     }
 

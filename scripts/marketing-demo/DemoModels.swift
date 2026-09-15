@@ -125,25 +125,52 @@ enum PanelPlacement { case topLeft, topRight, bottomLeft, bottomRight }
         vault: ObsidianVault(rootPath: "/demo/knowledge", name: "Demo Knowledge"),
         notes: [], isLoading: false, message: nil
     )
-    @Published var sections = ["Anthropic", "Hugging Face", "LangChain", "Simon Willison"].map {
-        KnowledgeFolderSection(relativePath: $0, name: $0, noteCount: 0)
-    }
+    @Published var sections: [KnowledgeFolderSection] = []
     @Published var todayArticles: [KnowledgeArticle] = []
     @Published private(set) var articleRange: KnowledgeArticleRange = .today
     @Published var seen: Set<String> = []
+    @Published private(set) var excludedDirectories: Set<String> = []
+    private var excludedSections: [String: KnowledgeFolderSection] = [:]
     let message: String? = nil
     let isLoading = false
     let isChoosingVault = false
     var onSeen: () -> Void = {}
     var onArrival: () -> Void = {}
-    var unseenChangeCount: Int { todayArticles.filter { !seen.contains($0.id) }.count }
-    var visibleArticles: [KnowledgeArticle] { articleRange == .yesterday ? [] : todayArticles }
+    private var includedTodayArticles: [KnowledgeArticle] {
+        todayArticles.filter { article in
+            !excludedDirectories.contains { article.path.hasPrefix($0 + "/") }
+        }
+    }
+    var unseenChangeCount: Int { includedTodayArticles.filter { !seen.contains($0.id) }.count }
+    var visibleArticles: [KnowledgeArticle] { articleRange == .yesterday ? [] : includedTodayArticles }
+    var managedDirectoryNames: [String] {
+        Set(sections.map(\.id)).union(excludedDirectories).sorted()
+    }
+
+    func setSectionExcluded(_ directory: String, excluded: Bool) async {
+        guard excluded != excludedDirectories.contains(directory) else { return }
+        if excluded {
+            excludedSections[directory] = sections.first { $0.id == directory }
+            excludedDirectories.insert(directory)
+            sections.removeAll { $0.id == directory }
+        } else {
+            excludedDirectories.remove(directory)
+            if let section = excludedSections.removeValue(forKey: directory) {
+                sections.append(section)
+            }
+        }
+    }
 
     init() { reset() }
 
     func setArticleRange(_ range: KnowledgeArticleRange) { articleRange = range }
 
     func reset() {
+        excludedDirectories = []
+        excludedSections = [:]
+        sections = ["Anthropic", "Hugging Face", "LangChain", "Simon Willison"].map {
+            KnowledgeFolderSection(relativePath: $0, name: $0, noteCount: 0)
+        }
         seen = []
         articleRange = .today
         todayArticles = [

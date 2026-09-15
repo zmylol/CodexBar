@@ -32,7 +32,7 @@ func knowledgeFolderTestCases() -> [CodexBarTestCase] {
             try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: blocked.path)
             try writeFolderNote(String(repeating: "x", count: KnowledgeFolderTracker.maximumNoteBytes + 1),
                                 at: "Sandbox/Oversized.md", root: root)
-            let deepPath = "Sandbox/" + Array(repeating: "Nested", count: 130).joined(separator: "/") + "/Deep.md"
+            let deepPath = "Sandbox/" + Array(repeating: "N", count: 130).joined(separator: "/") + "/Deep.md"
             try writeFolderNote("deep", at: deepPath, root: root)
             for index in 0...KnowledgeFolderTracker.maximumNotes {
                 try Data().write(to: root.appendingPathComponent("Sandbox/Note-\(index).md"))

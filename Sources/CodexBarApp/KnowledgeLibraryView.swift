@@ -105,6 +105,7 @@ struct KnowledgeLibraryView: View {
                 .font(.system(size: 14, weight: .medium))
             Spacer(minLength: 8)
             if model.review != nil {
+                directoryMenu
                 Button(action: onChooseVault) {
                     Image(systemName: "folder")
                         .frame(width: 28, height: 28)
@@ -143,6 +144,36 @@ struct KnowledgeLibraryView: View {
         .padding(.leading, 18)
         .padding(.trailing, 10)
         .padding(.vertical, 8)
+    }
+
+    private var directoryMenu: some View {
+        Menu {
+            if model.managedDirectoryNames.isEmpty {
+                Text("暂无可管理目录")
+            } else {
+                ForEach(model.managedDirectoryNames, id: \.self) { directory in
+                    Toggle(directory, isOn: Binding(
+                        get: { !model.excludedDirectories.contains(directory) },
+                        set: { included in
+                            Task { await model.setSectionExcluded(directory, excluded: !included) }
+                        }
+                    ))
+                    .accessibilityIdentifier("knowledge-library-directory-\(directory)")
+                }
+            }
+        } label: {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(model.isLoading || model.isChoosingVault)
+        .accessibilityLabel("管理目录")
+        .accessibilityIdentifier("knowledge-library-manage-directories")
+        .accessibilityHint("勾选要读取的一级目录；取消勾选后停止读取并隐藏，原文件保留")
+        .help("管理目录：取消勾选后停止读取并隐藏，原文件保留；重新勾选可恢复")
     }
 
     private var rangeSelector: some View {
@@ -225,6 +256,13 @@ struct KnowledgeLibraryView: View {
         .accessibilityValue(isSelected ? "已选中" : "未选中")
         .accessibilityHint("查看\(model.articleRange.heading)文章并清除此范围的提醒")
         .accessibilityIdentifier("knowledge-library-row-\(section.id)")
+        .contextMenu {
+            Button("排除此目录") {
+                Task { await model.setSectionExcluded(section.id, excluded: true) }
+            }
+            .disabled(model.isLoading || model.isChoosingVault)
+            .accessibilityIdentifier("knowledge-library-exclude-\(section.id)")
+        }
     }
 
     @ViewBuilder private var articleDetail: some View {
@@ -342,9 +380,17 @@ struct KnowledgeLibraryView: View {
             }
             Text(model.isLoading ? "正在读取知识库…" : "暂无知识库分类")
                 .font(.system(size: 13, weight: .medium))
+            if !model.isLoading && !model.excludedDirectories.isEmpty {
+                Text("可在顶部“管理目录”重新勾选目录")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .accessibilityIdentifier("knowledge-library-restore-directories")
+            }
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("knowledge-library-empty-sections")
     }
 

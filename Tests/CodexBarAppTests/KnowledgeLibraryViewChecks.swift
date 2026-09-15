@@ -13,7 +13,9 @@ import SwiftUI
     @Published var earlierArticles: [KnowledgeArticle] = []
     @Published private(set) var articleRange: KnowledgeArticleRange = .today
     @Published private var seenArticleIDs: Set<String> = []
-    var isChoosingVault = false
+    @Published var excludedDirectories: Set<String> = []
+    private var excludedSections: [String: KnowledgeFolderSection] = [:]
+    @Published var isChoosingVault = false
     var chooseCount = 0
     var refreshCount = 0
     var markedSections: [String] = []
@@ -23,6 +25,24 @@ import SwiftUI
     func refresh() { refreshCount += 1 }
     func openArticle(_ article: KnowledgeArticle) { openedArticles.append(article) }
     func setArticleRange(_ range: KnowledgeArticleRange) { articleRange = range }
+
+    var managedDirectoryNames: [String] {
+        Set(sections.map(\.id)).union(excludedDirectories).sorted()
+    }
+
+    func setSectionExcluded(_ directory: String, excluded: Bool) async {
+        guard excluded != excludedDirectories.contains(directory) else { return }
+        if excluded {
+            excludedSections[directory] = sections.first { $0.id == directory }
+            excludedDirectories.insert(directory)
+            sections.removeAll { $0.id == directory }
+        } else {
+            excludedDirectories.remove(directory)
+            if let section = excludedSections.removeValue(forKey: directory) {
+                sections.append(section)
+            }
+        }
+    }
 
     var visibleArticles: [KnowledgeArticle] {
         switch articleRange {
@@ -98,7 +118,7 @@ import SwiftUI
         return label.contains("篇未查看")
     }
 
-    @MainActor static func main() {
+    @MainActor static func main() async {
         NSApplication.shared.setActivationPolicy(.accessory)
         NSApplication.shared.finishLaunching()
         // Materialize SwiftUI's accessibility tree without changing system accessibility settings.
@@ -129,6 +149,19 @@ import SwiftUI
                   "A connected vault without categories must show the empty categories state")
             check(element("knowledge-library-manage-directories", in: host) != nil,
                   "Directory management must remain available when the connected vault has no visible categories")
+            model.isLoading = true
+            settle()
+            check(element("knowledge-library-manage-directories", in: host)?.isAccessibilityEnabled?() == false,
+                  "Directory management must be disabled while a scan is loading")
+            model.isLoading = false
+            model.isChoosingVault = true
+            settle()
+            check(element("knowledge-library-manage-directories", in: host)?.isAccessibilityEnabled?() == false,
+                  "Directory management must be disabled while choosing a different vault")
+            model.isChoosingVault = false
+            settle()
+            check(element("knowledge-library-manage-directories", in: host)?.isAccessibilityEnabled?() == true,
+                  "Directory management must become available after loading or choosing finishes")
         }
         model.sections = [
             KnowledgeFolderSection(relativePath: "Anthropic", name: "Anthropic", noteCount: 251),
@@ -284,6 +317,31 @@ import SwiftUI
             press("knowledge-library-range-today", in: host)
         }
         capture(host, path: "/tmp/codexbar-library-no-updates.png")
+        if hasAccessibilityTree {
+            let marksBeforeExclusion = model.markedSections
+            let categories = model.sections
+            for section in categories {
+                await model.setSectionExcluded(section.id, excluded: true)
+            }
+            settle()
+            check(element("knowledge-library-manage-directories", in: host) != nil &&
+                  element("knowledge-library-restore-directories", in: host) != nil,
+                  "Excluding every directory must retain management and explain how to restore directories")
+            check(element("knowledge-library-row-LangChain", in: host) == nil &&
+                  element("knowledge-library-empty-LangChain", in: host) == nil,
+                  "Excluding a selected directory must clear both its category row and selected detail")
+            await model.setSectionExcluded("LangChain", excluded: false)
+            settle()
+            check(element("knowledge-library-row-LangChain", in: host) != nil &&
+                  element("knowledge-library-select-section", in: host) != nil,
+                  "Restoring an empty directory must restore its category without selecting it")
+            check(model.markedSections == marksBeforeExclusion,
+                  "Changing directory inclusion must not acknowledge articles")
+            for section in categories {
+                await model.setSectionExcluded(section.id, excluded: false)
+            }
+            settle()
+        }
         let replacement = ObsidianVault(rootPath: "/fixture/replaced-vault", name: "新的总目录")
         model.review = KnowledgeVaultReview(vault: replacement, notes: [], isLoading: false, message: nil)
         settle()
@@ -313,6 +371,6 @@ import SwiftUI
         window.orderOut(nil)
         window.contentView = nil
         print("PASS knowledge library native rendering: 600×520 light/dark, first use, empty detail, many categories, and 320×520 narrow fixtures")
-        print(hasAccessibilityTree ? "PASS knowledge library native actions: reading ranges, retained category and focus, range-scoped badges, selection-only acknowledgement, incremental arrival, reopen retention, root reset, category removal, open titles, choose, refresh, close" : "SKIP knowledge library actions: no SwiftUI AX tree in this graphical session")
+        print(hasAccessibilityTree ? "PASS knowledge library native actions: reading ranges, retained category and focus, range-scoped badges, selection-only acknowledgement, incremental arrival, reopen retention, root reset, category removal, directory management availability and loading guards, all-excluded restoration, open titles, choose, refresh, close" : "SKIP knowledge library actions: no SwiftUI AX tree in this graphical session")
     }
 }

@@ -35,6 +35,7 @@ public actor KnowledgeFolderTracker {
     private static let maximumEntries = 50_000
 
     private let vault: ObsidianVault
+    private let excludedDirectories: Set<String>
     private let trackerID = UUID().uuidString
     private var baselineID = UUID()
     private var files: [String: Note] = [:]
@@ -90,8 +91,11 @@ public actor KnowledgeFolderTracker {
         var warnings: Set<String> = []
     }
 
-    public init(vault: ObsidianVault) {
+    public init(vault: ObsidianVault, excludedDirectories: Set<String> = []) {
         self.vault = vault
+        self.excludedDirectories = excludedDirectories.filter {
+            !$0.isEmpty && !$0.hasPrefix(".") && !$0.contains("/") && !$0.contains("\u{0}")
+        }
     }
 
     /// The first successful capture establishes a baseline. Later captures return new versions only.
@@ -226,16 +230,18 @@ public actor KnowledgeFolderTracker {
                 if errno != 0 { throw scanError() }
                 return
             }
+            let name = withUnsafePointer(to: entry.pointee.d_name) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) {
+                    String(validatingCString: $0)
+                }
+            }
+            // Excluded roots must not be inspected or consume the traversal budget.
+            if depth == 0, let name, excludedDirectories.contains(name) { continue }
             inventory.visitedEntries += 1
             guard inventory.visitedEntries <= Self.maximumEntries else {
                 inventory.complete = false
                 inventory.warnings.insert("目录扫描达到上限，部分笔记暂未纳入变更预览。")
                 return
-            }
-            let name = withUnsafePointer(to: entry.pointee.d_name) { pointer in
-                pointer.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) {
-                    String(validatingCString: $0)
-                }
             }
             guard let name, !name.hasPrefix(".") else { continue }
             let relative = path.isEmpty ? name : path + "/" + name
