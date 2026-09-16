@@ -4,6 +4,57 @@ import Foundation
 @MainActor
 func gitWorkspaceTreeTestCases() -> [CodexBarTestCase] {
     [
+        CodexBarTestCase(name: "Git tree keeps the primary checkout first when it switches away from a worktree origin") {
+            let primary = gitTreeRow("primary")
+            let graph = gitTreeRow("graph")
+            let child = gitTreeRow("child")
+            var labels = [
+                primary.rootPath: gitTreeLabel(primary, branch: "main"),
+                graph.rootPath: gitTreeLabel(graph, branch: "graph-runtime", source: "main", linked: true),
+                child.rootPath: gitTreeLabel(child, branch: "graph-ui", source: "graph-runtime", linked: true)
+            ]
+            let initial = GitWorkspaceTree.groups(rows: [child, graph, primary], labels: labels)
+            // Sorts after graph alphabetically, but this remains the same primary checkout.
+            labels[primary.rootPath] = gitTreeLabel(primary, branch: "z-fix/design", source: "main")
+            let switched = GitWorkspaceTree.groups(rows: [child, graph, primary], labels: labels)
+            let rows = switched.flatMap(\.rows)
+            try expect(rows.map(\.id) == [primary.id, graph.id, child.id],
+                       "switching branches displaced the primary checkout below linked worktrees")
+            try expect(rows[0].depth == 0 && rows[1].depth == 0 && rows[1].parentRowID == nil,
+                       "the old main origin became a false connection to the new primary branch")
+            try expect(rows[1].label?.sourceBranch == "main", "historical branch origin disappeared")
+            try expect(rows[2].parentRowID == graph.id && rows[2].depth == 1,
+                       "switching the primary branch flattened the linked worktree's own child")
+            try expect(initial.map(\.id) == switched.map(\.id), "branch switch changed repository identity")
+            try expect(rows[0].label?.isLinkedWorktree == false && rows[1].label?.isLinkedWorktree == true,
+                       "branch switch changed workspace roles")
+
+            labels[primary.rootPath] = gitTreeLabel(primary, branch: "main")
+            let restored = GitWorkspaceTree.groups(rows: [graph, primary, child], labels: labels)
+            try expect(restored == initial, "switching back failed to restore the original hierarchy")
+            let closed = GitWorkspaceTree.groups(rows: [child, graph], labels: labels).flatMap(\.rows)
+            try expect(closed.map(\.id) == [graph.id, child.id] && closed[0].parentRowID == nil,
+                       "closing the primary checkout fabricated a workspace or lost a linked child")
+        },
+        CodexBarTestCase(name: "Git workspace roles have permanent caption space at every tree depth") {
+            let primary = gitTreeRow("primary")
+            let child = gitTreeRow("child")
+            let nested = gitTreeRow("nested")
+            let idle = VSCodeTaskRow(workspace: .folder("/work/idle"))
+            let plain = gitTreeRow("plain")
+            let labels = [
+                primary.rootPath: gitTreeLabel(primary, branch: "main"),
+                child.rootPath: gitTreeLabel(child, branch: "feature", source: "main", linked: true),
+                nested.rootPath: gitTreeLabel(nested, branch: "feature-child", source: "feature", linked: true),
+                idle.rootPath: gitTreeLabel(idle, branch: "idle", linked: true)
+            ]
+            let rows = GitWorkspaceTree.groups(rows: [primary, child, nested, idle, plain], labels: labels).flatMap(\.rows)
+            for (row, expectedHeight) in [(primary, 40.0), (child, 40.0), (nested, 52.0), (idle, 52.0), (plain, 28.0)] {
+                let projected = try require(rows.first { $0.id == row.id }, "workspace disappeared")
+                try expect(CodexBarPanelLayout.rowHeight(for: projected) == expectedHeight,
+                           "workspace \(row.displayName) has no space for its role, branch wrapping, or idle caption")
+            }
+        },
         CodexBarTestCase(name: "an opened idle parent keeps its active child branch hierarchy and readable height") {
             let parent = VSCodeTaskRow(workspace: .folder("/work/main"))
             let child = gitTreeRow("feature", status: .running)
@@ -18,9 +69,9 @@ func gitWorkspaceTreeTestCases() -> [CodexBarTestCase] {
                        "grouping fabricated or changed a task")
             try expect(rows[1].parentRowID == parent.id && rows[1].depth == 1,
                        "task absence removed the creation-source connection")
-            try expect(CodexBarPanelLayout.rowHeight(for: rows[0]) == CodexBarPanelLayout.rowHeight + 12,
+            try expect(CodexBarPanelLayout.rowHeight(for: rows[0]) == CodexBarPanelLayout.branchRowHeight + 12,
                        "idle status caption has no layout space")
-            try expect(CodexBarPanelLayout.rowHeight(for: rows[1]) == CodexBarPanelLayout.rowHeight,
+            try expect(CodexBarPanelLayout.rowHeight(for: rows[1]) == CodexBarPanelLayout.branchRowHeight,
                        "active child gained an idle caption gap")
         },
         CodexBarTestCase(name: "Git tree groups repositories at their first task priority position") {

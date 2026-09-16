@@ -34,6 +34,21 @@ func gitWorkspaceIdentityTestCases() -> [CodexBarTestCase] {
             try fixture.write(String(repeating: "a", count: 40) + "\n", at: fixture.linkedGit.appendingPathComponent("HEAD"))
             try expect(GitWorkspaceIdentityReader.read(cwd: fixture.linked.path)?.branch == "HEAD·aaaaaaa", "detached checkout has no usable label")
         },
+        CodexBarTestCase(name: "Git primary checkout identity survives switching away from its original branch") {
+            let fixture = try GitWorkspaceFixture()
+            defer { fixture.remove() }
+            let original = try require(GitWorkspaceIdentityReader.read(cwd: fixture.main.path), "primary checkout missing")
+            try fixture.write("ref: refs/heads/fix/design\n", at: fixture.main.appendingPathComponent(".git/HEAD"))
+            let switched = try require(GitWorkspaceIdentityReader.read(cwd: fixture.main.path), "switched checkout missing")
+            let linked = try require(GitWorkspaceIdentityReader.read(cwd: fixture.linked.path), "linked checkout missing")
+            let labels = GitWorkspaceIdentityReader.labels(identities: [fixture.main.path: switched, fixture.linked.path: linked])
+            try expect(switched.branch == "fix/design" && switched.repositoryID == original.repositoryID
+                       && switched.workspaceRoot == original.workspaceRoot && !switched.isLinkedWorktree,
+                       "branch switching changed the primary directory's stable identity")
+            try expect(labels[fixture.main.path]?.isLinkedWorktree == false
+                       && labels[fixture.linked.path]?.isLinkedWorktree == true,
+                       "labels confused current branch names with directory roles")
+        },
         CodexBarTestCase(name: "Git identity accepts absolute gitfile and common-directory paths") {
             let fixture = try GitWorkspaceFixture()
             defer { fixture.remove() }
