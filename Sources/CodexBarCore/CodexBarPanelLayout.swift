@@ -20,8 +20,7 @@ public enum CodexBarPanelLayout {
     public static let defaultDetailHeight: CGFloat = 520
 
     public static func rowHeight(for row: GitWorkspaceTreeRow) -> CGFloat {
-        let showsOrigin = row.label?.sourceBranch != nil && row.parentRowID == nil
-        let baseHeight = showsOrigin || row.depth >= 2 ? branchRowHeight : rowHeight
+        let baseHeight = row.label == nil ? rowHeight : branchRowHeight + (row.depth >= 2 ? 12 : 0)
         return baseHeight + (row.row.task == nil ? 12 : 0)
     }
 

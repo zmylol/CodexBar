@@ -99,7 +99,12 @@ public enum GitWorkspaceTree {
         for index in nodes.indices {
             if let parent = parents[index] { children[parent, default: []].append(index) }
         }
-        let roots = nodes.indices.filter { parents[$0] == nil }
+        let roots = nodes.indices.filter { parents[$0] == nil }.sorted {
+            if nodes[$0].label.isLinkedWorktree != nodes[$1].label.isLinkedWorktree {
+                return !nodes[$0].label.isLinkedWorktree
+            }
+            return $0 < $1
+        }
         var result: [GitWorkspaceTreeRow] = []
         func append(_ siblings: [Int], depth: Int, continuationLevels: [Int]) {
             for (position, index) in siblings.enumerated() {

@@ -31,7 +31,6 @@ struct GitWorkspaceRowContent: View {
     let statusSymbol: String
     let statusColor: Color
     let knowledgePendingCount: Int
-    let showsWorktreeBadge: Bool
 
     private var label: GitWorkspaceLabel? { treeRow.label }
     private var rowHeight: CGFloat { CodexBarPanelLayout.rowHeight(for: treeRow) }
@@ -52,12 +51,23 @@ struct GitWorkspaceRowContent: View {
                     ))
                     .lineLimit(treeRow.depth >= 2 ? 2 : 1)
                     .truncationMode(.tail)
-                if let source = label?.sourceBranch, treeRow.parentRowID == nil {
-                    Text("创建自 \(source)")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                if let label {
+                    HStack(spacing: 4) {
+                        Text(label.isLinkedWorktree ? "WT" : "主目录")
+                            .font(.system(size: 9, weight: .medium))
+                            .padding(.horizontal, 3)
+                            .padding(.vertical, 1)
+                            .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 3))
+                            .fixedSize()
+                        if let source = label.sourceBranch, treeRow.parentRowID == nil {
+                            Text("自 \(source)")
+                                .font(.system(size: 9))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
                 }
                 if treeRow.row.task == nil {
                     Text("暂无任务")
@@ -86,19 +96,6 @@ struct GitWorkspaceRowContent: View {
                 .stroke(Color.secondary.opacity(0.6), lineWidth: 1)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
-        }
-        .overlay(alignment: .trailing) {
-            if showsWorktreeBadge && label?.isLinkedWorktree == true {
-                Text("WT")
-                    .font(.system(size: 8, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 3)
-                    .padding(.vertical, 1)
-                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 3))
-                    .padding(.trailing, 7)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-            }
         }
         .contentShape(Rectangle())
     }

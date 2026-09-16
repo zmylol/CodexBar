@@ -108,10 +108,10 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
             let groups = GitWorkspaceTree.groups(rows: rows, labels: labels)
             let heights = CodexBarPanelLayout.rowHeights(groups: groups)
             try expect(heights.count == 6, "repository heading counted as an extra workspace")
-            try expect(heights == [46, 28, 28, 28, 28, 28], "tree geometry clips a heading or branch")
-            try expect(CodexBarPanelLayout.height(rowHeights: heights, noticeVisible: false) == 186,
+            try expect(heights == [58, 40, 28, 28, 28, 28], "tree geometry clips a heading or workspace role caption")
+            try expect(CodexBarPanelLayout.height(rowHeights: heights, noticeVisible: false) == 210,
                        "scrolling no longer fits five actual workspaces")
-            try expect(CodexBarPanelLayout.height(rowHeights: heights, noticeVisible: false, displayMode: .expanded) == 214,
+            try expect(CodexBarPanelLayout.height(rowHeights: heights, noticeVisible: false, displayMode: .expanded) == 238,
                        "expanded panel dropped a workspace or repository heading")
             let onlyChild = GitWorkspaceTree.groups(rows: [rows[1]], labels: labels)
             try expect(CodexBarPanelLayout.rowHeights(groups: onlyChild) == [58],

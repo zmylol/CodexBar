@@ -339,8 +339,7 @@ private struct IdleWorkspaceRow: View {
                     hasChildren: hasChildren,
                     statusSymbol: "circle",
                     statusColor: .secondary,
-                    knowledgePendingCount: 0,
-                    showsWorktreeBadge: true
+                    knowledgePendingCount: 0
                 )
             }
             .buttonStyle(.plain)
@@ -433,8 +432,7 @@ private struct CompactTaskRow: View {
                             hasChildren: hasChildren,
                             statusSymbol: task.status.symbolName,
                             statusColor: task.status.color,
-                            knowledgePendingCount: knowledgePendingCount,
-                            showsWorktreeBadge: !showsTaskMenu
+                            knowledgePendingCount: knowledgePendingCount
                         )
                     }
                     .buttonStyle(.plain)
