@@ -94,7 +94,15 @@ enum PanelPlacement { case topLeft, topRight, bottomLeft, bottomRight }
         }
     }
     var visibleGroups: [GitWorkspaceGroup] {
-        GitWorkspaceTree.groups(rows: taskRows, labels: workspaceLabels)
+        let roots = ["/demo/projects/atlas", "/demo/projects/atlas-graph-runtime", "/demo/projects/atlas-graph-ui"]
+        let records = roots.enumerated().map { index, root in
+            GitWorkspaceRecord(
+                workspaceRoot: root, repositoryID: "/demo/projects/atlas/.git",
+                parentWorkspaceRoot: index == 0 ? nil : roots[index - 1],
+                order: index, isMainWorkspace: index == 0
+            )
+        }
+        return GitWorkspaceTree.groups(rows: taskRows, labels: workspaceLabels, creationRecords: records)
     }
     var visibleRows: [VSCodeTaskRow] { visibleGroups.flatMap { $0.rows.map(\.row) } }
     var visibleRowHeights: [CGFloat] {
@@ -114,6 +122,7 @@ enum PanelPlacement { case topLeft, topRight, bottomLeft, bottomRight }
     func placePanel(_ placement: PanelPlacement) {}
     func openAccessibilitySettings() {}
     func openConnectionGuide() {}
+    func openGitWorkspaces() {}
     func installTaskConnection() {}
     func requestAccessibilityPermission() {}
     func dismissNotice() {}

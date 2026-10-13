@@ -11,17 +11,59 @@ struct RuntimeEventCoordinatorChecks {
         let snapshot = try JSONSerialization.data(withJSONObject: frames[0])
         let patch = try JSONSerialization.data(withJSONObject: frames[1])
         try await preservesOrdering(snapshot: snapshot, patch: patch)
+        try await preservesHookCompletion(snapshot: snapshot, patch: patch)
         try await cancelsOldWork(snapshot: snapshot, patch: patch)
         try await boundsBacklog(snapshot: snapshot)
-        print("PASS runtime event ordering, reconcile coalescing, cancellation, restart, unavailable reset and queue budgets")
+        print("PASS runtime event ordering, Hook completion, reconcile coalescing, cancellation, restart, unavailable reset and queue budgets")
+    }
+
+    static func preservesHookCompletion(snapshot: Data, patch: Data) async throws {
+        let store = TaskStore()
+        func event(_ name: CodexHookEventName, timestamp: Date) -> CodexHookEvent {
+            CodexHookEvent(
+                id: "fixture-\(name.rawValue)", sessionID: "fixture-session", turnID: "fixture-turn",
+                cwd: "/tmp/fixture-project", name: name, promptSummary: "Fixture task", toolName: nil,
+                timestamp: timestamp, lastAssistantMessagePresent: name == .stop, source: .visualStudioCode
+            )
+        }
+        _ = try await store.apply(event(.userPromptSubmit, timestamp: Date().addingTimeInterval(-30)))
+        let coordinator = RuntimeEventCoordinator()
+        var deliveries = 0
+        coordinator.onUpdates = { updates, _ in
+            for update in updates {
+                do {
+                    _ = try await store.applyRuntimeStatus(
+                        sessionID: update.sessionID, turnID: update.turnID!, cwd: update.cwd!, status: update.status
+                    )
+                } catch { preconditionFailure("Runtime persistence failed: \(error)") }
+            }
+            deliveries += 1
+        }
+        coordinator.start()
+        defer { coordinator.stop() }
+        coordinator.enqueue(.frame(snapshot, nil))
+        coordinator.enqueue(.frame(patch, nil))
+        try await eventually { deliveries == 2 }
+        precondition(store.tasks.first?.status == .running)
+        _ = try await store.apply(event(.stop, timestamp: Date()))
+        precondition(store.tasks.first?.status == .ready, "Hook completion was not accepted")
+        _ = try await store.markRead(taskID: "fixture-session:fixture-turn")
+        coordinator.enqueue(.reconcile)
+        try await eventually { deliveries == 3 }
+        precondition(store.tasks.first?.status == .ready, "Cached runtime revived a completed Hook task")
+        precondition(store.tasks.first?.isUnread == false, "Cached runtime changed the completion read state")
     }
 
     static func preservesOrdering(snapshot: Data, patch: Data) async throws {
         let coordinator = RuntimeEventCoordinator()
         let gate = EventGate()
         var statuses: [CodexTaskStatus] = []
+        var sources: [RuntimeStatusUpdateSource] = []
         var frames: [String?] = []
-        coordinator.onUpdates = { statuses += $0.map(\.status) }
+        coordinator.onUpdates = { updates, source in
+            statuses += updates.map(\.status)
+            sources.append(source)
+        }
         coordinator.onFrame = { _, session, _ in
             frames.append(session)
             if frames.count == 1 { await gate.wait() }
@@ -36,6 +78,7 @@ struct RuntimeEventCoordinatorChecks {
         gate.resume()
         try await eventually { statuses.count == 3 }
         precondition(statuses == [.needsAttention, .running, .running], "Patches or reconciliation overtook the snapshot")
+        precondition(sources == [.liveFrame, .liveFrame, .reconcile], "Cached reconciliation must not trigger new-turn recovery")
         precondition(frames == ["fixture-session", "fixture-session"])
         var reset = false
         coordinator.onUnavailable = { reasons in reset = reasons["fixture-session"] == .connectionUnavailable }
@@ -51,7 +94,7 @@ struct RuntimeEventCoordinatorChecks {
         let coordinator = RuntimeEventCoordinator()
         let gate = EventGate()
         var statuses: [CodexTaskStatus] = []
-        coordinator.onUpdates = { statuses += $0.map(\.status) }
+        coordinator.onUpdates = { updates, _ in statuses += updates.map(\.status) }
         coordinator.onFrame = { _, _, _ in await gate.wait() }
         coordinator.start()
         coordinator.enqueue(.frame(snapshot, nil))
@@ -92,7 +135,7 @@ struct RuntimeEventCoordinatorChecks {
         coordinator.onFrame = nil
         gate.resume()
         var statuses: [CodexTaskStatus] = []
-        coordinator.onUpdates = { statuses += $0.map(\.status) }
+        coordinator.onUpdates = { updates, _ in statuses += updates.map(\.status) }
         coordinator.enqueue(.reconcile)
         try await Task.sleep(for: .milliseconds(20))
         precondition(statuses.isEmpty, "Overflow retained stale projections")

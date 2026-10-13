@@ -66,8 +66,8 @@ public final class TaskStore: ObservableObject {
     }
 
     @discardableResult
-    func mergeRecoveredTasks(_ recoveredTasks: [CodexTask]) async throws -> Int {
-        let operation = try await storage.mergeRecoveredTasks(recoveredTasks)
+    func mergeRecoveredTasks(_ recoveredTasks: [CodexTask], replacing expectedTask: CodexTask? = nil) async throws -> Int {
+        let operation = try await storage.mergeRecoveredTasks(recoveredTasks, replacing: expectedTask)
         publish(operation.state)
         return operation.value
     }
@@ -219,6 +219,9 @@ private actor TaskStoreStorage {
         let exactTaskIndex = tasks.firstIndex {
             $0.sessionID == sessionID && $0.turnID == turnID && $0.cwd == normalizedCWD
         }
+        if eventName == .stop, let index = tasks.firstIndex(where: { $0.id == taskID }) {
+            guard exactTaskIndex == index, event.timestamp >= tasks[index].startedAt else { return false }
+        }
         if eventName == .preToolUse || eventName == .postToolUse {
             guard let index = exactTaskIndex,
                   tasks[index].status != .ready,
@@ -268,7 +271,15 @@ private actor TaskStoreStorage {
         var nextTasks = Self.collapsingOlderTurns(tasks)
         if let index = nextTasks.firstIndex(where: { $0.id == taskID }) {
             var task = nextTasks[index]
-            let advancesState = (hasPendingApproval && task.status == .running) || eventIsNotStale(
+            let wasStopped = task.hasCurrentHookStop
+            // A runtime receipt time is not a Hook lifecycle timestamp. A Stop for
+            // this execution remains authoritative even when its delivery is delayed.
+            let confirmsStop = eventName == .stop && event.timestamp >= task.startedAt
+                && task.stoppedAt.map({ event.timestamp >= $0 }) != false
+            let reopensStoppedTurn = eventName == .userPromptSubmit && wasStopped
+                && task.stoppedAt.map({ event.timestamp > $0 }) == true
+            let advancesState = confirmsStop || reopensStoppedTurn
+                || (hasPendingApproval && task.status == .running) || eventIsNotStale(
                 timestamp: event.timestamp,
                 status: eventStatus,
                 comparedWith: task
@@ -278,20 +289,21 @@ private actor TaskStoreStorage {
                 task.status = eventStatus
                 task.updatedAt = max(task.updatedAt, event.timestamp)
                 task.isUnread = eventName != .userPromptSubmit
+                if eventName == .stop { task.stoppedAt = event.timestamp }
 
-                if eventName == .userPromptSubmit,
-                   let title = normalizedTitle(event.promptSummary) {
+                if eventName == .userPromptSubmit {
                     task = CodexTask(
                         id: task.id,
                         sessionID: task.sessionID,
                         turnID: task.turnID,
                         cwd: normalizedCWD,
                         workspaceName: workspaceName,
-                        title: title,
+                        title: normalizedTitle(event.promptSummary) ?? task.title,
                         status: task.status,
-                        startedAt: task.startedAt,
+                        startedAt: wasStopped ? event.timestamp : task.startedAt,
                         updatedAt: task.updatedAt,
-                        isUnread: task.isUnread
+                        isUnread: task.isUnread,
+                        stoppedAt: task.stoppedAt
                     )
                 }
             } else {
@@ -300,7 +312,10 @@ private actor TaskStoreStorage {
                 else {
                     return false
                 }
-                let startedAt = min(task.startedAt, event.timestamp)
+                // Once a stopped turn explicitly reopens, an older prompt must not
+                // move its execution boundary back and make an old Stop valid again.
+                let startedAt = task.stoppedAt != nil && !wasStopped
+                    ? task.startedAt : min(task.startedAt, event.timestamp)
                 guard title != task.title
                         || startedAt != task.startedAt
                         || normalizedCWD != task.cwd
@@ -317,7 +332,8 @@ private actor TaskStoreStorage {
                     status: task.status,
                     startedAt: startedAt,
                     updatedAt: task.updatedAt,
-                    isUnread: task.isUnread
+                    isUnread: task.isUnread,
+                    stoppedAt: task.stoppedAt
                 )
             }
 
@@ -328,12 +344,8 @@ private actor TaskStoreStorage {
             if let currentCWDIndex,
                eventName == .stop,
                nextTasks[currentCWDIndex].sessionID == sessionID,
-               nextTasks[currentCWDIndex].status != .ready,
-               eventIsNotStale(
-                   timestamp: event.timestamp,
-                   status: .ready,
-                   comparedWith: nextTasks[currentCWDIndex]
-               ) {
+               !nextTasks[currentCWDIndex].hasCurrentHookStop,
+               event.timestamp >= nextTasks[currentCWDIndex].startedAt {
                 let currentTask = nextTasks[currentCWDIndex]
                 newTask = CodexTask(
                     id: taskID,
@@ -344,8 +356,9 @@ private actor TaskStoreStorage {
                     title: currentTask.title,
                     status: .ready,
                     startedAt: currentTask.startedAt,
-                    updatedAt: event.timestamp,
-                    isUnread: true
+                    updatedAt: max(currentTask.updatedAt, event.timestamp),
+                    isUnread: true,
+                    stoppedAt: event.timestamp
                 )
             } else {
                 if let currentCWDIndex {
@@ -369,7 +382,8 @@ private actor TaskStoreStorage {
                     status: eventStatus,
                     startedAt: event.timestamp,
                     updatedAt: event.timestamp,
-                    isUnread: eventName != .userPromptSubmit
+                    isUnread: eventName != .userPromptSubmit,
+                    stoppedAt: eventName == .stop ? event.timestamp : nil
                 )
             }
 
@@ -451,13 +465,22 @@ private actor TaskStoreStorage {
     }
 
     func mergeRecoveredTasks(
-        _ recoveredTasks: [CodexTask]
+        _ recoveredTasks: [CodexTask], replacing expectedTask: CodexTask? = nil
     ) throws -> TaskStoreOperation<Int> {
         ensureLoaded()
+        if let expectedTask {
+            guard !Task.isCancelled, tasks.contains(where: {
+                $0.id == expectedTask.id && $0.sessionID == expectedTask.sessionID && $0.cwd == expectedTask.cwd
+            }) else { return operation(0) }
+        }
         var nextTasks = tasks
         var changedCount = 0
 
         for task in recoveredTasks {
+            if let expectedTask {
+                guard task.sessionID == expectedTask.sessionID, task.cwd == expectedTask.cwd,
+                      task.turnID != expectedTask.turnID else { continue }
+            }
             guard !deletedTaskTombstones.contains(where: { $0.taskID == task.id }) else {
                 continue
             }
@@ -485,7 +508,8 @@ private actor TaskStoreStorage {
                     status: task.status,
                     startedAt: task.startedAt,
                     updatedAt: task.updatedAt,
-                    isUnread: task.isUnread
+                    isUnread: task.isUnread,
+                    stoppedAt: task.stoppedAt
                 )
             }
             changedCount += 1
@@ -494,6 +518,7 @@ private actor TaskStoreStorage {
         guard changedCount > 0 else {
             return operation(0)
         }
+        if expectedTask != nil && Task.isCancelled { return operation(0) }
         try persist(
             tasks: nextTasks,
             appliedEventIDs: appliedEventIDs,
@@ -541,6 +566,7 @@ private actor TaskStoreStorage {
               let index = tasks.firstIndex(where: {
                   $0.sessionID == sessionID && $0.turnID == turnID && $0.cwd == normalizedCWD
               }),
+              !tasks[index].hasCurrentHookStop,
               tasks[index].status != status
         else {
             return operation(false)
@@ -985,6 +1011,12 @@ private actor TaskStoreStorage {
                   task.updatedAt.timeIntervalSince1970.isFinite
             else {
                 throw TaskStorePersistenceError.invalidSnapshot
+            }
+            if let stoppedAt = task.stoppedAt {
+                guard stoppedAt.timeIntervalSince1970.isFinite, stoppedAt <= task.updatedAt,
+                      !task.hasCurrentHookStop || task.status == .ready else {
+                    throw TaskStorePersistenceError.invalidSnapshot
+                }
             }
         }
         guard taskIDs.isDisjoint(

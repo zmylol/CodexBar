@@ -10,7 +10,9 @@ public enum CodexRuntimeUnavailableReason: Equatable, Sendable {
 public enum CodexRuntimeConnectionState: Equatable, Sendable {
     case idle
     case connecting
+    case synchronizing
     case connected
+    case unavailable
     case retrying(attempt: Int)
     case exhausted
     case incompatible
@@ -83,6 +85,11 @@ public final class CodexRuntimeStatusMonitor {
         let timeout: Task<Void, Never>
     }
 
+    private struct PendingSnapshot {
+        let id: UUID
+        let timeout: Task<Void, Never>
+    }
+
     private struct FileIdentity: Equatable {
         let device: dev_t
         let inode: ino_t
@@ -93,15 +100,20 @@ public final class CodexRuntimeStatusMonitor {
     private let codexHome: URL
     private let legacyDirectory: URL?
     private let reconnectDelays: [Duration]
+    private let requestTimeout: Duration
+    private let snapshotTimeout: Duration
     private let queue = DispatchQueue(label: "CodexBar.RuntimeStatus")
     private var watches: [String: RuntimeDirectoryWatch] = [:]
     private var sessions: Set<String> = []
     private var owners: [String: String] = [:]
+    private var synchronizedSessions: Set<String> = []
+    private var streamValidators: [String: RuntimeStreamValidationWorker] = [:]
     private var attemptedSessions: Set<String> = []
     private var incompatibleSessions: Set<String> = []
     private var unavailableReasons: [String: CodexRuntimeUnavailableReason] = [:]
     private var pending: [String: PendingRequest] = [:]
     private var historyRequests: [String: HistoryRequest] = [:]
+    private var pendingSnapshots: [String: PendingSnapshot] = [:]
     private var connection: NWConnection?
     private var connectionID: UUID?
     private var connectedSocket: (path: String, identity: FileIdentity)?
@@ -119,8 +131,13 @@ public final class CodexRuntimeStatusMonitor {
                   reconnectDelays: [.milliseconds(250), .milliseconds(500), .seconds(1), .seconds(2), .seconds(4)])
     }
 
-    package init(codexHome: URL? = nil, legacyDirectory: URL? = nil, reconnectDelays: [Duration]) {
+    package init(
+        codexHome: URL? = nil, legacyDirectory: URL? = nil, reconnectDelays: [Duration],
+        requestTimeout: Duration = .seconds(5), snapshotTimeout: Duration = .seconds(8)
+    ) {
         self.reconnectDelays = reconnectDelays
+        self.requestTimeout = requestTimeout
+        self.snapshotTimeout = snapshotTimeout
         self.codexHome = codexHome ?? URL(fileURLWithPath:
             ProcessInfo.processInfo.environment["CODEX_HOME"]
                 ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path
@@ -149,6 +166,7 @@ public final class CodexRuntimeStatusMonitor {
         guard self.sessions != sessions else { return }
         let removed = self.sessions.subtracting(sessions)
         for sessionID in removed {
+            streamValidators.removeValue(forKey: sessionID)
             if let owner = owners.removeValue(forKey: sessionID) {
                 sendFollowing(sessionID, owner: owner, following: false)
             }
@@ -270,10 +288,11 @@ public final class CodexRuntimeStatusMonitor {
         reconnectTask?.cancel()
         for request in pending.values { request.timeout.cancel() }
         for request in historyRequests.values { request.timeout.cancel() }
+        for snapshot in pendingSnapshots.values { snapshot.timeout.cancel() }
     }
 
     private func disconnect(reconnect: Bool = true) {
-        let unavailable = Set(owners.keys)
+        let unavailable = sessions
         connectionID = nil
         connection?.cancel()
         connection = nil
@@ -281,6 +300,10 @@ public final class CodexRuntimeStatusMonitor {
         clientID = nil
         buffer.removeAll(keepingCapacity: false)
         owners.removeAll()
+        synchronizedSessions.removeAll()
+        streamValidators.removeAll()
+        for snapshot in pendingSnapshots.values { snapshot.timeout.cancel() }
+        pendingSnapshots.removeAll()
         attemptedSessions.removeAll()
         incompatibleSessions.removeAll()
         for request in pending.values { request.timeout.cancel() }
@@ -328,7 +351,11 @@ public final class CodexRuntimeStatusMonitor {
         } else if reconnectTask != nil {
             connectionState = .retrying(attempt: reconnectAttempt)
         } else if clientID != nil {
-            connectionState = .connected
+            if !unavailableReasons.isEmpty {
+                connectionState = .unavailable
+            } else {
+                connectionState = sessions.isSubset(of: synchronizedSessions) ? .connected : .synchronizing
+            }
         } else if connection != nil {
             connectionState = .connecting
         } else if reconnectAttempt >= reconnectDelays.count {
@@ -445,12 +472,12 @@ public final class CodexRuntimeStatusMonitor {
             }.value
             guard self.connectionID == connectionID else { return }
             guard let envelope else { disconnect(); return }
-            handle(envelope, frame: frame)
-            if connection == nil { return }
+            await handle(envelope, frame: frame, connectionID: connectionID)
+            guard self.connectionID == connectionID else { return }
         }
     }
 
-    private func handle(_ envelope: Envelope, frame: Data) {
+    private func handle(_ envelope: Envelope, frame: Data, connectionID: UUID) async {
         if envelope.type == "client-discovery-request", let requestID = envelope.requestId {
             send(["type": "client-discovery-response", "requestId": requestID, "response": ["canHandle": false]])
             return
@@ -473,7 +500,10 @@ public final class CodexRuntimeStatusMonitor {
                    sessions.contains(sessionID), let owner = envelope.handledByClientId,
                    !owner.isEmpty, owner != clientID {
                     owners[sessionID] = owner
+                    streamValidators[sessionID] = RuntimeStreamValidationWorker()
                     sendFollowing(sessionID, owner: owner, following: true)
+                } else if sessions.contains(sessionID) {
+                    reportUnavailable([sessionID])
                 }
                 discoverMissingSessions()
             } else if envelope.resultType == "success", envelope.method == "initialize",
@@ -492,7 +522,12 @@ public final class CodexRuntimeStatusMonitor {
            let peerID = envelope.params?.clientId, peerID != clientID {
             if envelope.params?.status == "disconnected" {
                 let unavailable = Set(owners.filter { $0.value == peerID }.keys)
-                for sessionID in unavailable { owners.removeValue(forKey: sessionID) }
+                for sessionID in unavailable {
+                    owners.removeValue(forKey: sessionID)
+                    synchronizedSessions.remove(sessionID)
+                    streamValidators.removeValue(forKey: sessionID)
+                    pendingSnapshots.removeValue(forKey: sessionID)?.timeout.cancel()
+                }
                 reportUnavailable(unavailable)
                 finishHistoryRequests(sessions: unavailable)
             }
@@ -515,8 +550,26 @@ public final class CodexRuntimeStatusMonitor {
             finishHistoryRequests(sessions: [sessionID])
             return
         }
-        unavailableReasons.removeValue(forKey: sessionID)
-        reconnectAttempt = 0
+        guard let validator = streamValidators[sessionID] else { return }
+        let result = await validator.consume(frame)
+        guard self.connectionID == connectionID, sessions.contains(sessionID),
+              owners[sessionID] == owner, streamValidators[sessionID] === validator else { return }
+        if result.accepted {
+            // A valid stream frame can omit the runtime status projection (for
+            // example while a new turn is replacing a terminal one). It still
+            // proves that the owner and follower are synchronized and must
+            // cancel the first-frame deadline. Treating this as unavailable
+            // leaves a usable conversation preview showing a false disconnect.
+            unavailableReasons.removeValue(forKey: sessionID)
+            pendingSnapshots.removeValue(forKey: sessionID)?.timeout.cancel()
+            synchronizedSessions.insert(sessionID)
+            reconnectAttempt = 0
+        } else if result.invalidatedSessionID != nil || result.resnapshotSessionID != nil {
+            synchronizedSessions.remove(sessionID)
+            // Invalid frames must not keep extending the deadline. The downstream
+            // reducer still receives this frame and can request its bounded resnapshot.
+            if pendingSnapshots[sessionID] == nil { startSnapshotDeadline(sessionID, owner: owner) }
+        }
         updateConnectionState()
         onChange?(frame)
     }
@@ -537,12 +590,15 @@ public final class CodexRuntimeStatusMonitor {
     private func sendRequest(method: String, version: Int, sessionID: String?, params: [String: String]) {
         guard let connectionID else { return }
         let requestID = UUID().uuidString
+        let timeoutDuration = requestTimeout
         let timeout = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            do { try await Task.sleep(for: timeoutDuration) } catch { return }
             guard let self, self.connectionID == connectionID,
                   let request = self.pending.removeValue(forKey: requestID) else { return }
-            if request.sessionID == nil { self.disconnect() }
-            else { self.discoverMissingSessions() }
+            if let sessionID = request.sessionID {
+                self.reportUnavailable([sessionID])
+                self.discoverMissingSessions()
+            } else { self.disconnect() }
         }
         pending[requestID] = PendingRequest(sessionID: sessionID, timeout: timeout)
         send(["type": "request", "requestId": requestID, "sourceClientId": clientID ?? "initializing-client",
@@ -551,9 +607,33 @@ public final class CodexRuntimeStatusMonitor {
 
     private func sendFollowing(_ sessionID: String, owner: String, following: Bool) {
         guard let clientID else { return }
+        pendingSnapshots.removeValue(forKey: sessionID)?.timeout.cancel()
+        if !following {
+            synchronizedSessions.remove(sessionID)
+            streamValidators.removeValue(forKey: sessionID)
+        } else if !synchronizedSessions.contains(sessionID) {
+            startSnapshotDeadline(sessionID, owner: owner)
+        }
         send(["type": "broadcast", "sourceClientId": clientID, "targetClientIds": [owner],
               "method": "thread-stream-following-changed", "version": 1,
               "params": ["hostId": "local", "conversationId": sessionID, "following": following]])
+    }
+
+    private func startSnapshotDeadline(_ sessionID: String, owner: String) {
+        guard let connectionID else { return }
+        let id = UUID()
+        let timeoutDuration = snapshotTimeout
+        let timeout = Task { [weak self] in
+            do { try await Task.sleep(for: timeoutDuration) } catch { return }
+            guard let self, running, self.connectionID == connectionID,
+                  pendingSnapshots[sessionID]?.id == id, sessions.contains(sessionID),
+                  owners[sessionID] == owner else { return }
+            sendFollowing(sessionID, owner: owner, following: false)
+            owners.removeValue(forKey: sessionID)
+            reportUnavailable([sessionID])
+            finishHistoryRequests(sessions: [sessionID])
+        }
+        pendingSnapshots[sessionID] = PendingSnapshot(id: id, timeout: timeout)
     }
 
     private func send(_ object: [String: Any]) {
@@ -608,6 +688,14 @@ public final class CodexRuntimeStatusMonitor {
             watches[path] = watch
             source.activate()
         }
+    }
+}
+
+private actor RuntimeStreamValidationWorker {
+    private var reducer = CodexRuntimeStatusReducer()
+
+    func consume(_ frame: Data) -> CodexRuntimeStatusResult {
+        reducer.consume(frame)
     }
 }
 

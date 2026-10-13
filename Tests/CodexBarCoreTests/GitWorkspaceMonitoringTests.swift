@@ -4,6 +4,28 @@ import Foundation
 @MainActor
 func gitWorkspaceMonitoringTestCases() -> [CodexBarTestCase] {
     [
+        CodexBarTestCase(name: "workspace browser observes standalone checkout branch changes without polling") {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("StandaloneGitMonitor-\(UUID())")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let git = root.appendingPathComponent(".git")
+            try FileManager.default.createDirectory(at: git, withIntermediateDirectories: true)
+            let head = git.appendingPathComponent("HEAD")
+            try Data("ref: refs/heads/main\n".utf8).write(to: head)
+            let monitor = GitWorkspaceMonitor(includeStandalone: true)
+            var branch: String?
+            var callbacks = 0
+            monitor.start(cwds: [root.path]) { labels in
+                branch = labels[root.path]?.branch
+                callbacks += 1
+            }
+            defer { monitor.stop() }
+            try await waitForGitLabels { branch == "main" }
+            try Data("ref: refs/heads/dev\n".utf8).write(to: head, options: .atomic)
+            try await waitForGitLabels { branch == "dev" }
+            let settled = callbacks
+            try await Task.sleep(for: .milliseconds(250))
+            try expect(callbacks == settled, "standalone checkout monitoring polled unchanged state")
+        },
         CodexBarTestCase(name: "worktree labels follow atomic branch changes and visible directories") {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("GitMonitor-\(UUID())")
             defer { try? FileManager.default.removeItem(at: root) }

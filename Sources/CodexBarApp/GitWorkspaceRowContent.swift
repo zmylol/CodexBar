@@ -1,8 +1,10 @@
 import CodexBarCore
+import Foundation
 import SwiftUI
 
-struct GitRepositoryHeader: View {
+struct WorkspaceGroupHeader: View {
     let name: String
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         HStack(spacing: 5) {
@@ -10,7 +12,7 @@ struct GitRepositoryHeader: View {
                 .font(.system(size: 8))
                 .accessibilityHidden(true)
             Text(name)
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: 10, weight: .medium))
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
@@ -18,8 +20,18 @@ struct GitRepositoryHeader: View {
         .padding(.horizontal, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: CodexBarPanelLayout.repositoryHeaderHeight)
+        .background {
+            if reduceTransparency {
+                Color(nsColor: .windowBackgroundColor)
+            } else {
+                VisualEffectBackground()
+            }
+        }
+        .overlay(alignment: .top) {
+            Divider().opacity(0.16)
+        }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("仓库 \(name)")
+        .accessibilityLabel(name)
         .accessibilityAddTraits(.isHeader)
         .help(name)
     }
@@ -34,6 +46,8 @@ struct GitWorkspaceRowContent: View {
 
     private var label: GitWorkspaceLabel? { treeRow.label }
     private var rowHeight: CGFloat { CodexBarPanelLayout.rowHeight(for: treeRow) }
+    // Keep labels readable in the narrow task panel; the workspace browser shows every level.
+    private var displayDepth: Int { min(treeRow.depth, 3) }
 
     var body: some View {
         HStack(spacing: 7) {
@@ -59,8 +73,8 @@ struct GitWorkspaceRowContent: View {
                             .padding(.vertical, 1)
                             .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 3))
                             .fixedSize()
-                        if let source = label.sourceBranch, treeRow.parentRowID == nil {
-                            Text("自 \(source)")
+                        if !label.worktreeName.isEmpty {
+                            Text("· \(label.worktreeName)")
                                 .font(.system(size: 9))
                                 .lineLimit(1)
                                 .truncationMode(.middle)
@@ -87,7 +101,7 @@ struct GitWorkspaceRowContent: View {
                     .fixedSize()
             }
         }
-        .padding(.leading, 10 + CGFloat(treeRow.depth) * 10)
+        .padding(.leading, 10 + CGFloat(displayDepth) * 10)
         .padding(.trailing, 28)
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: rowHeight)
@@ -111,11 +125,12 @@ private struct GitWorkspaceConnector: Shape {
             path.move(to: start)
             path.addLine(to: end)
         }
-        for level in row.ancestorContinuationLevels {
+        let displayDepth = min(row.depth, 3)
+        for level in row.ancestorContinuationLevels where level < displayDepth {
             let x = 15 + CGFloat(level - 1) * 10
             line(CGPoint(x: x, y: 0), CGPoint(x: x, y: rect.height))
         }
-        let centerX = 15 + CGFloat(row.depth) * 10
+        let centerX = 15 + CGFloat(displayDepth) * 10
         if row.parentRowID != nil {
             let parentX = centerX - 10
             line(CGPoint(x: parentX, y: 0), CGPoint(x: parentX, y: row.isLastSibling ? rect.midY : rect.height))

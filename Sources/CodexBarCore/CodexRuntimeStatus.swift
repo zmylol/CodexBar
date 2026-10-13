@@ -18,6 +18,9 @@ public struct CodexRuntimeStatusUpdate: Equatable, Sendable {
 public struct CodexRuntimeStatusResult: Sendable {
     /// Validated local envelope identity, including frames that leave task status unchanged.
     public var sessionID: String?
+    /// The stream frame was decoded and applied, even when it did not contain enough
+    /// runtime metadata to project a task status update.
+    public var accepted = false
     public var update: CodexRuntimeStatusUpdate?
     public var resnapshotSessionID: String?
     public var invalidatedSessionID: String?
@@ -68,7 +71,7 @@ public struct CodexRuntimeStatusReducer: Sendable {
             guard change.revision >= 0 else { throw RuntimeProjectionError.invalid }
             if let previous, previous.owner == header.sourceClientId,
                change.revision <= previous.revision {
-                return CodexRuntimeStatusResult(sessionID: sessionID)
+                return CodexRuntimeStatusResult(sessionID: sessionID, accepted: true)
             }
             var metadata: RuntimeMetadata
             switch change.type {
@@ -103,7 +106,7 @@ public struct CodexRuntimeStatusReducer: Sendable {
                 metadata: metadata, update: update
             )
             return CodexRuntimeStatusResult(
-                sessionID: sessionID,
+                sessionID: sessionID, accepted: true,
                 update: update == previous?.update ? nil : update,
                 invalidatedSessionID: update == nil && previous?.update != nil ? sessionID : nil
             )
@@ -134,24 +137,34 @@ public struct CodexRuntimeStatusReducer: Sendable {
             || requests.contains { Self.interactiveMethods.contains($0["method"].string ?? "") }
         let status: CodexTaskStatus = needsAttention ? .needsAttention : type == "active" ? .running : .ready
         let history = metadata["turnHistory"]
-        let turnID: String?
+        let turn: RuntimeMetadata?
         if history["kind"].string == "canonical" {
             let canonical = history["history"]
             guard let islands = canonical["islands"].array,
                   let latest = islands.last,
                   latest["newerBoundary"]["status"].string == "exhausted"
             else { return nil }
-            turnID = islands.reversed().lazy.flatMap { ($0["entries"].array ?? []).reversed() }
+            turn = islands.reversed().lazy.flatMap { ($0["entries"].array ?? []).reversed() }
                 .compactMap { entry in
-                    entry["value"].string.flatMap { canonical["entitiesByKey"][$0]["turnId"].string }
+                    entry["value"].string.flatMap { key -> RuntimeMetadata? in
+                        let value = canonical["entitiesByKey"][key]
+                        return value["turnId"].string == nil ? nil : value
+                    }
                 }.first
         } else {
-            turnID = metadata["turns"].array?.reversed().compactMap { $0["turnId"].string }.first
+            turn = metadata["turns"].array?.last { $0["turnId"].string != nil }
         }
-        guard let turnID, validRuntimeIdentifier(turnID),
+        guard let turn, let turnID = turn["turnId"].string, validRuntimeIdentifier(turnID),
               let rawCWD = metadata["cwd"].string,
               let cwd = PathNormalizer.normalize(rawCWD)
         else { return nil }
+        if type == "active" {
+            // Runtime activation can arrive before the new turn replaces completed history.
+            switch turn["status"].string {
+            case "completed", "interrupted", "failed": return nil
+            default: break
+            }
+        }
         return CodexRuntimeStatusUpdate(sessionID: sessionID, turnID: turnID, cwd: cwd, status: status)
     }
 
@@ -271,7 +284,7 @@ indirect enum RuntimeShape {
             }
         case .status: return key == "type" ? .string : key == "activeFlags" ? .array(.string) : nil
         case .request: return key == "method" ? .string : nil
-        case .turn: return key == "turnId" ? .string : nil
+        case .turn: return key == "turnId" || key == "status" ? .string : nil
         case .turnHistory: return key == "kind" ? .string : key == "history" ? .history : nil
         case .history: return key == "islands" ? .array(.island) : key == "entitiesByKey" ? .entities : nil
         case .island: return key == "entries" ? .array(.entry) : key == "newerBoundary" ? .boundary : nil

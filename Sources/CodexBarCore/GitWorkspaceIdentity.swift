@@ -35,6 +35,11 @@ public struct GitWorkspaceLabel: Equatable, Sendable {
     public let sourceBranch: String?
     public let repositoryID: String
 
+    /// The checkout directory name is a stable, compact identity for a worktree.
+    public var worktreeName: String {
+        URL(fileURLWithPath: workspaceRoot).lastPathComponent
+    }
+
     public init(
         repositoryName: String, branch: String, shortBranch: String,
         isLinkedWorktree: Bool, workspaceRoot: String,
@@ -78,12 +83,14 @@ public enum GitWorkspaceIdentityReader {
         return nil
     }
 
-    /// Keeps Git context for related checkouts and for a linked worktree opened on its own.
-    public static func labels(identities: [String: GitWorkspaceIdentity]) -> [String: GitWorkspaceLabel] {
+    /// Keeps Git context for related checkouts; `includeStandalone` also labels a lone checkout.
+    public static func labels(
+        identities: [String: GitWorkspaceIdentity], includeStandalone: Bool = false
+    ) -> [String: GitWorkspaceLabel] {
         var result: [String: GitWorkspaceLabel] = [:]
         for group in Dictionary(grouping: identities, by: { $0.value.repositoryID }).values {
             let workspaces = Dictionary(grouping: group, by: { $0.value.workspaceRoot })
-            guard workspaces.count > 1 || group.contains(where: { $0.value.isLinkedWorktree }) else { continue }
+            guard includeStandalone || workspaces.count > 1 || group.contains(where: { $0.value.isLinkedWorktree }) else { continue }
             let roots = workspaces.keys.sorted()
             let values = roots.compactMap { workspaces[$0]?.sorted { $0.key < $1.key }.first?.value }
             let branches = values.map(\.branch)

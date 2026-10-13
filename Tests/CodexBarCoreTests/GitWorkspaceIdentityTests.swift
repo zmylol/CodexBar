@@ -190,6 +190,11 @@ func gitWorkspaceIdentityTestCases() -> [CodexBarTestCase] {
             try expect(labels["a"]?.shortBranch == "develop", "main checkout was hardcoded to main")
             try expect(labels["b"]?.branch == "graph-runtime" && labels["b"]?.isLinkedWorktree == true, "full branch or worktree marker was lost")
         },
+        CodexBarTestCase(name: "Git labels expose a stable worktree directory name") {
+            let main = gitLabelIdentity(root: "/work/sample-project", branch: "develop")
+            let labels = GitWorkspaceIdentityReader.labels(identities: ["main": main], includeStandalone: true)
+            try expect(labels["main"]?.worktreeName == "sample-project", "worktree name was not derived from its checkout root")
+        },
         CodexBarTestCase(name: "Git labels preserve the different parts of long branch names") {
             let first = gitLabelIdentity(root: "/work/a", branch: "feature/graph-runtime")
             let second = gitLabelIdentity(root: "/work/b", branch: "feature/graph-renderer", linked: true)

@@ -15,20 +15,23 @@ public struct StartupTaskReconciler {
 
     /// Reconciles persisted VS Code turns that belong to windows open right now.
     /// Hook state always wins for the same turn; a newer different turn may
-    /// replace an old row during startup recovery.
+    /// replace an old row during startup recovery. A runtime handoff may supply
+    /// an existing task to constrain replacement to that session and workspace.
     @discardableResult
     public func reconcile(
         snapshots: [CodexThreadSnapshot],
-        windows: [VSCodeWindowDescriptor]
+        windows: [VSCodeWindowDescriptor],
+        replacing expectedTask: CodexTask? = nil
     ) async throws -> Int {
         let recoveredTasks = await worker.recoveredTasks(
             snapshots: snapshots,
-            windows: windows
+            windows: windows,
+            replacing: expectedTask
         )
         guard !Task.isCancelled else {
             return 0
         }
-        return try await store.mergeRecoveredTasks(recoveredTasks)
+        return try await store.mergeRecoveredTasks(recoveredTasks, replacing: expectedTask)
     }
 }
 
@@ -41,7 +44,8 @@ private actor StartupTaskRecoveryWorker {
 
     func recoveredTasks(
         snapshots: [CodexThreadSnapshot],
-        windows: [VSCodeWindowDescriptor]
+        windows: [VSCodeWindowDescriptor],
+        replacing expectedTask: CodexTask?
     ) -> [CodexTask] {
         guard !Task.isCancelled else {
             return []
@@ -58,6 +62,10 @@ private actor StartupTaskRecoveryWorker {
                 latestAllowedDate: latestAllowedDate
             ) else {
                 continue
+            }
+            if let expectedTask {
+                guard normalized.sessionID == expectedTask.sessionID, normalized.cwd == expectedTask.cwd,
+                      normalized.turnID != expectedTask.turnID else { continue }
             }
             if let current = latestByCWD[normalized.cwd],
                !isNewer(normalized, than: current) {

@@ -83,7 +83,7 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
                 "legacy task count sizing should stay bounded without allocating rows"
             )
         },
-        CodexBarTestCase(name: "repository headings preserve the five workspace scroll limit") {
+        CodexBarTestCase(name: "project headings preserve the five workspace scroll limit") {
             let rows = (0..<6).map { index in
                 let path = "/layout/work-\(index)"
                 return VSCodeTaskRow(
@@ -108,10 +108,10 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
             let groups = GitWorkspaceTree.groups(rows: rows, labels: labels)
             let heights = CodexBarPanelLayout.rowHeights(groups: groups)
             try expect(heights.count == 6, "repository heading counted as an extra workspace")
-            try expect(heights == [58, 40, 28, 28, 28, 28], "tree geometry clips a heading or workspace role caption")
-            try expect(CodexBarPanelLayout.height(rowHeights: heights, noticeVisible: false) == 210,
+            try expect(heights == [58, 40, 46, 28, 28, 28], "tree geometry clips a project heading or workspace role caption")
+            try expect(CodexBarPanelLayout.height(rowHeights: heights, noticeVisible: false) == 228,
                        "scrolling no longer fits five actual workspaces")
-            try expect(CodexBarPanelLayout.height(rowHeights: heights, noticeVisible: false, displayMode: .expanded) == 238,
+            try expect(CodexBarPanelLayout.height(rowHeights: heights, noticeVisible: false, displayMode: .expanded) == 256,
                        "expanded panel dropped a workspace or repository heading")
             let onlyChild = GitWorkspaceTree.groups(rows: [rows[1]], labels: labels)
             try expect(CodexBarPanelLayout.rowHeights(groups: onlyChild) == [58],

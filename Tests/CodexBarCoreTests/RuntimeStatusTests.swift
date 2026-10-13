@@ -39,6 +39,13 @@ func runtimeStatusTestCases() -> [CodexBarTestCase] {
             try expect(reducer.consume(try runtimeSnapshot(session: "session-B")).sessionID == "session-B",
                        "another conversation would be parsed as the selected preview")
         },
+        CodexBarTestCase(name: "valid content-only frames complete stream synchronization") {
+            var reducer = CodexRuntimeStatusReducer()
+            let result = reducer.consume(try runtimeContentOnlySnapshot())
+            try expect(result.accepted, "a valid conversation frame was not accepted")
+            try expect(result.update == nil, "content-only frame invented a task status")
+            try expect(result.invalidatedSessionID == nil, "content-only frame revoked stream authority")
+        },
         CodexBarTestCase(name: "runtime routing excludes invalid or remote envelopes") {
             var reducer = CodexRuntimeStatusReducer()
             try expect(reducer.consume(Data("invalid".utf8)).sessionID == nil, "invalid data gained an identity")
@@ -120,6 +127,66 @@ func runtimeStatusTestCases() -> [CodexBarTestCase] {
             let result = reducer.consume(try runtimePatches([["op": "replace", "path": ["requests"], "value": []]]))
             try expect(result.update?.status == .ready, "idle did not become ready after request resolved")
         },
+        CodexBarTestCase(name: "active runtime never revives the latest terminal turn") {
+            for canonical in [false, true] {
+                for status in ["completed", "interrupted", "failed"] {
+                    for flags in [[], ["waitingOnApproval"]] {
+                        var reducer = CodexRuntimeStatusReducer()
+                        let result = reducer.consume(try runtimeSnapshot(
+                            flags: flags,
+                            history: canonical ? runtimeTurnHistory(status: status) : nil,
+                            turnStatus: status
+                        ))
+                        try expect(result.update == nil, "active runtime revived a terminal turn: \(canonical), \(status), \(flags)")
+                        try expect(result.resnapshotSessionID == nil, "turn handoff caused a snapshot retry loop")
+                    }
+                }
+            }
+        },
+        CodexBarTestCase(name: "starting another turn revokes the completed turn projection") {
+            for canonical in [false, true] {
+                var reducer = CodexRuntimeStatusReducer()
+                let completed = reducer.consume(try runtimeSnapshot(
+                    type: "idle",
+                    history: canonical ? runtimeTurnHistory(status: "completed") : nil,
+                    turnStatus: "completed"
+                ))
+                try expect(completed.update?.status == .ready, "idle terminal turn lost its completion")
+                let starting = reducer.consume(try runtimePatches([
+                    ["op": "replace", "path": ["threadRuntimeStatus", "type"], "value": "active"]
+                ]))
+                try expect(starting.update == nil, "next turn startup was attributed to the completed turn")
+                try expect(starting.invalidatedSessionID == "session-A", "old completion retained runtime authority during handoff")
+                try expect(starting.resnapshotSessionID == nil, "handoff requested a redundant snapshot")
+            }
+        },
+        CodexBarTestCase(name: "terminal turn patches wait for a new live turn before resuming") {
+            for canonical in [false, true] {
+                var reducer = CodexRuntimeStatusReducer()
+                _ = reducer.consume(try runtimeSnapshot(
+                    history: canonical ? runtimeTurnHistory(status: "inProgress") : nil,
+                    turnStatus: "inProgress"
+                ))
+                let path: [Any] = canonical
+                    ? ["turnHistory", "history", "entitiesByKey", "key-live", "status"]
+                    : ["turns", 0, "status"]
+                let completed = reducer.consume(try runtimePatches([
+                    ["op": "replace", "path": path, "value": "completed"]
+                ]))
+                try expect(completed.update == nil, "terminal status patch retained running state")
+                try expect(completed.invalidatedSessionID == "session-A", "terminal status patch did not revoke running authority")
+                let newTurn: [String: Any] = ["turnId": "turn-2", "status": "inProgress"]
+                let patches: [[String: Any]] = canonical ? [
+                    ["op": "add", "path": ["turnHistory", "history", "entitiesByKey", "key-next"], "value": newTurn],
+                    ["op": "add", "path": ["turnHistory", "history", "islands", 0, "entries", 1], "value": ["value": "key-next"]]
+                ] : [
+                    ["op": "add", "path": ["turns", 1], "value": newTurn]
+                ]
+                let resumed = reducer.consume(try runtimePatches(patches, base: 2, revision: 3))
+                try expect(resumed.update?.turnID == "turn-2", "new live turn did not replace the terminal identity")
+                try expect(resumed.update?.status == .running, "new live turn did not resume runtime projection")
+            }
+        },
         CodexBarTestCase(name: "extracts canonical live turn identity without retaining history content") {
             var reducer = CodexRuntimeStatusReducer()
             let history: [String: Any] = [
@@ -189,17 +256,41 @@ func runtimeStatusTestCases() -> [CodexBarTestCase] {
 private func runtimeSnapshot(
     session: String = "session-A", flags: [String] = [], type: String = "active",
     requests: [[String: Any]] = [], revision: Int = 1, source: String = "vscode",
-    version: Int = 11, host: String = "local", history: [String: Any]? = nil
+    version: Int = 11, host: String = "local", history: [String: Any]? = nil,
+    turnStatus: String? = nil
 ) throws -> Data {
+    var turn: [String: Any] = ["turnId": "turn-1", "items": [["text": "PRIVATE"]]]
+    if let turnStatus { turn["status"] = turnStatus }
     var state: [String: Any] = [
         "id": session, "sessionId": session, "cwd": "/tmp/project-alpha", "source": source,
         "threadRuntimeStatus": ["type": type, "activeFlags": flags], "requests": requests,
-        "turns": [["turnId": "turn-1", "items": [["text": "PRIVATE"]]]]
+        "turns": [turn]
     ]
     if let history { state["turnHistory"] = history }
     return try runtimeFrame(session: session, version: version, host: host, change: [
         "type": "snapshot", "revision": revision, "conversationState": state
     ])
+}
+
+private func runtimeContentOnlySnapshot() throws -> Data {
+    try runtimeFrame(session: "session-A", change: [
+        "type": "snapshot", "revision": 1,
+        "conversationState": [
+            "id": "session-A", "sessionId": "session-A", "cwd": "/tmp/project-alpha",
+            "source": "vscode", "turns": [["turnId": "turn-1", "items": [[
+                "id": "message-1", "type": "userMessage", "content": "正文"
+            ]]]]
+        ]
+    ])
+}
+
+private func runtimeTurnHistory(status: String) -> [String: Any] {
+    [
+        "kind": "canonical", "history": [
+            "islands": [["newerBoundary": ["status": "exhausted"], "entries": [["value": "key-live"]]]],
+            "entitiesByKey": ["key-live": ["turnId": "turn-1", "status": status]]
+        ]
+    ]
 }
 
 private func runtimePatches(

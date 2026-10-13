@@ -134,6 +134,7 @@ struct TaskListView: View {
                     Button("连接指南", action: model.openConnectionGuide)
                     Button("辅助功能设置", action: model.openAccessibilitySettings)
                 }
+                Button("工作目录与分支…", action: model.openGitWorkspaces)
                 Button("知识库…", action: onKnowledgeRequested)
                 Button(model.isRecoveringOpenTasks ? "正在刷新任务…" : "刷新 VS Code 任务", action: model.refreshOpenTasks)
                     .disabled(model.isRecoveringOpenTasks)
@@ -208,7 +209,7 @@ struct TaskListView: View {
                         }
                     } else {
                         ScrollView {
-                            LazyVStack(spacing: 0) {
+                            LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                                 taskGroups(model.visibleGroups)
                             }
                         }
@@ -221,38 +222,44 @@ struct TaskListView: View {
 
     private func taskGroups(_ groups: [GitWorkspaceGroup]) -> some View {
         ForEach(groups) { group in
-            if let repositoryName = group.repositoryName {
-                GitRepositoryHeader(name: repositoryName)
-            }
             let parents = Set(group.rows.compactMap(\.parentRowID))
-            ForEach(group.rows) { treeRow in
-                let row = treeRow.row
-                if let task = row.task {
-                    CompactTaskRow(
-                        treeRow: treeRow,
-                        task: task,
-                        hasChildren: parents.contains(row.id),
-                        activities: activityStore.nodes(for: task),
-                        plan: activityStore.plan(for: task),
-                        knowledgePendingCount: knowledgeStore.pendingCounts[task.sessionID] ?? 0,
-                        coordinateSpaceName: Self.coordinateSpaceName,
-                        action: { model.activate(row) },
-                        focusAction: { model.activate(row, minimizeOtherWindows: true) },
-                        deleteAction: { model.remove(task) },
-                        onHoverChanged: onTaskHoverChanged,
-                        onFocusChanged: onTaskFocusChanged,
-                        onDetailRequested: onTaskDetailRequested,
-                        onPositionChanged: onTaskPositionChanged
-                    )
-                } else {
-                    IdleWorkspaceRow(
-                        treeRow: treeRow,
-                        hasChildren: parents.contains(row.id),
-                        coordinateSpaceName: Self.coordinateSpaceName,
-                        action: { model.activate(row) },
-                        onHoverChanged: onTaskHoverChanged
-                    )
-                }
+            Section {
+                workspaceRows(group.rows, parents: parents)
+            } header: {
+                WorkspaceGroupHeader(name: group.projectName)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func workspaceRows(_ rows: [GitWorkspaceTreeRow], parents: Set<String>) -> some View {
+        ForEach(rows) { treeRow in
+            let row = treeRow.row
+            if let task = row.task {
+                CompactTaskRow(
+                    treeRow: treeRow,
+                    task: task,
+                    hasChildren: parents.contains(row.id),
+                    activities: activityStore.nodes(for: task),
+                    plan: activityStore.plan(for: task),
+                    knowledgePendingCount: knowledgeStore.pendingCounts[task.sessionID] ?? 0,
+                    coordinateSpaceName: Self.coordinateSpaceName,
+                    action: { model.activate(row) },
+                    focusAction: { model.activate(row, minimizeOtherWindows: true) },
+                    deleteAction: { model.remove(task) },
+                    onHoverChanged: onTaskHoverChanged,
+                    onFocusChanged: onTaskFocusChanged,
+                    onDetailRequested: onTaskDetailRequested,
+                    onPositionChanged: onTaskPositionChanged
+                )
+            } else {
+                IdleWorkspaceRow(
+                    treeRow: treeRow,
+                    hasChildren: parents.contains(row.id),
+                    coordinateSpaceName: Self.coordinateSpaceName,
+                    action: { model.activate(row) },
+                    onHoverChanged: onTaskHoverChanged
+                )
             }
         }
     }
@@ -327,7 +334,8 @@ private struct IdleWorkspaceRow: View {
         }
         return "\(workspaceLabel.repositoryName)，\(row.displayName)，分支 \(workspaceLabel.branch)"
             + (workspaceLabel.isLinkedWorktree ? "，关联工作树" : "，主工作目录")
-            + (workspaceLabel.sourceBranch.map { "，创建自 \($0)" } ?? "")
+            + (workspaceLabel.worktreeName.isEmpty ? "" : "，目录 \(workspaceLabel.worktreeName)")
+            + (workspaceLabel.sourceBranch.map { "，分支起点 \($0)" } ?? "")
     }
 
     var body: some View {
@@ -411,7 +419,8 @@ private struct CompactTaskRow: View {
         }
         return "\(workspaceLabel.repositoryName)，\(row.displayName)，分支 \(workspaceLabel.branch)"
             + (workspaceLabel.isLinkedWorktree ? "，关联工作树" : "，主工作目录")
-            + (workspaceLabel.sourceBranch.map { "，创建自 \($0)" } ?? "")
+            + (workspaceLabel.worktreeName.isEmpty ? "" : "，目录 \(workspaceLabel.worktreeName)")
+            + (workspaceLabel.sourceBranch.map { "，分支起点 \($0)" } ?? "")
     }
 
     var body: some View {

@@ -7,10 +7,15 @@ enum RuntimeStatusEvent {
     case reconcile
 }
 
+enum RuntimeStatusUpdateSource {
+    case liveFrame
+    case reconcile
+}
+
 /// Orders live projections and Hook reconciliation independently of window and UI lifetimes.
 @MainActor
 final class RuntimeEventCoordinator {
-    var onUpdates: (([CodexRuntimeStatusUpdate]) async -> Void)?
+    var onUpdates: (([CodexRuntimeStatusUpdate], RuntimeStatusUpdateSource) async -> Void)?
     var onFrame: ((Data, String?, UUID?) async -> Void)?
     var onUnavailable: (([String: CodexRuntimeUnavailableReason]) async -> Void)?
     var onSnapshotNeeded: ((String) -> Void)?
@@ -75,7 +80,7 @@ final class RuntimeEventCoordinator {
                     if let update = result.update {
                         states[update.sessionID] = update
                         // Publish task status before waiting for content and filesystem work.
-                        await onUpdates?([update])
+                        await onUpdates?([update], .liveFrame)
                         guard isCurrent(id) else { return }
                     }
                     await onFrame?(data, result.sessionID, previewGeneration)
@@ -85,7 +90,7 @@ final class RuntimeEventCoordinator {
                     guard isCurrent(id) else { return }
                     await onUnavailable?(reasons)
                 case .reconcile:
-                    if !states.isEmpty { await onUpdates?(Array(states.values)) }
+                    if !states.isEmpty { await onUpdates?(Array(states.values), .reconcile) }
                 }
                 guard isCurrent(id) else { return }
             }

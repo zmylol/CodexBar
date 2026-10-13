@@ -2,6 +2,7 @@ public struct GitWorkspaceGroup: Identifiable, Equatable, Sendable {
     public let id: String
     public let repositoryName: String?
     public let rows: [GitWorkspaceTreeRow]
+    public var projectName: String { repositoryName ?? "普通项目" }
 }
 
 public struct GitWorkspaceTreeRow: Identifiable, Equatable, Sendable {
@@ -16,9 +17,10 @@ public struct GitWorkspaceTreeRow: Identifiable, Equatable, Sendable {
 }
 
 public enum GitWorkspaceTree {
-    /// Keeps each repository at its first task's priority position and each actual row intact.
+    /// Preserves repository priority and places ordinary projects in a separate section below them.
     public static func groups(
-        rows: [VSCodeTaskRow], labels: [String: GitWorkspaceLabel]
+        rows: [VSCodeTaskRow], labels: [String: GitWorkspaceLabel],
+        creationRecords: [GitWorkspaceRecord] = []
     ) -> [GitWorkspaceGroup] {
         var groupedRows: [[VSCodeTaskRow]] = []
         var repositoryIndices: [String: Int] = [:]
@@ -34,7 +36,7 @@ public enum GitWorkspaceTree {
                 groupedRows.append([row])
             }
         }
-        return groupedRows.map { rows in
+        let groups = groupedRows.map { rows in
             let first = rows[0]
             guard !first.isMultiRoot, let label = labels[first.rootPath], !label.repositoryID.isEmpty else {
                 return GitWorkspaceGroup(
@@ -45,66 +47,81 @@ public enum GitWorkspaceTree {
                     )]
                 )
             }
-            let treeRows = tree(rows: rows, labels: labels)
+            let treeRows = tree(rows: rows, labels: labels, creationRecords: creationRecords)
             return GitWorkspaceGroup(
                 id: "repository:\(label.repositoryID)",
                 repositoryName: treeRows.first?.label?.repositoryName,
                 rows: treeRows
             )
         }
+        let ordinaryRows = groups.filter { $0.repositoryName == nil }.flatMap(\.rows)
+        let repositories = groups.filter { $0.repositoryName != nil }
+        return ordinaryRows.isEmpty ? repositories : repositories + [
+            GitWorkspaceGroup(id: "ordinary-projects", repositoryName: nil, rows: ordinaryRows)
+        ]
     }
 
     private static func tree(
-        rows: [VSCodeTaskRow], labels: [String: GitWorkspaceLabel]
+        rows: [VSCodeTaskRow], labels: [String: GitWorkspaceLabel],
+        creationRecords: [GitWorkspaceRecord]
     ) -> [GitWorkspaceTreeRow] {
+        let recordsByRoot = Dictionary(grouping: creationRecords, by: \.workspaceRoot)
+        func record(for label: GitWorkspaceLabel) -> GitWorkspaceRecord? {
+            guard let candidates = recordsByRoot[label.workspaceRoot], candidates.count == 1,
+                  let record = candidates.first, record.repositoryID == label.repositoryID
+            else { return nil }
+            return record
+        }
         let nodes = rows.compactMap { row -> (row: VSCodeTaskRow, label: GitWorkspaceLabel)? in
             labels[row.rootPath].map { (row, $0) }
         }.sorted {
-            if $0.label.branch != $1.label.branch { return $0.label.branch < $1.label.branch }
+            let first = record(for: $0.label), second = record(for: $1.label)
+            let firstIsMain = first?.isMainWorkspace ?? !$0.label.isLinkedWorktree
+            let secondIsMain = second?.isMainWorkspace ?? !$1.label.isLinkedWorktree
+            if firstIsMain != secondIsMain { return firstIsMain }
+            let firstOrder = first?.order ?? .max, secondOrder = second?.order ?? .max
+            if firstOrder != secondOrder { return firstOrder < secondOrder }
             if $0.label.workspaceRoot != $1.label.workspaceRoot {
                 return $0.label.workspaceRoot < $1.label.workspaceRoot
             }
             return $0.row.id < $1.row.id
         }
-        let branches = Dictionary(grouping: nodes.indices, by: { nodes[$0].label.branch })
-        var candidateParents: [Int: Int] = [:]
+        let directories = Dictionary(grouping: nodes.indices, by: { nodes[$0].label.workspaceRoot })
+        var parents: [Int: Int] = [:]
         for index in nodes.indices {
             let label = nodes[index].label
-            guard branches[label.branch]?.count == 1,
-                  let sourceBranch = label.sourceBranch,
-                  let candidates = branches[sourceBranch], candidates.count == 1,
-                  let parent = candidates.first, parent != index,
-                  nodes[parent].label.workspaceRoot != label.workspaceRoot else { continue }
-            candidateParents[index] = parent
-        }
+            guard directories[label.workspaceRoot]?.count == 1,
+                  let source = record(for: label), !source.isMainWorkspace,
+                  let parentRoot = source.parentWorkspaceRoot,
+                  let candidates = directories[parentRoot], candidates.count == 1,
+                  let parent = candidates.first, parent != index
+            else { continue }
 
-        var parents: [Int: Int] = [:]
-        for (index, parent) in candidateParents {
-            var visited: Set<Int> = [index]
-            var cursor: Int? = parent
-            var depth = 0
-            var cyclic = false
-            while let ancestor = cursor {
-                guard visited.insert(ancestor).inserted else {
-                    cyclic = true
+            // Validate the persisted chain even if some ancestor windows are closed.
+            var visited = Set<String>()
+            var cursor: String? = label.workspaceRoot
+            var valid = true
+            while let root = cursor {
+                guard visited.insert(root).inserted else {
+                    valid = false
                     break
                 }
-                depth += 1
-                cursor = candidateParents[ancestor]
+                guard let records = recordsByRoot[root] else { break }
+                guard records.count == 1, let ancestor = records.first,
+                      ancestor.repositoryID == label.repositoryID
+                else {
+                    valid = false
+                    break
+                }
+                cursor = ancestor.parentWorkspaceRoot
             }
-            // Cycles and rows beyond three levels stay flat, retaining sourceBranch as text.
-            if !cyclic && depth <= 3 { parents[index] = parent }
+            if valid { parents[index] = parent }
         }
         var children: [Int: [Int]] = [:]
         for index in nodes.indices {
             if let parent = parents[index] { children[parent, default: []].append(index) }
         }
-        let roots = nodes.indices.filter { parents[$0] == nil }.sorted {
-            if nodes[$0].label.isLinkedWorktree != nodes[$1].label.isLinkedWorktree {
-                return !nodes[$0].label.isLinkedWorktree
-            }
-            return $0 < $1
-        }
+        let roots = nodes.indices.filter { parents[$0] == nil }
         var result: [GitWorkspaceTreeRow] = []
         func append(_ siblings: [Int], depth: Int, continuationLevels: [Int]) {
             for (position, index) in siblings.enumerated() {

@@ -80,6 +80,42 @@ func windowSnapshotDiscoveryTestCases() -> [CodexBarTestCase] {
                 "an application identity that changed during enumeration was accepted"
             )
         },
+        CodexBarTestCase(name: "focused workspace follows the AX focused window instead of the first background window") {
+            try withFocusedWorkspaceStorage(folders: ["/work/background", "/work/active"]) { storage in
+                let reader = FakeFocusedWindowReading()
+                let workspace = VSCodeWindowSnapshotReader.focusedWorkspace(
+                    applicationIdentity: snapshotApplicationIdentity(123), using: reader, storageURL: storage
+                )
+                try expect(workspace == .folder("/work/active"), "focused workspace used a background window")
+            }
+        },
+        CodexBarTestCase(name: "focused workspace rejects ambiguous folders and multi-root workspaces") {
+            try withFocusedWorkspaceStorage(folders: ["/work/active", "/other/active"]) { storage in
+                let reader = FakeFocusedWindowReading()
+                try expect(VSCodeWindowSnapshotReader.focusedWorkspace(
+                    applicationIdentity: snapshotApplicationIdentity(123), using: reader, storageURL: storage
+                ) == nil, "same-name folders were guessed")
+            }
+            try withFocusedWorkspaceStorage(folders: [], workspace: "/work/active.code-workspace") { storage in
+                let reader = FakeFocusedWindowReading()
+                reader.windowTitle = "active (Workspace) — Visual Studio Code"
+                try expect(VSCodeWindowSnapshotReader.focusedWorkspace(
+                    applicationIdentity: snapshotApplicationIdentity(123), using: reader, storageURL: storage
+                ) == nil, "a multi-root workspace was treated as a working directory")
+            }
+        },
+        CodexBarTestCase(name: "focused workspace discards stale focus permission identity and title reads") {
+            try withFocusedWorkspaceStorage(folders: ["/work/active"]) { storage in
+                for failure in ["permission", "cancelled", "identity", "frontmost", "dialog", "missing-focus",
+                                "changed-focus", "changed-title", "lost-permission", "lost-identity", "lost-frontmost"] {
+                    let reader = FakeFocusedWindowReading()
+                    reader.failure = failure
+                    try expect(VSCodeWindowSnapshotReader.focusedWorkspace(
+                        applicationIdentity: snapshotApplicationIdentity(123), using: reader, storageURL: storage
+                    ) == nil, "focused workspace accepted \(failure)")
+                }
+            }
+        },
         CodexBarTestCase(name: "window snapshots discard partial reads when a second application fails") {
             let reader = FakeWindowSnapshotReading()
             reader.windowElements = [0]
@@ -92,6 +128,63 @@ func windowSnapshotDiscoveryTestCases() -> [CodexBarTestCase] {
             )
         }
     ]
+}
+
+@MainActor
+private func withFocusedWorkspaceStorage(
+    folders: [String], workspace: String? = nil, body: (URL) throws -> Void
+) throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("codexbar-focused-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let storage = root.appendingPathComponent("storage.json")
+    var records: [[String: Any]] = folders.map { ["folder": URL(fileURLWithPath: $0).absoluteString] }
+    if let workspace {
+        records.append(["workspaceIdentifier": ["configURIPath": URL(fileURLWithPath: workspace).absoluteString]])
+    }
+    try JSONSerialization.data(withJSONObject: ["windowsState": ["openedWindows": records]]).write(to: storage)
+    try body(storage)
+}
+
+private final class FakeFocusedWindowReading: VSCodeFocusedWindowReading {
+    var failure = ""
+    var windowTitle = "active — Visual Studio Code"
+    private var focusReads = 0
+    private var titleReads = 0
+    private var identityReads = 0
+    private var frontmostReads = 0
+
+    var isTrusted: Bool { failure != "permission" && !(failure == "lost-permission" && focusReads > 0) }
+    var isCancelled: Bool { failure == "cancelled" }
+
+    func isCurrentApplication(_ identity: VSCodeApplicationIdentity) -> Bool {
+        identityReads += 1
+        return failure != "identity" && !(failure == "lost-identity" && identityReads > 1)
+    }
+
+    func isFrontmostApplication(_ identity: VSCodeApplicationIdentity) -> Bool {
+        frontmostReads += 1
+        return failure != "frontmost" && !(failure == "lost-frontmost" && frontmostReads > 1)
+    }
+
+    func windows(for identity: VSCodeApplicationIdentity) -> [Int]? { [0, 1] }
+
+    func focusedWindow(for identity: VSCodeApplicationIdentity) -> Int? {
+        focusReads += 1
+        if failure == "missing-focus" { return nil }
+        return failure == "changed-focus" && focusReads > 1 ? 0 : 1
+    }
+
+    func sameWindow(_ first: Int, _ second: Int) -> Bool { first == second }
+    func role(of window: Int) -> String? { kAXWindowRole }
+    func subrole(of window: Int) -> String? { failure == "dialog" ? kAXDialogSubrole : kAXStandardWindowSubrole }
+    func title(of window: Int) -> String? {
+        titleReads += 1
+        if window == 0 || (failure == "changed-title" && titleReads > 1) {
+            return "background — Visual Studio Code"
+        }
+        return windowTitle
+    }
 }
 
 private func snapshotApplicationIdentity(_ processIdentifier: Int32) -> VSCodeApplicationIdentity {

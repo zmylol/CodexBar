@@ -4,6 +4,68 @@ import CodexBarCore
 @MainActor
 func startupReconciliationTestCases() -> [CodexBarTestCase] {
     [
+        CodexBarTestCase(name: "runtime handoff replaces only its existing session and workspace with a newer turn") {
+            let store = TaskStore()
+            _ = try await store.apply(startupEvent(.userPromptSubmit, session: "session", turn: "old", timestamp: 100, cwd: "/work/project-alpha"))
+            let previous = try require(store.tasks.first, "old task missing")
+            let changed = try await StartupTaskReconciler(store: store).reconcile(
+                snapshots: [
+                    startupSnapshot(session: "session", turn: "new", updatedAt: 200),
+                    startupSnapshot(session: "unrelated", cwd: "/work/project-beta", updatedAt: 300)
+                ],
+                windows: [VSCodeWindowDescriptor(id: 1, title: "Workspace", workspaceFolderPaths: ["/work/project-alpha", "/work/project-beta"])],
+                replacing: previous
+            )
+            try expect(changed == 1 && store.tasks.count == 1, "targeted recovery imported unrelated history")
+            try expect(store.tasks.first?.id == "session:new" && store.tasks.first?.status == .ready,
+                       "latest completed turn did not replace the stale running turn")
+        },
+        CodexBarTestCase(name: "runtime handoff cannot resurrect a deleted task or replace a newer Hook task") {
+            for newerSession in [nil, "session", "another-session"] as [String?] {
+                let store = TaskStore()
+                _ = try await store.apply(startupEvent(.userPromptSubmit, session: "session", turn: "old", timestamp: 100, cwd: "/work/project-alpha"))
+                let previous = try require(store.tasks.first, "old task missing")
+                if let newerSession {
+                    _ = try await store.apply(startupEvent(.userPromptSubmit, session: newerSession, turn: "newest", timestamp: 300, cwd: previous.cwd))
+                } else {
+                    _ = try await store.remove(taskID: previous.id)
+                }
+                let expected = store.tasks
+                let changed = try await StartupTaskReconciler(store: store).reconcile(
+                    snapshots: [startupSnapshot(session: "session", turn: "new", updatedAt: 200)],
+                    windows: [VSCodeWindowDescriptor(id: 1, title: "project-alpha")], replacing: previous
+                )
+                try expect(changed == 0 && store.tasks == expected, "late runtime recovery resurrected or replaced a changed task")
+            }
+        },
+        CodexBarTestCase(name: "runtime handoff rejects older different-session and same-turn history") {
+            let store = TaskStore()
+            _ = try await store.apply(startupEvent(.userPromptSubmit, session: "session", turn: "current", timestamp: 100, cwd: "/work/project-alpha"))
+            let previous = try require(store.tasks.first, "current task missing")
+            for candidate in [
+                startupSnapshot(session: "session", turn: "older", updatedAt: 90),
+                startupSnapshot(session: "other-session", turn: "new", updatedAt: 200),
+                startupSnapshot(session: "session", turn: "current", updatedAt: 200)
+            ] {
+                let changed = try await StartupTaskReconciler(store: store).reconcile(
+                    snapshots: [candidate], windows: [VSCodeWindowDescriptor(id: 1, title: "project-alpha")],
+                    replacing: previous
+                )
+                try expect(changed == 0 && store.tasks == [previous], "unqualified history changed the target")
+            }
+        },
+        CodexBarTestCase(name: "runtime handoff respects a target turn deletion tombstone") {
+            let store = TaskStore()
+            _ = try await store.apply(startupEvent(.userPromptSubmit, session: "session", turn: "deleted", timestamp: 50, cwd: "/work/project-alpha"))
+            _ = try await store.remove(taskID: "session:deleted")
+            _ = try await store.apply(startupEvent(.userPromptSubmit, session: "session", turn: "old", timestamp: 100, cwd: "/work/project-alpha"))
+            let previous = try require(store.tasks.first, "old task missing")
+            let changed = try await StartupTaskReconciler(store: store).reconcile(
+                snapshots: [startupSnapshot(session: "session", turn: "deleted", updatedAt: 200)],
+                windows: [VSCodeWindowDescriptor(id: 1, title: "project-alpha")], replacing: previous
+            )
+            try expect(changed == 0 && store.tasks == [previous], "deleted target turn was resurrected")
+        },
         CodexBarTestCase(name: "recovers multiple explicit folders in one workspace and excludes unrelated same-name history") {
             let store = TaskStore()
             let paths = ["/work/sources/project-alpha", "/work/sources/project-beta"]

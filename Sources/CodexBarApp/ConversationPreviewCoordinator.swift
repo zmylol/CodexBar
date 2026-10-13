@@ -21,8 +21,11 @@ final class ConversationPreviewCoordinator {
     private let snapshotTimeout: Duration
     private var worker: (any ConversationPreviewConsuming)?
     private var waitTask: Task<Void, Never>?
+    private var liveSnapshotTask: Task<Void, Never>?
+    private var liveSnapshotID: UUID?
     private var historyExpectedRevision: Int?
     private var unavailableReason: CodexRuntimeUnavailableReason?
+    private var targetIsRunning = false
 
     init(
         store: ConversationPreviewStore,
@@ -42,6 +45,7 @@ final class ConversationPreviewCoordinator {
         if target?.sessionID == sessionID && target?.cwd == cwd { return }
         end()
         target = (sessionID, cwd)
+        targetIsRunning = false
         generation = UUID()
         worker = makeWorker(sessionID, cwd)
         if let reason = monitor.unavailableReason(for: sessionID), case .unsupportedProtocol = reason {
@@ -57,9 +61,26 @@ final class ConversationPreviewCoordinator {
         worker = nil
         waitTask?.cancel()
         waitTask = nil
+        liveSnapshotTask?.cancel()
+        liveSnapshotTask = nil
+        liveSnapshotID = nil
         historyExpectedRevision = nil
         unavailableReason = nil
+        targetIsRunning = false
         store.clear()
+    }
+
+    func updateRuntimeStatus(sessionID: String, cwd: String? = nil, status: CodexTaskStatus) {
+        guard target?.sessionID == sessionID,
+              cwd == nil || target?.cwd == cwd else { return }
+        targetIsRunning = status == .running
+        if targetIsRunning, let preview = store.preview {
+            refreshRunningPreview(preview)
+        } else if !targetIsRunning {
+            liveSnapshotTask?.cancel()
+            liveSnapshotTask = nil
+            liveSnapshotID = nil
+        }
     }
 
     func refresh() {
@@ -120,6 +141,9 @@ final class ConversationPreviewCoordinator {
         guard let target else { return }
         waitTask?.cancel()
         waitTask = nil
+        liveSnapshotTask?.cancel()
+        liveSnapshotTask = nil
+        liveSnapshotID = nil
         worker = makeWorker(target.sessionID, target.cwd)
         historyExpectedRevision = nil
         store.isLoadingHistory = false
@@ -172,9 +196,51 @@ final class ConversationPreviewCoordinator {
                 store.message = nil
                 store.state = .ready
             }
+            refreshRunningPreview(preview)
             if let expected = historyExpectedRevision, preview.revision >= expected {
                 historyExpectedRevision = nil
                 store.isLoadingHistory = false
+            }
+        }
+    }
+
+    /// Some Codex tools keep their streaming output in the owner and do not
+    /// broadcast every delta to followers. A bounded re-snapshot while a tool
+    /// is running fills those gaps without polling idle conversations.
+    private func refreshRunningPreview(_ preview: CodexConversationPreview) {
+        guard (targetIsRunning || preview.items.contains(where: \.isRunning)),
+              let target, let generation,
+              store.state == .ready else {
+            liveSnapshotTask?.cancel()
+            liveSnapshotTask = nil
+            liveSnapshotID = nil
+            return
+        }
+        guard liveSnapshotTask == nil else { return }
+        let id = UUID()
+        liveSnapshotID = id
+        liveSnapshotTask = Task { [weak self] in
+            defer {
+                if let self, self.liveSnapshotID == id {
+                    self.liveSnapshotTask = nil
+                    self.liveSnapshotID = nil
+                }
+            }
+            do {
+                while !Task.isCancelled {
+                    try await Task.sleep(for: .seconds(2))
+                    guard let self, self.generation == generation,
+                          self.liveSnapshotID == id,
+                          self.target?.sessionID == target.sessionID,
+                          self.target?.cwd == target.cwd,
+                          self.store.state == .ready,
+                          self.targetIsRunning
+                              || self.store.preview?.items.contains(where: \.isRunning) == true
+                    else { break }
+                    self.monitor.requestSnapshot(sessionID: target.sessionID, retryIncompatible: false)
+                }
+            } catch {
+                return
             }
         }
     }

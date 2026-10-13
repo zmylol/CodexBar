@@ -22,7 +22,7 @@ compact floating panel
 AccessibilityWindowActivator → existing official VS Code window
 ```
 
-启动、新打开项目窗口或手动刷新时还有一条只读恢复路径：
+启动、新建会话、新打开项目窗口或手动刷新时还有一条只读恢复路径：
 
 ```text
 official VS Code Extension
@@ -34,11 +34,15 @@ StartupTaskReconciler → TaskStore
 
 启动历史恢复固定只查询并验证 `vscode` 来源，通过 cwd 与当前窗口保守匹配，再用 `thread/turns/list(itemsView: notLoaded)` 读取最新 turn 元数据。普通窗口使用标题；已保存的本地多根工作区由 `VSCodeWorkspaceMetadata` 补充规范化的文件夹路径，显示、恢复与实际激活共用同一匹配规则。只有明确属于工作区的不同 cwd 才可同时恢复到同一个窗口，纯标题同名歧义仍拒绝。它不会执行周期性全局扫描，也不会重新添加已删除行或覆盖更新的 Hook turn。
 
+`CodexSessionCreationMonitor` 在初次恢复前注册递归文件系统通知，以补齐同窗口、同目录的新 session。后台只读新 rollout 首行 `session_meta`，精确排除非 `vscode` 来源；最多保留 512 个待发现候选。`SessionDiscoveryCoordinator` 合并通知，串行执行最多两次恢复，覆盖索引短暂延迟。首 turn 尚不存在时保留候选，让其后续修改重新触发核对；有有效 snapshot 或不匹配当前窗口后 ACK，停止响应该文件的普通追加。已发现任务继续走原实时订阅，不随输出扫描文件。停止和重启隔离旧回调，FSEvents 丢事件信号触发一次有界元数据恢复。
+
 `VSCodeWorkspaceMetadata` 同时为普通文件夹窗口补充实际打开的根目录身份。`VSCodeTaskVisibility.visibleRows` 按根目录或工作区配置路径归并为显示入口，名称来自打开的根；每组采用已排序任务中的首个会话，原始 cwd/sessionID 保持不变。`visibleTasks` 保留所有匹配成员用于运行状态、知识库和预览同步，面板高度与行计数使用归并后的入口。首次未知窗口时隐藏历史任务，后续读取失败保留最近成功的窗口集合。
 
 VS Code 本地 `Workspaces/<id>/workspace.json` 由当前窗口记录关联到未命名工作区。同一会话目录可以属于多个已打开根入口，详情选择使用行 ID，实际激活同时校验工作区身份和真实 cwd。恢复阶段允许全部候选身份明确的共享成员恢复一次；混入纯标题歧义时仍拒绝恢复。
 
-`GitWorkspaceIdentityReader` 通过 `.git`/gitfile、`commondir` 和 HEAD 自动识别仓库与工作树；`GitBranchOriginReader` 有界读取本地 refs、packed-refs 和分支 reflog，仅接受完整初始创建记录可确认的本地来源。缺失、过期、复制/重命名或歧义记录不推断父分支。`GitWorkspaceMonitor` 在后台读取并监听 HEAD、分支日志及父目录变化。`GitWorkspaceTree` 只投影真实窗口行：同仓库连续归组，唯一可见来源在前、子分支缩进，循环和歧义保持平级，最多三层缩进。原始任务与窗口身份不变，多根工作区不归到成员仓库。仓库标题高度计入首个工作区，固定高度模式仍按五个工作区计算。
+`GitWorkspaceIdentityReader` 通过 `.git`/gitfile、`commondir` 和 HEAD 自动识别仓库与工作树。`GitWorkspaceService` 串行执行真实 Git 操作，用本地 `workspaces.json` 保存目录身份、仓库身份、创建父目录与稳定顺序；导入的既有 worktree 不推断来源。创建记录在 Git 创建前持久化，避免 Git 成功而来源丢失。变更前精确校验注册目录的 Git 根和仓库身份，失效的子目录不会回退到父仓库。分支切换不会改写目录关系。`GitWorkspaceCommandRunner` 通过参数数组在独立进程组执行 Git，限制运行时间与输出；取消或异常时清理整个进程组，失败不强制覆盖工作文件。
+
+`GitWorkspaceBrowserModel` 管理原生“工作目录与分支”窗口，异步结果按选择与生命周期校验，避免过期分支查询覆盖新选择。`GitWorkspaceMonitor` 监听 HEAD、分支日志及父目录变化，浏览器包含单独主目录；活动目录通过经过校验的 VS Code 焦点窗口同步。`GitWorkspaceTree` 使用保存的目录创建记录投影真实窗口行，保持创建顺序，不按分支名推断父子；完整浏览器保留关闭窗口或暂时失效的目录。循环、歧义和跨仓库关系不会连线。`GitBranchOriginReader` 提供的历史分支起点仅作补充文字。原始任务与窗口身份不变，多根工作区不归到成员仓库；仓库标题高度计入首个工作区。
 
 窗口同步使用 `NSWorkspace` 的应用生命周期通知，以及 `AXObserver` 的窗口创建、销毁和标题变化通知。AX 注册与监听维护在独立的休眠 RunLoop 线程执行，收到事件后异步核对窗口；没有定时窗口扫描。监听注册失败只在当前事件后有限重试，之后提示手动刷新。从系统设置返回应用、切换空间或唤醒也会重新核对监听和授权。
 
@@ -56,7 +60,13 @@ VS Code 本地 `Workspaces/<id>/workspace.json` 由当前窗口记录关联到�
 
 `KnowledgeArticleRange` 按北京时间给出今天、昨天或含今天的近七天范围。`KnowledgeLibraryModel` 分别投影今天的入口提醒与所选范围的文章/分类数字，切换范围不确认已读。成功扫描同时返回基于总目录路径和目录身份的稳定指纹；已查看回执再结合文章相对路径生成 SHA-256 键，以收录时间为值保存于 UserDefaults，最多保留近七天的 10,000 条。新随机基线不影响重启恢复，替换目录的指纹不同，不能继承旧回执。在线唯一文件移动且收录时间不变时迁移回执。
 
-`RuntimeEventCoordinator` 管理共享 runtime 串行队列、状态投影与 Hook 后重应用，AppModel 负责连接视图和各内容消费者。队列受 64 MiB / 128 事件预算约束（含非正文事件），超限先清投影并顺序失效，再请求快照；取消的 worker 不能覆盖新周期。任务状态先发布，再等待知识库与正文处理。
+`RuntimeEventCoordinator` 管理共享 runtime 串行队列、状态投影与 Hook 后重应用，AppModel 负责连接视图和各内容消费者。队列受 64 MiB / 128 事件预算约束（含非正文事件），超限先清投影并顺序失效，再请求快照；取消的 worker 不能覆盖新周期。任务状态先发布，再等待知识库与正文处理。投影同时读取最新 turn 的终态，线程先变 active 而新 turn 尚未出现时，不把已完成的旧 turn 误标为运行。
+
+`TaskStore` 在任务中保留可选的最近 Hook `Stop` 时间，旧快照缺少该字段时保持兼容。属于当前执行的 Stop 不受实时状态接收时间影响，缓存或实时帧不能再次改变已确认的结束状态。明确更新的同 turn 用户提交可重开执行并重置起始时间，保留前次 Stop 时间以拒绝迟到的旧提交和旧 Stop；新 turn 则建立独立任务。
+
+`CodexRuntimeStatusMonitor` 将连接握手与会话同步分开：当前跟随的所有会话都收到可信来源的 v11 实时帧后，才报告已连接，即使该帧暂时没有足够字段投影任务状态。会话来源查找失败或五秒内无响应、跟随后八秒内没有首帧，均报告会话暂不可用；停止、移除会话和重连会取消旧计时器。首帧之后不做运行状态心跳或轮询；展开且仍在执行的正文预览会单独按需请求快照，手动刷新及已有外部事件也可触发重试。
+
+新的实时帧若指向同一可见 session/cwd 的不同 turn，`RuntimeTaskHandoffCoordinator` 通过已有快照加载器定向恢复该 turn，最多尝试三次；缓存重放不触发恢复。提交前重新核对窗口，存储 actor 原子检查旧任务仍存在、目标未被删除且确实更新。后续 turn 等前次交接结束，只能沿该交接实际提交且仍未被改动的任务继续，避免取消时已开始的原子写入挡住最新 turn；删除或新 Hook 替换后丢弃迟到结果。同 turn 的历史快照仍不能覆盖 Hook 状态。
 
 `CodexHookEventSource` 缓存一次排序的 Inbox/Activity 快照，只有确认处理成功才移除条目；排空后重新扫描，保留先 Activity 后 Inbox 的采样顺序。可靠 Inbox 在写入和新快照读取时执行数量、字节及到达年龄预算，裁剪优先保留最新重放事件。多进程通过有界锁协调维护和纯数字丢弃计数；Hook 先原子投递，锁争用时推迟维护，避免阻塞 Codex，此时预算是暂时软上限。后台读取、归档及健康查询遇到锁争用时以 50、150、300 毫秒异步退避，最多四次，等待可取消；耗尽后明确报错并保留事件供后续重试。`EventProcessor.inboxHealth()` 在后台读取计数，AppModel 展示积压并在裁剪后核对当前任务。
 
@@ -80,6 +90,7 @@ VS Code 本地 `Workspaces/<id>/workspace.json` 由当前窗口记录关联到�
 - 事件文件读取、移动和归档轮转在后台 actor 中串行执行；每批事件只提交一次任务快照、执行一次归档轮转；
 - 任务快照加载、JSON 编解码、排序、写盘和文件系统路径匹配均在后台 actor 中完成；主线程只发布不落后的 revision；
 - 旧任务清理只会原子删除与后台匹配前完整快照仍一致的条目，期间收到新事件的任务会被保留；
+- 应用启动后及每天检查一次七天前已结束且不再匹配打开窗口的任务；自动清理复用同一原子条件，运行中或仍打开的任务会保留；
 - 手工和批量删除与精确 task ID tombstone 在同一个任务快照中原子提交；启动恢复和同一 turn 的后续 Hook 都不能使其复活；
 - v1 任务快照只迁移明确标记为 `vscode` 的任务并原子重写为 v2；其他旧任务和无法证明来源的旧队列直接删除；
 - Application Support 根目录和任务快照拒绝符号链接，并在每次持久化前重新验证；

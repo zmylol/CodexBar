@@ -27,8 +27,8 @@ public enum CodexBarPanelLayout {
     public static func rowHeights(groups: [GitWorkspaceGroup]) -> [CGFloat] {
         groups.flatMap { group in
             group.rows.enumerated().map { index, row in
-                // A repository heading belongs to its first task, so the scroll limit still counts workspaces.
-                rowHeight(for: row) + (index == 0 && group.repositoryName != nil ? repositoryHeaderHeight : 0)
+                // Each section heading belongs to its first task, so the scroll limit still counts workspaces.
+                rowHeight(for: row) + (index == 0 ? repositoryHeaderHeight : 0)
             }
         }
     }

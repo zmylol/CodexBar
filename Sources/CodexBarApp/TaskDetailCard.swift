@@ -87,6 +87,19 @@ struct TaskDetailCard: View {
                         } else if !preview.historyComplete {
                             historyButton
                         }
+                        if task.status == .running,
+                           preview.items.allSatisfy({ $0.kind == .user }) {
+                            HStack(spacing: 7) {
+                                ProgressView().controlSize(.mini)
+                                Text("正在执行，部分运行中输出可能稍后同步")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                                Spacer(minLength: 4)
+                                Button("刷新", action: onRefreshPreview)
+                                    .font(.system(size: 11))
+                                    .buttonStyle(.link)
+                            }
+                        }
                         ForEach(preview.items[firstIndex...]) { item in
                             ConversationItemView(item: item) {
                                 isFollowingLatest = false
@@ -174,7 +187,12 @@ struct TaskDetailCard: View {
     private var header: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(workspaceRow?.displayName ?? knowledge?.vault.name ?? task.workspaceName)
+                Text(
+                    workspaceLabel.map { "\($0.repositoryName) · \(workspaceRow?.displayName ?? task.workspaceName)" }
+                        ?? workspaceRow?.displayName
+                        ?? knowledge?.vault.name
+                        ?? task.workspaceName
+                )
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
                 Text(knowledge == nil ? "会话预览" : "知识库 · 已识别变更")
@@ -189,7 +207,7 @@ struct TaskDetailCard: View {
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                     if let sourceBranch = workspaceLabel.sourceBranch {
-                        Text("创建自 \(sourceBranch)")
+                        Text("分支起点 \(sourceBranch)")
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)

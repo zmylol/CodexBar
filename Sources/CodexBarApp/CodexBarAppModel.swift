@@ -6,6 +6,9 @@ import os
 
 @MainActor
 final class CodexBarAppModel: NSObject, ObservableObject {
+    private static let oldTaskCleanupAge: TimeInterval = 7 * 24 * 60 * 60
+    private static let oldTaskCleanupInterval: Duration = .seconds(24 * 60 * 60)
+
     @Published private(set) var panelDisplayMode = CodexBarPanelDisplayMode(
         rawValue: UserDefaults.standard.string(forKey: "codexbar.panelDisplayMode") ?? ""
     ) ?? .scrolling
@@ -13,6 +16,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     @Published private(set) var isRecoveringOpenTasks = false
     @Published private(set) var runtimeConnectionState = CodexRuntimeConnectionState.idle
     @Published private(set) var workspaceLabels: [String: GitWorkspaceLabel] = [:]
+    @Published private(set) var workspaceCreationRecords: [GitWorkspaceRecord] = []
     @Published private(set) var inboxHealth = CodexInboxHealth(pendingCount: 0, discardedCount: 0)
     @Published private(set) var notice: PanelNotice? {
         didSet {
@@ -28,9 +32,13 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     let previewStore = ConversationPreviewStore()
     let knowledgeStore = KnowledgeReviewStore()
     let knowledgeLibrary: KnowledgeLibraryModel
+    let gitWorkspaceBrowser: GitWorkspaceBrowserModel
     var visibleTasks: [CodexTask] { taskVisibility.visibleTasks(in: store.tasks) }
     var visibleGroups: [GitWorkspaceGroup] {
-        GitWorkspaceTree.groups(rows: taskVisibility.visibleRows(in: store.sortedTasks), labels: workspaceLabels)
+        GitWorkspaceTree.groups(
+            rows: taskVisibility.visibleRows(in: store.sortedTasks), labels: workspaceLabels,
+            creationRecords: workspaceCreationRecords
+        )
     }
     var visibleRows: [VSCodeTaskRow] { visibleGroups.flatMap { $0.rows.map(\.row) } }
     var visibleRowHeights: [CGFloat] {
@@ -49,7 +57,9 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         switch runtimeConnectionState {
         case .idle: return "等待 VS Code 中的 Codex 任务"
         case .connecting: return "正在连接 Codex…"
+        case .synchronizing: return "正在同步 Codex 会话…"
         case .connected: return "已连接 Codex"
+        case .unavailable: return "有会话尚未同步，请刷新重试"
         case .retrying(let attempt): return "正在重新连接 Codex（第 \(attempt) 次）…"
         case .exhausted: return "连接暂不可用，请刷新重试"
         case .incompatible: return "Codex 扩展暂不兼容实时连接"
@@ -65,9 +75,20 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     private let inboxMonitor: CodexInboxMonitor
     private let windowMonitor: VSCodeWindowMonitor
     private let runtimeMonitor = CodexRuntimeStatusMonitor()
-    private let workspaceMonitor = GitWorkspaceMonitor()
+    private let sessionCreationMonitor = CodexSessionCreationMonitor()
+    private var sessionMonitorStartTask: Task<Void, Never>?
+    private var pendingSessionCandidates: Set<CodexSessionCandidate> = []
+    private var needsSessionRescan = false
+    private var sessionRescanGeneration: UInt64 = 0
+    private lazy var sessionDiscovery = SessionDiscoveryCoordinator { [weak self] in
+        await self?.recoverSessionCandidates()
+    }
+    private let workspaceMonitor = GitWorkspaceMonitor(includeStandalone: true)
+    private var workspaceBrowserWindow: GitWorkspaceBrowserWindowController?
+    private var focusedWorkspaceTask: Task<Void, Never>?
     private lazy var previewCoordinator = ConversationPreviewCoordinator(store: previewStore, monitor: runtimeMonitor)
     private lazy var runtimeEvents = makeRuntimeEventCoordinator()
+    private lazy var runtimeTaskHandoffs = makeRuntimeTaskHandoffs()
     private var knowledgeWorker = KnowledgeReviewWorker()
     private var knowledgeSynchronizationTask: Task<Void, Never>?
     private var knowledgeSessions: [String: String] = [:]
@@ -77,6 +98,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     private var inboxNeedsProcessing = false
     private var inboxProcessingTask: Task<Void, Never>?
     private var inboxProcessingID: UUID?
+    private var oldTaskCleanupScheduleTask: Task<Void, Never>?
     private var oldTaskCleanupTask: Task<Void, Never>?
     private var oldTaskCleanupID: UUID?
     private var startupRecoveryTask: Task<Void, Never>?
@@ -104,7 +126,12 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         inboxMonitor: CodexInboxMonitor,
         windowMonitor: VSCodeWindowMonitor = VSCodeWindowMonitor(),
         threadSnapshotLoader: (any CodexThreadSnapshotLoading)? = nil,
-        knowledgeLibrary: KnowledgeLibraryModel = KnowledgeLibraryModel()
+        knowledgeLibrary: KnowledgeLibraryModel = KnowledgeLibraryModel(),
+        gitWorkspaceBrowser: GitWorkspaceBrowserModel = GitWorkspaceBrowserModel(
+            service: GitWorkspaceService(
+                storageURL: CodexBarPaths.defaultRootDirectory.appendingPathComponent("workspaces.json")
+            )
+        )
     ) {
         self.store = store
         self.activityStore = activityStore
@@ -114,6 +141,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         self.windowMonitor = windowMonitor
         self.threadSnapshotLoader = threadSnapshotLoader
         self.knowledgeLibrary = knowledgeLibrary
+        self.gitWorkspaceBrowser = gitWorkspaceBrowser
         super.init()
     }
 
@@ -121,6 +149,13 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         stop()
         isStarted = true
         knowledgeLibrary.start()
+        gitWorkspaceBrowser.onSnapshotChange = { [weak self] snapshot in
+            guard let self, isStarted else { return }
+            workspaceCreationRecords = snapshot.records
+            workspaceMonitor.refresh()
+            notifyPresentationChanged(animated: true)
+        }
+        gitWorkspaceBrowser.start()
         workspaceMonitor.start(cwds: visibleGitRoots) { [weak self] labels in
             guard let self, isStarted else { return }
             workspaceLabels = labels
@@ -130,6 +165,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
             showNotice(message: "任务状态文件损坏，已隔离并重建。")
         }
         startInboxMonitoring()
+        runtimeTaskHandoffs?.start()
         runtimeEvents.start()
         runtimeMonitor.onConnectionStateChange = { [weak self] state in
             guard let self, isStarted else { return }
@@ -173,19 +209,59 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         windowMonitor.start { [weak self] in
             self?.handleWindowEnvironmentChange()
         }
+        sessionDiscovery.start()
+        sessionMonitorStartTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await sessionCreationMonitor.start { [weak self] candidates in
+                    guard let self, isStarted else { return }
+                    if candidates.isEmpty {
+                        needsSessionRescan = true
+                        sessionRescanGeneration &+= 1
+                    }
+                    pendingSessionCandidates.formUnion(candidates)
+                    if pendingSessionCandidates.count > 512 {
+                        let retained = Set(pendingSessionCandidates.sorted { $0.sessionID > $1.sessionID }.prefix(512))
+                        let dropped = pendingSessionCandidates.subtracting(retained)
+                        acknowledgeSessionCandidates(Set(dropped.map(\.sessionID)))
+                    }
+                    sessionDiscovery.request()
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard isStarted, !Task.isCancelled else { return }
+                showNotice(message: "无法自动发现新的 Codex 会话，请从菜单刷新任务。")
+            }
+            guard isStarted, !Task.isCancelled else { return }
+            recoverStartupTasks(reportCompletion: false)
+        }
+        followFocusedWorkspace()
+        startOldTaskCleanupSchedule()
         processInbox()
-        recoverStartupTasks(reportCompletion: false)
     }
 
     func stop() {
         isStarted = false
+        sessionMonitorStartTask?.cancel()
+        sessionMonitorStartTask = nil
+        sessionCreationMonitor.stop()
+        sessionDiscovery.stop()
+        pendingSessionCandidates.removeAll()
+        needsSessionRescan = false
         knowledgeLibrary.stop()
+        focusedWorkspaceTask?.cancel()
+        focusedWorkspaceTask = nil
+        gitWorkspaceBrowser.stop()
+        gitWorkspaceBrowser.onSnapshotChange = nil
+        workspaceCreationRecords = []
         endConversationPreview()
         runtimeMonitor.onConnectionStateChange = nil
         runtimeMonitor.stop()
         workspaceMonitor.stop()
         workspaceLabels = [:]
         runtimeConnectionState = .idle
+        runtimeTaskHandoffs?.stop()
         runtimeEvents.stop()
         knowledgeSynchronizationTask?.cancel()
         knowledgeSynchronizationTask = nil
@@ -208,6 +284,8 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         inboxProcessingTask?.cancel()
         inboxProcessingTask = nil
         inboxProcessingID = nil
+        oldTaskCleanupScheduleTask?.cancel()
+        oldTaskCleanupScheduleTask = nil
         oldTaskCleanupTask?.cancel()
         oldTaskCleanupTask = nil
         oldTaskCleanupID = nil
@@ -240,6 +318,12 @@ final class CodexBarAppModel: NSObject, ObservableObject {
             )
             guard !Task.isCancelled else {
                 return
+            }
+            switch result {
+            case .activated, .activatedWithUnminimizedWindows:
+                if !row.isMultiRoot { gitWorkspaceBrowser.followDirectory(row.rootPath) }
+            default:
+                break
             }
             await handleVSCodeActivationResult(result, for: task)
         }
@@ -392,15 +476,38 @@ final class CodexBarAppModel: NSObject, ObservableObject {
             return
         }
 
-        guard oldTaskCleanupTask == nil else {
+        beginOldTaskCleanup(automatic: false)
+    }
+
+    private func startOldTaskCleanupSchedule() {
+        oldTaskCleanupScheduleTask?.cancel()
+        oldTaskCleanupScheduleTask = Task { [weak self] in
+            guard let self else { return }
+            self.beginOldTaskCleanup(automatic: true)
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: Self.oldTaskCleanupInterval)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                self.beginOldTaskCleanup(automatic: true)
+            }
+        }
+    }
+
+    private func beginOldTaskCleanup(automatic: Bool) {
+        guard isStarted, oldTaskCleanupTask == nil,
+              !automatic || AccessibilityAuthorization.isTrusted else {
             return
         }
+
         let cleanupID = UUID()
         oldTaskCleanupID = cleanupID
         let activator = self.activator
         oldTaskCleanupTask = Task { [weak self] in
             let windowSnapshot = await activator.discoverWindowSnapshotAsync()
-            guard let self, oldTaskCleanupID == cleanupID else {
+            guard let self, isStarted, oldTaskCleanupID == cleanupID else {
                 return
             }
             defer {
@@ -413,16 +520,19 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 return
             }
             guard let windows = windowSnapshot else {
-                showNotice(message: "无法读取 VS Code 窗口，未清理任何任务。")
+                if !automatic {
+                    showNotice(message: "无法读取 VS Code 窗口，未清理任何任务。")
+                }
                 return
             }
 
-            let cutoff = Date().addingTimeInterval(-7 * 24 * 60 * 60)
+            let cutoff = Date().addingTimeInterval(-Self.oldTaskCleanupAge)
             let taskSnapshot = store.tasks
             let staleCandidates = await oldTaskCleanupWorker.staleTasks(
                 tasks: taskSnapshot,
                 windows: windows,
-                cutoff: cutoff
+                cutoff: cutoff,
+                finishedOnly: automatic
             )
             guard !Task.isCancelled, oldTaskCleanupID == cleanupID else {
                 return
@@ -435,17 +545,27 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 guard !Task.isCancelled, oldTaskCleanupID == cleanupID else {
                     return
                 }
-                showNotice(message: removedCount == 0
-                    ? "没有可清理的旧任务。"
-                    : "已清理 \(removedCount) 条不可匹配的旧任务。")
+                if automatic {
+                    if removedCount > 0 {
+                        notifyPresentationChanged(animated: true)
+                    }
+                } else {
+                    showNotice(message: removedCount == 0
+                        ? "没有可清理的旧任务。"
+                        : "已清理 \(removedCount) 条不可匹配的旧任务。")
+                }
             } catch {
                 guard !Task.isCancelled, oldTaskCleanupID == cleanupID else {
                     return
                 }
-                showNotice(message: "无法保存旧任务清理操作。")
+                if !automatic {
+                    showNotice(message: "无法保存旧任务清理操作。")
+                }
                 return
             }
-            notifyPresentationChanged(animated: true)
+            if !automatic {
+                notifyPresentationChanged(animated: true)
+            }
         }
     }
 
@@ -461,10 +581,30 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         NSApplication.shared.terminate(nil)
     }
 
+    func openGitWorkspaces() {
+        if workspaceBrowserWindow == nil {
+            workspaceBrowserWindow = GitWorkspaceBrowserWindowController(model: gitWorkspaceBrowser)
+        }
+        let directory = gitWorkspaceBrowser.activeDirectory
+            ?? visibleRows.first(where: { !$0.isMultiRoot })?.rootPath
+        workspaceBrowserWindow?.show(directory: directory)
+    }
+
+    private func followFocusedWorkspace() {
+        focusedWorkspaceTask?.cancel()
+        focusedWorkspaceTask = Task { [weak self] in
+            guard let self else { return }
+            let workspace = await activator.focusedWorkspace()
+            guard isStarted, !Task.isCancelled, case .folder(let path) = workspace else { return }
+            gitWorkspaceBrowser.followDirectory(path)
+        }
+    }
+
     private func handleWindowEnvironmentChange() {
         guard isStarted else { return }
         runtimeMonitor.retryDiscovery()
         workspaceMonitor.refresh()
+        followFocusedWorkspace()
         windowEventGeneration &+= 1
         if startupRecoveryTask == nil,
            accessibilityRecoveryTrigger.isWaitingForGrant,
@@ -518,6 +658,36 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         let reportCompletion = pendingRefreshCompletion
         pendingRefreshCompletion = false
         recoverStartupTasks(reportCompletion: reportCompletion)
+    }
+
+    private func recoverSessionCandidates() async {
+        guard isStarted else { return }
+        if needsSessionRescan {
+            await recoverStartupTasks(reportCompletion: false)?.value
+            return
+        }
+        guard !pendingSessionCandidates.isEmpty,
+              let windows = await activator.discoverWindowSnapshotAsync(),
+              isStarted, !Task.isCancelled else { return }
+        let candidates = pendingSessionCandidates
+        let ignored = await Task.detached(priority: .utility) {
+            let matcher = VSCodeWindowMatcher()
+            return Set(candidates.compactMap { candidate -> String? in
+                if case .notFound = matcher.match(cwd: candidate.cwd, windows: windows) {
+                    return candidate.sessionID
+                }
+                return nil
+            })
+        }.value
+        guard isStarted, !Task.isCancelled else { return }
+        acknowledgeSessionCandidates(ignored)
+        guard !pendingSessionCandidates.isEmpty else { return }
+        await recoverStartupTasks(reportCompletion: false)?.value
+    }
+
+    private func acknowledgeSessionCandidates(_ sessions: Set<String>) {
+        sessionCreationMonitor.acknowledge(sessionIDs: sessions)
+        pendingSessionCandidates = pendingSessionCandidates.filter { !sessions.contains($0.sessionID) }
     }
 
     private func updateOpenWindows(
@@ -615,6 +785,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
     func beginConversationPreview(_ task: CodexTask) {
         guard isStarted else { return }
         previewCoordinator.begin(sessionID: task.sessionID, cwd: task.cwd)
+        previewCoordinator.updateRuntimeStatus(sessionID: task.sessionID, cwd: task.cwd, status: task.status)
     }
 
     func endConversationPreview() {
@@ -629,15 +800,48 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         previewCoordinator.loadHistory()
     }
 
+    private func makeRuntimeTaskHandoffs() -> RuntimeTaskHandoffCoordinator? {
+        guard let threadSnapshotLoader else { return nil }
+        let coordinator = RuntimeTaskHandoffCoordinator(
+            store: store, loader: threadSnapshotLoader,
+            windowSnapshot: { [weak self] in
+                guard let self, isStarted else { return nil }
+                return await activator.discoverWindowSnapshotAsync()
+            }
+        )
+        coordinator.onRecovered = { [weak self] in
+            guard let self, isStarted else { return }
+            synchronizeRuntimeSessions()
+            runtimeEvents.enqueue(.reconcile)
+            notifyPresentationChanged(animated: true)
+        }
+        coordinator.onFailure = { [weak self] in
+            guard let self, isStarted else { return }
+            showNotice(message: "新一轮任务状态暂未同步，请从菜单刷新重试。")
+        }
+        return coordinator
+    }
+
     private func makeRuntimeEventCoordinator() -> RuntimeEventCoordinator {
         let coordinator = RuntimeEventCoordinator()
         coordinator.onSnapshotNeeded = { [weak self] session in
             self?.runtimeMonitor.requestSnapshot(sessionID: session)
         }
-        coordinator.onUpdates = { [weak self] updates in
+        coordinator.onUpdates = { [weak self] updates, source in
             guard let self else { return }
             for update in updates where visibleTasks.contains(where: { $0.sessionID == update.sessionID }) {
                 guard let turnID = update.turnID, let cwd = update.cwd else { continue }
+                previewCoordinator.updateRuntimeStatus(
+                    sessionID: update.sessionID,
+                    cwd: cwd,
+                    status: update.status
+                )
+                if case .liveFrame = source,
+                   let current = visibleTasks.first(where: {
+                       $0.sessionID == update.sessionID && $0.cwd == cwd
+                   }) {
+                    runtimeTaskHandoffs?.receive(update, currentTask: current)
+                }
                 do {
                     let changed = try await store.applyRuntimeStatus(
                         sessionID: update.sessionID, turnID: turnID, cwd: cwd, status: update.status
@@ -773,25 +977,27 @@ final class CodexBarAppModel: NSObject, ObservableObject {
         }
     }
 
-    private func recoverStartupTasks(reportCompletion: Bool) {
-        guard isStarted else { return }
+    @discardableResult
+    private func recoverStartupTasks(reportCompletion: Bool) -> Task<Void, Never>? {
+        guard isStarted else { return nil }
         guard AccessibilityAuthorization.isTrusted else {
             accessibilityRecoveryTrigger.waitForGrant(
                 reportCompletion: reportCompletion
             )
-            return
+            return nil
         }
         accessibilityRecoveryTrigger.prepareForAuthorizedRecovery()
         dismissAccessibilityNotice()
         guard startupRecoveryTask == nil else {
             needsWindowRecovery = true
             pendingRefreshCompletion = pendingRefreshCompletion || reportCompletion
-            return
+            return startupRecoveryTask
         }
         needsWindowRecovery = false
         let priorVisibleTasks = visibleTasks
         isRecoveringOpenTasks = true
         let recoveryID = UUID()
+        let rescanGeneration = sessionRescanGeneration
         startupRecoveryID = recoveryID
         let activator = self.activator
 
@@ -881,6 +1087,8 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 }
                 synchronizeRuntimeSessions()
                 runtimeEvents.enqueue(.reconcile)
+                acknowledgeSessionCandidates(Set(snapshots.map(\.sessionID)))
+                if sessionRescanGeneration == rescanGeneration { needsSessionRescan = false }
                 let currentTasks = visibleTasks
                 let changedCount = Set(
                     priorVisibleTasks.filter { !currentTasks.contains($0) }.map(\.id)
@@ -907,6 +1115,7 @@ final class CodexBarAppModel: NSObject, ObservableObject {
                 }
             }
         }
+        return startupRecoveryTask
     }
 
     private func showRefreshFeedback(
@@ -981,7 +1190,8 @@ private actor OldTaskCleanupWorker {
     func staleTasks(
         tasks: [CodexTask],
         windows: [VSCodeWindowDescriptor],
-        cutoff: Date
+        cutoff: Date,
+        finishedOnly: Bool = false
     ) -> [CodexTask] {
         var staleTasks: [CodexTask] = []
         for task in tasks {
@@ -991,7 +1201,10 @@ private actor OldTaskCleanupWorker {
             guard task.updatedAt < cutoff else {
                 continue
             }
-            if case .matched = matcher.match(cwd: task.cwd, windows: windows) {
+            guard !finishedOnly || task.status == .ready else {
+                continue
+            }
+            guard case .notFound = matcher.match(cwd: task.cwd, windows: windows) else {
                 continue
             }
             staleTasks.append(task)

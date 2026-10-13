@@ -91,6 +91,44 @@ public final class AccessibilityWindowActivator {
         return snapshot
     }
 
+    /// Returns only an unambiguous folder in the currently focused VS Code window.
+    /// Multi-root workspaces cannot identify the active repository and return nil.
+    public func focusedWorkspace() async -> VSCodeWorkspaceIdentity? {
+        guard !Task.isCancelled, AccessibilityAuthorization.isTrusted,
+              let application = NSWorkspace.shared.frontmostApplication,
+              application.bundleIdentifier == Self.visualStudioCodeBundleIdentifier,
+              !application.isTerminated, let launchDate = application.launchDate
+        else { return nil }
+        let identity = VSCodeApplicationIdentity(
+            processIdentifier: application.processIdentifier,
+            bundleIdentifier: Self.visualStudioCodeBundleIdentifier,
+            launchDate: launchDate
+        )
+        let messagingTimeout = Self.messagingTimeout
+        let codeSignatureValidator = codeSignatureValidator
+        let readTask = Task.detached(priority: .utility) {
+            VSCodeWindowSnapshotReader.focusedWorkspace(
+                applicationIdentity: identity,
+                using: AccessibilityWindowDescriptorReader(
+                    messagingTimeout: messagingTimeout,
+                    codeSignatureValidator: codeSignatureValidator
+                )
+            )
+        }
+        let workspace = await withTaskCancellationHandler {
+            await readTask.value
+        } onCancel: {
+            readTask.cancel()
+        }
+        guard !Task.isCancelled, AccessibilityAuthorization.isTrusted,
+              let current = NSWorkspace.shared.frontmostApplication,
+              current.processIdentifier == identity.processIdentifier,
+              current.bundleIdentifier == identity.bundleIdentifier,
+              current.launchDate == identity.launchDate, !current.isTerminated
+        else { return nil }
+        return workspace
+    }
+
     /// Raises an existing VS Code Stable window matching `cwd`, or an explicit
     /// workspace when no task cwd exists, preserving other
     /// windows unless explicitly asked to minimize them for project focus.
@@ -493,7 +531,39 @@ package protocol VSCodeWindowSnapshotReading {
     func title(of window: Window) -> String?
 }
 
+package protocol VSCodeFocusedWindowReading: VSCodeWindowSnapshotReading {
+    func isFrontmostApplication(_ identity: VSCodeApplicationIdentity) -> Bool
+    func focusedWindow(for identity: VSCodeApplicationIdentity) -> Window?
+    func sameWindow(_ first: Window, _ second: Window) -> Bool
+}
+
 package enum VSCodeWindowSnapshotReader {
+    package static func focusedWorkspace<Reader: VSCodeFocusedWindowReading>(
+        applicationIdentity: VSCodeApplicationIdentity,
+        using reader: Reader,
+        storageURL: URL? = nil
+    ) -> VSCodeWorkspaceIdentity? {
+        guard reader.isTrusted, !reader.isCancelled,
+              reader.isCurrentApplication(applicationIdentity),
+              reader.isFrontmostApplication(applicationIdentity),
+              let window = reader.focusedWindow(for: applicationIdentity),
+              reader.role(of: window) == kAXWindowRole,
+              reader.subrole(of: window) == kAXStandardWindowSubrole,
+              let title = reader.title(of: window)
+        else { return nil }
+        let descriptor = VSCodeWindowDescriptor(id: Int(applicationIdentity.processIdentifier) << 32, title: title)
+        let enriched = storageURL.map { VSCodeWorkspaceMetadata.enrich([descriptor], storageURL: $0) }
+            ?? VSCodeWorkspaceMetadata.enrich([descriptor])
+        guard let workspace = enriched.first?.workspace, case .folder = workspace,
+              reader.isTrusted, !reader.isCancelled,
+              reader.isCurrentApplication(applicationIdentity),
+              reader.isFrontmostApplication(applicationIdentity),
+              let current = reader.focusedWindow(for: applicationIdentity),
+              reader.sameWindow(window, current), reader.title(of: current) == title
+        else { return nil }
+        return workspace
+    }
+
     package static func enumerate<Reader: VSCodeWindowSnapshotReading>(
         applicationIdentities: [VSCodeApplicationIdentity],
         using reader: Reader
@@ -544,7 +614,7 @@ package enum VSCodeWindowSnapshotReader {
     }
 }
 
-private struct AccessibilityWindowDescriptorReader: VSCodeWindowSnapshotReading {
+private struct AccessibilityWindowDescriptorReader: VSCodeFocusedWindowReading {
     let messagingTimeout: Float
     let codeSignatureValidator: @Sendable (pid_t) -> Bool
 
@@ -555,6 +625,24 @@ private struct AccessibilityWindowDescriptorReader: VSCodeWindowSnapshotReading 
             task?.isCancelled ?? false
         }
     }
+
+    func isFrontmostApplication(_ identity: VSCodeApplicationIdentity) -> Bool {
+        let application = AXUIElementCreateApplication(identity.processIdentifier)
+        guard AXUIElementSetMessagingTimeout(application, messagingTimeout) == .success else { return false }
+        let frontmost: Bool? = copyAttribute(kAXFrontmostAttribute as CFString, from: application)
+        return frontmost == true
+    }
+
+    func focusedWindow(for identity: VSCodeApplicationIdentity) -> AXUIElement? {
+        let application = AXUIElementCreateApplication(identity.processIdentifier)
+        guard AXUIElementSetMessagingTimeout(application, messagingTimeout) == .success,
+              let window: AXUIElement = copyAttribute(kAXFocusedWindowAttribute as CFString, from: application),
+              AXUIElementSetMessagingTimeout(window, messagingTimeout) == .success
+        else { return nil }
+        return window
+    }
+
+    func sameWindow(_ first: AXUIElement, _ second: AXUIElement) -> Bool { CFEqual(first, second) }
 
     func windows(for identity: VSCodeApplicationIdentity) -> [AXUIElement]? {
         let applicationElement = AXUIElementCreateApplication(identity.processIdentifier)

@@ -259,6 +259,7 @@ private final class VSCodeObservationWorker: @unchecked Sendable {
 
 private final class AXWindowObservationBackend: VSCodeWindowObservationBackend {
     private let onChange: () -> Void
+    private let applicationNotifications = [kAXWindowCreatedNotification, kAXFocusedWindowChangedNotification]
     private let windowNotifications = [kAXUIElementDestroyedNotification, kAXTitleChangedNotification]
 
     init(onChange: @escaping () -> Void) { self.onChange = onChange }
@@ -289,8 +290,13 @@ private final class AXWindowObservationBackend: VSCodeWindowObservationBackend {
         AXUIElementSetMessagingTimeout(application, 1)
         let observation = AXApplicationObservation(observer: observer, application: application,
                                                    onChange: onChange)
-        guard register(kAXWindowCreatedNotification, element: application, observation: observation) else {
-            return nil
+        for notification in applicationNotifications {
+            guard register(notification, element: application, observation: observation) else {
+                for registered in applicationNotifications {
+                    AXObserverRemoveNotification(observer, application, registered as CFString)
+                }
+                return nil
+            }
         }
         CFRunLoopAddSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(observer), .defaultMode)
         return observation
@@ -338,7 +344,9 @@ private final class AXWindowObservationBackend: VSCodeWindowObservationBackend {
 
     func removeObservation(_ observation: AXApplicationObservation) {
         CFRunLoopRemoveSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(observation.observer), .defaultMode)
-        AXObserverRemoveNotification(observation.observer, observation.application, kAXWindowCreatedNotification as CFString)
+        for notification in applicationNotifications {
+            AXObserverRemoveNotification(observation.observer, observation.application, notification as CFString)
+        }
         for window in observation.windows {
             for notification in windowNotifications {
                 AXObserverRemoveNotification(observation.observer, window, notification as CFString)

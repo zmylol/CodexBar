@@ -23,6 +23,18 @@ core_objects=("$build_dir"/CodexBarCore.build/*.o)
 "$check_dir/runtime-events-check"
 
 /usr/bin/swiftc "${swift_flags[@]}" "${core_objects[@]}" \
+    Sources/CodexBarApp/RuntimeTaskHandoffCoordinator.swift \
+    Tests/CodexBarAppTests/RuntimeTaskHandoffCoordinatorChecks.swift \
+    -o "$check_dir/runtime-handoff-check"
+"$check_dir/runtime-handoff-check"
+
+/usr/bin/swiftc "${swift_flags[@]}" "${core_objects[@]}" \
+    Sources/CodexBarApp/SessionDiscoveryCoordinator.swift \
+    Tests/CodexBarAppTests/SessionDiscoveryCoordinatorChecks.swift \
+    -o "$check_dir/session-discovery-check"
+"$check_dir/session-discovery-check"
+
+/usr/bin/swiftc "${swift_flags[@]}" "${core_objects[@]}" \
     Sources/CodexBarApp/ConversationPreviewStore.swift \
     Tests/CodexBarAppTests/ConversationPreviewStoreChecks.swift \
     -o "$check_dir/store-check"
@@ -47,5 +59,17 @@ core_objects=("$build_dir"/CodexBarCore.build/*.o)
     Tests/CodexBarAppTests/KnowledgeLibraryModelChecks.swift \
     -o "$check_dir/knowledge-library-model-check"
 "$check_dir/knowledge-library-model-check"
+
+/usr/bin/swiftc "${swift_flags[@]}" "${core_objects[@]}" \
+    Sources/CodexBarApp/GitWorkspaceBrowserModel.swift \
+    Tests/CodexBarAppTests/GitWorkspaceBrowserModelChecks.swift \
+    -o "$check_dir/git-workspace-browser-check"
+"$check_dir/git-workspace-browser-check"
+
+/usr/bin/swiftc "${swift_flags[@]}" "${core_objects[@]}" \
+    Sources/CodexBarApp/GitWorkspaceBrowserModel.swift \
+    Tests/CodexBarAppTests/GitWorkspaceBrowserIntegrationChecks.swift \
+    -o "$check_dir/git-workspace-browser-integration-check"
+"$check_dir/git-workspace-browser-integration-check"
 
 print "PASS app model and store checks"

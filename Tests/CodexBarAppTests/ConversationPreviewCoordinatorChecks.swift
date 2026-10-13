@@ -12,7 +12,8 @@ struct ConversationPreviewCoordinatorCheck {
         try await recoversFromSnapshotTimeout()
         try await retainsBodyOnDisconnect()
         try await preservesProtocolFailureUntilSupportedSnapshot()
-        print("PASS preview selection/worker isolation, late history, history revision synchronization, snapshot timeout recovery, retained body, incompatible protocol and recovery")
+        try await keepsOneRunningRefreshAfterCancellation()
+        print("PASS preview selection/worker isolation, late history, history revision synchronization, snapshot timeout recovery, retained body, incompatible protocol, recovery and single running refresh")
     }
 
     private static func rejectsFramesFromPreviousSelection() async throws {
@@ -141,6 +142,26 @@ struct ConversationPreviewCoordinatorCheck {
         monitor.reasons.removeValue(forKey: "a")
         await coordinator.consume(try snapshot(session: "a"), sessionID: "a", generation: coordinator.generation)
         precondition(store.state == .ready && store.message == nil, "Supported snapshot failed to restore preview")
+        coordinator.end()
+    }
+
+    private static func keepsOneRunningRefreshAfterCancellation() async throws {
+        let store = ConversationPreviewStore()
+        let monitor = PreviewMonitorFixture()
+        let coordinator = ConversationPreviewCoordinator(store: store, monitor: monitor)
+        coordinator.begin(sessionID: "a", cwd: "/tmp/a")
+        await coordinator.consume(try snapshot(session: "a"), sessionID: "a", generation: coordinator.generation)
+        coordinator.updateRuntimeStatus(sessionID: "a", status: .running)
+        try await Task.sleep(for: .milliseconds(20))
+        coordinator.updateRuntimeStatus(sessionID: "a", status: .ready)
+        coordinator.updateRuntimeStatus(sessionID: "a", status: .running)
+        // Let the cancelled loop unwind after its replacement has been installed.
+        try await Task.sleep(for: .milliseconds(20))
+        coordinator.updateRuntimeStatus(sessionID: "a", status: .running)
+        let requests = monitor.snapshotRequests.count
+        try await Task.sleep(for: .seconds(3))
+        precondition(monitor.snapshotRequests.count == requests + 1,
+                     "Cancelled refresh cleared its replacement and allowed duplicate snapshot loops")
         coordinator.end()
     }
 

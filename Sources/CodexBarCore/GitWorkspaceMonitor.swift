@@ -5,6 +5,7 @@ import Foundation
 @MainActor
 public final class GitWorkspaceMonitor {
     private let worker = GitWorkspaceIdentityWorker()
+    private let includeStandalone: Bool
     private var cwds: Set<String> = []
     private var labels: [String: GitWorkspaceLabel] = [:]
     private var onChange: (@MainActor @Sendable ([String: GitWorkspaceLabel]) -> Void)?
@@ -13,7 +14,9 @@ public final class GitWorkspaceMonitor {
     private var eventTask: Task<Void, Never>?
     private var watches: [String: GitMetadataWatch] = [:]
 
-    public init() {}
+    public init(includeStandalone: Bool = false) {
+        self.includeStandalone = includeStandalone
+    }
 
     public func start(
         cwds: Set<String>,
@@ -53,7 +56,7 @@ public final class GitWorkspaceMonitor {
             let identities = await worker.read(directories)
             guard let self, !Task.isCancelled, refreshID == id else { return }
             updateWatches(identities.values.flatMap { [$0.headPath] + $0.metadataWatchPaths })
-            let updated = GitWorkspaceIdentityReader.labels(identities: identities)
+            let updated = GitWorkspaceIdentityReader.labels(identities: identities, includeStandalone: includeStandalone)
             if updated != labels {
                 labels = updated
                 onChange?(updated)

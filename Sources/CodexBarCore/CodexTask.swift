@@ -17,6 +17,10 @@ public struct CodexTask: Identifiable, Codable, Equatable, Sendable {
     public let startedAt: Date
     public var updatedAt: Date
     public var isUnread: Bool
+    /// Most recent confirmed Hook Stop; a later same-turn prompt may start after it.
+    public var stoppedAt: Date?
+
+    var hasCurrentHookStop: Bool { stoppedAt.map { $0 >= startedAt } ?? false }
 
     public init(
         id: String,
@@ -28,7 +32,8 @@ public struct CodexTask: Identifiable, Codable, Equatable, Sendable {
         status: CodexTaskStatus,
         startedAt: Date,
         updatedAt: Date,
-        isUnread: Bool
+        isUnread: Bool,
+        stoppedAt: Date? = nil
     ) {
         self.id = id
         self.sessionID = sessionID
@@ -40,5 +45,6 @@ public struct CodexTask: Identifiable, Codable, Equatable, Sendable {
         self.startedAt = startedAt
         self.updatedAt = updatedAt
         self.isUnread = isUnread
+        self.stoppedAt = stoppedAt
     }
 }
