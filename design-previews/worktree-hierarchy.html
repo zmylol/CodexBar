@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>CodexBar · Worktree 创建层级</title>
+  <link rel="stylesheet" href="./worktree-hierarchy.css">
+</head>
+<body>
+  <a class="skip-link" href="#directory-heading">跳到当前工作目录</a>
+  <div class="workspace">
+    <header class="titlebar">
+      <div class="window-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+      <span class="app-title">CodexBar <span class="title-divider">/</span> 工作目录</span>
+      <span class="prototype-badge"><span aria-hidden="true"></span>交互原型</span>
+    </header>
+    <div class="simulation-notice"><span aria-hidden="true">◇</span><span>本地模拟：操作仅保存在此浏览器，不会修改 Git 或磁盘上的工作目录。</span></div>
+    <div id="storage-error" class="storage-error" role="alert" hidden></div>
+    <div class="workspace-body">
+      <aside class="sidebar" aria-label="项目与 worktree">
+        <div class="sidebar-heading"><h2>工作空间</h2><span id="node-count" class="count"></span></div>
+        <nav aria-label="工作目录导航"><ul id="directory-tree" class="directory-tree"></ul></nav>
+        <div class="sidebar-footer"><p>层级记录创建来源<br>分支随工作目录切换</p><button id="reset-demo" class="text-button" type="button">重置演示</button></div>
+      </aside>
+      <main id="main-content">
+        <div class="content-topline"><nav aria-label="创建来源路径"><ol id="breadcrumbs" class="breadcrumbs"></ol></nav><span class="local-label"><span aria-hidden="true"></span>本地工作空间</span></div>
+        <section class="directory-overview" aria-labelledby="directory-heading">
+          <div class="folder-icon" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M4 9a3 3 0 0 1 3-3h7l3 3h8a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V9Z" fill="currentColor" opacity=".13"/><path d="M4 12V9a3 3 0 0 1 3-3h7l3 3h8a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V12Zm0 0h24" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></div>
+          <div class="directory-title"><div class="eyebrow">当前活动工作目录</div><h1 id="directory-heading" tabindex="-1"></h1><p id="active-path" class="directory-path"></p></div>
+          <span id="directory-kind" class="kind-badge"></span>
+        </section>
+        <section class="branch-card" aria-labelledby="branch-heading">
+          <div class="branch-card-heading"><div><h2 id="branch-heading">当前分支</h2><p>跟随当前活动工作目录</p></div><svg class="branch-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="7" cy="5" r="2.5"/><circle cx="7" cy="19" r="2.5"/><circle cx="17" cy="5" r="2.5"/><path d="M7 7.5v9M17 7.5v1a5 5 0 0 1-5 5H7"/></svg></div>
+          <div class="branch-control"><label for="branch-select" class="sr-only">切换当前工作目录的分支</label><span class="branch-symbol" aria-hidden="true">⑂</span><select id="branch-select"></select><span class="select-chevron" aria-hidden="true">⌄</span></div>
+          <p class="field-note">切换后，侧栏分支标签同步更新，目录位置与子节点保持不变。</p>
+        </section>
+        <section class="lineage-section" aria-labelledby="lineage-heading">
+          <div class="section-heading"><div><h2 id="lineage-heading">创建关系</h2><p>节点身份绑定工作目录，父子关系独立于分支。</p></div><button id="create-worktree" class="primary-button" type="button"><span aria-hidden="true">＋</span>新建 worktree</button></div>
+          <dl class="directory-facts"><div><dt>所属项目</dt><dd id="project-name"></dd></div><div><dt>创建来源</dt><dd id="parent-name"></dd></div><div><dt>直接子节点</dt><dd id="child-count"></dd></div></dl>
+          <div id="children-panel" class="children-panel"></div>
+        </section>
+        <div class="session-status"><span class="status-dot" aria-hidden="true"></span><p id="action-status" role="status" aria-live="polite">选择侧栏目录，体验分支切换与多层 worktree 创建。</p></div>
+      </main>
+    </div>
+  </div>
+  <dialog id="create-dialog" aria-labelledby="create-title" aria-describedby="creation-source-name creation-source-path">
+    <form id="create-form">
+      <div class="dialog-heading"><div><span class="eyebrow">WORKTREE</span><h2 id="create-title">创建子 worktree</h2></div><button class="icon-button" type="button" data-close="create-dialog" aria-label="关闭创建窗口">×</button></div>
+      <p class="dialog-description">新节点会挂在下面的来源目录下。创建后自动切换到新目录。</p>
+      <div class="source-summary"><span>创建来源</span><strong id="creation-source-name"></strong><code id="creation-source-path"></code></div>
+      <label for="worktree-name">显示名称</label><input id="worktree-name" name="name" autocomplete="off" required maxlength="120" placeholder="例如 worktree E">
+      <label for="worktree-directory">工作目录</label><input id="worktree-directory" name="directory" autocomplete="off" required spellcheck="false" placeholder="/projects/codexbar-worktrees/e"><p class="field-note">使用绝对路径。创建来源由上方目录决定，与路径的层级无关。</p>
+      <label for="worktree-branch">分支名</label><input id="worktree-branch" name="branch" autocomplete="off" required spellcheck="false" maxlength="200" placeholder="例如 feature/e">
+      <p id="creation-error" class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button class="secondary-button" type="button" data-close="create-dialog">取消</button><button class="primary-button" type="submit">创建 worktree</button></div>
+    </form>
+  </dialog>
+  <dialog id="reset-dialog" class="reset-dialog" aria-labelledby="reset-title">
+    <h2 id="reset-title">重置演示？</h2><p>这会清除本浏览器保存的演示改动，恢复 A、B、C、D 的初始结构。磁盘目录与 Git 不受影响。</p>
+    <div class="dialog-actions"><button class="secondary-button" type="button" data-close="reset-dialog" autofocus>取消</button><button id="confirm-reset" class="primary-button" type="button">重置演示</button></div>
+  </dialog>
+  <script type="module" src="./worktree-hierarchy-ui.mjs"></script>
+</body>
+</html>
