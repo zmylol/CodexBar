@@ -7,3 +7,10 @@ DerivedData/
 *.profraw
 *.xcuserstate
 .DS_Store
+
+# Local editor state, automation snapshots, and generated review artifacts.
+/.mini/
+/.playwright-mcp/
+/.vscode/
+/output/
+/work/
