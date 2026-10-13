@@ -8,6 +8,8 @@
     <string>CodexBar</string>
     <key>CFBundleExecutable</key>
     <string>CodexBar</string>
+    <key>CFBundleIconFile</key>
+    <string>CodexBar.icns</string>
     <key>CFBundleIdentifier</key>
     <string>com.codexbar.CodexBar</string>
     <key>CFBundleInfoDictionaryVersion</key>
