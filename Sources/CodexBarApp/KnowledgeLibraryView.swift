@@ -348,9 +348,9 @@ struct KnowledgeLibraryView: View {
         .accessibilityValue(model.articleRange == .lastSevenDays
                             ? [collectionDateLabel(for: article), article.summary].compactMap { $0 }.joined(separator: "，")
                             : article.summary ?? "")
-        .accessibilityHint("在 Obsidian 打开文章")
+        .accessibilityHint("用默认浏览器打开原文网站")
         .accessibilityIdentifier("knowledge-note-\(article.id)")
-        .help(article.path)
+        .help(article.sourceURL.map { "用默认浏览器打开原文：\($0.absoluteString)" } ?? "这篇文章没有有效的原文链接")
     }
 
     private func activationShortcut(for id: String) -> KeyboardShortcut? {

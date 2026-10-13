@@ -5,6 +5,7 @@ public struct KnowledgeArticle: Identifiable, Equatable, Sendable {
     public let title: String
     public let collectedAt: Date
     public let summary: String?
+    public let sourceURL: URL?
     public var id: String { path }
 
     public static var collectionCalendar: Calendar {
@@ -13,11 +14,12 @@ public struct KnowledgeArticle: Identifiable, Equatable, Sendable {
         return calendar
     }
 
-    public init(path: String, title: String, collectedAt: Date, summary: String? = nil) {
+    public init(path: String, title: String, collectedAt: Date, summary: String? = nil, sourceURL: URL? = nil) {
         self.path = path
         self.title = title
         self.collectedAt = collectedAt
         self.summary = summary
+        self.sourceURL = sourceURL.flatMap { Self.webURL($0.absoluteString) }
     }
 
     /// Reads the automation's article metadata; filesystem and publication dates are unrelated to collection.
@@ -32,7 +34,7 @@ public struct KnowledgeArticle: Identifiable, Equatable, Sendable {
         for line in lines[1..<end] {
             guard line.first?.isWhitespace == false, let colon = line.firstIndex(of: ":") else { continue }
             let key = line[..<colon].trimmingCharacters(in: .whitespaces)
-            guard ["type", "collected", "title"].contains(key) else { continue }
+            guard ["type", "collected", "title", "source", "original_url"].contains(key) else { continue }
             guard fields[key] == nil else { return nil }
             fields[key] = Self.scalar(String(line[line.index(after: colon)...]))
         }
@@ -43,7 +45,55 @@ public struct KnowledgeArticle: Identifiable, Equatable, Sendable {
         let filename = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         self.init(path: path, title: Self.boundedText(heading ?? metadataTitle ?? filename, maximumBytes: 1_024),
                   collectedAt: date,
-                  summary: Self.summary(in: lines[(end + 1)...]).map { Self.boundedText($0, maximumBytes: 4 * 1_024) })
+                  summary: Self.summary(in: lines[(end + 1)...]).map { Self.boundedText($0, maximumBytes: 4 * 1_024) },
+                  sourceURL: fields["original_url"].flatMap(Self.webURL)
+                      ?? Self.originalURL(in: lines[(end + 1)...])
+                      ?? fields["source"].flatMap(Self.webURL))
+    }
+
+    private static func webURL(_ value: String) -> URL? {
+        guard value.utf8.count <= 8 * 1_024,
+              value.rangeOfCharacter(from: .whitespacesAndNewlines.union(.controlCharacters)) == nil,
+              let url = URL(string: value), let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme), let host = url.host, !host.isEmpty else { return nil }
+        return url
+    }
+
+    /// Only explicit original-source sections can supply a missing metadata link.
+    private static func originalURL(in lines: ArraySlice<String>) -> URL? {
+        guard let markdown = try? AttributedString(markdown: lines.joined(separator: "\n")) else { return nil }
+        var headings: [Int: String] = [:]
+        for run in markdown.runs {
+            guard let components = run.presentationIntent?.components, components.count == 1,
+                  let component = components.first, case .header = component.kind else { continue }
+            headings[component.identity, default: ""] += String(markdown[run.range].characters)
+        }
+        var sectionLevel: Int?
+        var firstURL: URL?
+        for run in markdown.runs {
+            let components = run.presentationIntent?.components ?? []
+            if components.count == 1, let component = components.first, case .header(let level) = component.kind {
+                let heading = headings[component.identity]?.trimmingCharacters(in: .whitespaces) ?? ""
+                if ["原文", "原文链接"].contains(heading) {
+                    sectionLevel = level
+                } else if let sectionLevel, level <= sectionLevel {
+                    break
+                }
+                continue
+            }
+            guard sectionLevel != nil, run.imageURL == nil,
+                  !components.contains(where: {
+                      switch $0.kind {
+                      case .codeBlock, .blockQuote: true
+                      default: false
+                      }
+                  }), let link = run.link, let url = webURL(link.absoluteString) else { continue }
+            // HN notes may list their discussion first; prefer the link explicitly labelled 原文.
+            let label = String(markdown[run.range].characters).trimmingCharacters(in: .whitespaces)
+            if ["原文", "原文链接"].contains(label) { return url }
+            if firstURL == nil { firstURL = url }
+        }
+        return firstURL
     }
 
     private static func heading(in lines: ArraySlice<String>) -> String? {

@@ -53,6 +53,7 @@ struct KnowledgeLibraryModelChecks {
         try await sectionBadges()
         try await rootFilesAreIgnored()
         let regressions: [(String, @MainActor () async throws -> Void)] = [
+            ("article original websites", articleOriginalWebsites),
             ("directory exclusions persist and stay within their vault", directoryExclusions),
             ("uncached article moves", uncachedArticleMoves),
             ("replacement root state", replacementRootState),
@@ -73,6 +74,83 @@ struct KnowledgeLibraryModelChecks {
         }
         precondition(failures.isEmpty, failures.joined(separator: "\n"))
         print("PASS independent knowledge library: no VS Code dependency, folder baseline, diff/review, stale-action guard, invalid selection, stop and restoration")
+    }
+
+    private static func articleOriginalWebsites() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("knowledge-article-websites-\(UUID())")
+            .resolvingSymlinksInPath()
+        let suite = "codexbar-article-websites-\(UUID())"
+        let date = ISO8601DateFormatter().date(from: "2026-09-13T12:00:00+08:00")!
+        let originalURL = URL(string: "https://github.com/example/janas")!
+        let revisedURL = URL(string: "https://example.com/revised-original")!
+        var openedURLs: [URL] = []
+        var canOpen = true
+        let model = KnowledgeLibraryModel(defaultsSuiteName: suite, registryURL: root.appendingPathComponent("missing.json"),
+                                          now: { date }, openArticleURL: { url in
+            openedURLs.append(url)
+            return canOpen
+        })
+        defer {
+            model.stop()
+            try? FileManager.default.removeItem(at: root)
+            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".obsidian"), withIntermediateDirectories: true)
+        let path = "Hacker News/Janas.md"
+        let original = articleText("Janas", collected: "2026-09-13")
+            .replacingOccurrences(of: "type: article", with: "type: article\nsource: Hacker News\noriginal_url: \(originalURL.absoluteString)\nhn_url: https://news.ycombinator.com/item?id=123")
+        try writeNote(original, path: path, root: root)
+        try writeNote(articleText("No original", collected: "2026-09-13"), path: "Hacker News/Missing.md", root: root)
+        let invalid = articleText("Unsafe original", collected: "2026-09-13")
+            .replacingOccurrences(of: "type: article", with: "type: article\noriginal_url: file:///tmp/article.html")
+        try writeNote(invalid, path: "Hacker News/Invalid.md", root: root)
+        await model.selectVault(root)
+        guard let article = model.todayArticles.first(where: { $0.path == path }) else {
+            throw stateError("The original website fixture did not load")
+        }
+        await model.openArticleNow(article)
+        try requireState(openedURLs == [originalURL] && model.message == nil,
+                         "An article must open its original website, not the local note or Hacker News discussion")
+        for missingPath in ["Hacker News/Missing.md", "Hacker News/Invalid.md"] {
+            guard let missing = model.todayArticles.first(where: { $0.path == missingPath }) else {
+                throw stateError("An article without a usable source disappeared from the list")
+            }
+            await model.openArticleNow(missing)
+            try requireState(openedURLs == [originalURL] && model.message?.contains("原文链接") == true,
+                             "Missing or invalid source URLs must explain the problem without opening anything")
+        }
+        canOpen = false
+        await model.openArticleNow(article)
+        try requireState(openedURLs == [originalURL, originalURL] && model.message?.contains("默认浏览器") == true,
+                         "Browser opening failure must surface a relevant message")
+        canOpen = true
+        await model.openArticleNow(article)
+        try requireState(openedURLs == [originalURL, originalURL, originalURL] && model.message == nil,
+                         "Opening an article successfully must clear the previous opening error")
+        try writeNote(original.replacingOccurrences(of: originalURL.absoluteString, with: revisedURL.absoluteString),
+                      path: path, root: root)
+        await model.refreshNow()
+        await model.openArticleNow(article)
+        try requireState(openedURLs.last == revisedURL && openedURLs.count == 4,
+                         "A click holding an older article value must use the refreshed original URL")
+        try writeNote(original.replacingOccurrences(of: "collected: '2026-09-13'", with: "collected: '2026-09-13T11:00:00+08:00'"),
+                      path: path, root: root)
+        await model.refreshNow()
+        await model.openArticleNow(article)
+        try requireState(openedURLs.count == 4 && model.message?.contains("已删除、移动") == true,
+                         "A stale click must not open a replacement article with a different collection identity")
+        guard let current = model.todayArticles.first(where: { $0.path == path }) else {
+            throw stateError("The replacement article did not load")
+        }
+        try FileManager.default.removeItem(at: root.appendingPathComponent(path))
+        await model.openArticleNow(current)
+        try requireState(openedURLs.count == 4 && model.message?.contains("已删除、移动") == true,
+                         "A deleted local article must not open its cached original website before a refresh")
+        await model.refreshNow()
+        await model.openArticleNow(current)
+        try requireState(openedURLs.count == 4 && model.message?.contains("已删除、移动") == true,
+                         "An article removed from the current index must not open its old original website")
+        print("PASS article websites: original URL, missing/invalid links, browser failure, refreshed URL, stale and deleted articles")
     }
 
     private static func directoryExclusions() async throws {

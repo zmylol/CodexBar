@@ -28,6 +28,7 @@ final class KnowledgeLibraryModel: ObservableObject {
     private var displayedDay: Date?
     private var dayTask: Task<Void, Never>?
     private let now: () -> Date
+    private let openArticleURL: (URL) -> Bool
     private let defaults: UserDefaults
     private let registryURL: URL?
     private var monitor: KnowledgeFolderMonitor?
@@ -44,10 +45,12 @@ final class KnowledgeLibraryModel: ObservableObject {
         knownDirectoryNames.union(excludedDirectories).sorted()
     }
 
-    init(defaultsSuiteName: String? = nil, registryURL: URL? = nil, now: @escaping () -> Date = { Date() }) {
+    init(defaultsSuiteName: String? = nil, registryURL: URL? = nil, now: @escaping () -> Date = { Date() },
+         openArticleURL: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }) {
         defaults = defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.registryURL = registryURL
         self.now = now
+        self.openArticleURL = openArticleURL
         receiptDates = defaults.dictionary(forKey: Self.receiptKey) as? [String: Double] ?? [:]
     }
 
@@ -391,16 +394,24 @@ final class KnowledgeLibraryModel: ObservableObject {
     func openArticle(_ article: KnowledgeArticle) {
         guard let worker else { return }
         Task { [weak self] in
-            let url = await worker.openArticleURL(article)
             guard let self, self.worker === worker else { return }
-            guard let url else {
-                message = "这篇文章已删除、移动或不在所选知识库中，无法打开。"
-                return
-            }
-            if !NSWorkspace.shared.open(url) {
-                message = "无法打开 Obsidian，请确认已经安装并打开过这个知识库。"
-            }
+            await openArticleNow(article)
         }
+    }
+
+    func openArticleNow(_ article: KnowledgeArticle) async {
+        guard let worker else { return }
+        let current = await worker.articleToOpen(article)
+        guard !Task.isCancelled, self.worker === worker else { return }
+        guard let current else {
+            message = "这篇文章已删除、移动或不在所选知识库中，无法打开。"
+            return
+        }
+        guard let url = current.sourceURL else {
+            message = "这篇文章没有有效的原文链接，暂时无法打开原文网站。"
+            return
+        }
+        message = openArticleURL(url) ? nil : "无法在默认浏览器打开原文网站，请检查默认浏览器设置后重试。"
     }
 
     func openCodex() {
@@ -534,12 +545,12 @@ private actor KnowledgeLibraryWorker {
         return ledger.vault.openURL(notePath: relative)
     }
 
-    func openArticleURL(_ article: KnowledgeArticle) -> URL? {
+    func articleToOpen(_ article: KnowledgeArticle) -> KnowledgeArticle? {
         guard let current = articles.first(where: { $0.id == article.id && $0.collectedAt == article.collectedAt }),
               let relative = ledger.vault.notePath(current.path, cwd: ledger.vault.rootPath) else { return nil }
         let file = URL(fileURLWithPath: ledger.vault.rootPath).appendingPathComponent(relative)
         guard (try? file.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { return nil }
-        return ledger.vault.openURL(notePath: relative)
+        return current
     }
 
     private func update() -> KnowledgeLibraryUpdate {

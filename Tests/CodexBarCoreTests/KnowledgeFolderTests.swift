@@ -119,6 +119,62 @@ func knowledgeFolderTestCases() -> [CodexBarTestCase] {
                        "published date or filesystem timestamp replaced the collection date")
             try expect(article.summary == "文章介绍如何记录 Agent 的执行过程，让团队能够回溯决策并复用会话中的经验。",
                        "first capture did not expose the article's own summary")
+            try expect(article.sourceURL?.absoluteString == "https://example.com/agent-memory",
+                       "article index discarded its original source URL")
+        },
+        CodexBarTestCase(name: "knowledge folder resolves original article links without guessing from unrelated links") {
+            let root = try knowledgeFolderFixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let cases: [(fields: String, body: String, expected: String?)] = [
+                ("source: Hacker News\noriginal_url: 'https://github.com/example/project'\nhn_item_url: https://news.ycombinator.com/item?id=1",
+                 "## 原文链接\n- [Hacker News 条目](https://news.ycombinator.com/item?id=1)\n- [原文](https://github.com/example/project)",
+                 "https://github.com/example/project"),
+                ("source: https://example.com/aggregator\noriginal_url: https://example.com/original?a=1&b=2#result",
+                 "## 原文\n[旧链接](https://example.com/old)", "https://example.com/original?a=1&b=2#result"),
+                ("source: 'https://example.com/article#section' # 来源", "", "https://example.com/article#section"),
+                ("source: \"http://example.com/article\"", "", "http://example.com/article"),
+                ("source: Meta 官方", "## 摘要\n[相关报道](https://example.com/related)\n## 原文\n- [官方发布](https://example.com/original)",
+                 "https://example.com/original"),
+                ("source: https://example.com/aggregator", "## 原文链接\n- [Hacker News 条目](https://news.ycombinator.com/item?id=1)\n- [原文](https://example.com/original)",
+                 "https://example.com/original"),
+                ("source: Publisher", "## 原文\n[官方][original]\n## 我的记录\n记录\n\n[original]: https://example.com/reference", "https://example.com/reference"),
+                ("source: Publisher", "## 原文\n<!-- [隐藏链接](https://example.com/hidden) -->\n```markdown\n[代码链接](https://example.com/code)\n```\n![图片](https://example.com/image.png)\n[原文](https://example.com/article_(version))",
+                 "https://example.com/article_(version)"),
+                ("source: Publisher", "## 原文\n待补充\n## 相关链接\n[相关](https://example.com/related)", nil),
+                ("source: Publisher", "```markdown\n## 原文\n[示例](https://example.com/example)\n```\n<!--\n## 原文\n[注释](https://example.com/comment)\n-->", nil),
+                ("source: Publisher", "## 摘要\n[相关](https://example.com/related)", nil),
+                ("", "", nil)
+            ]
+            for (index, item) in cases.enumerated() {
+                let content = "---\ntype: article\ncollected: 2026-09-11\n\(item.fields)\n---\n# Article\n\(item.body)"
+                try writeFolderNote(content, at: "Notes/Source-\(index).md", root: root)
+            }
+            let snapshot = try await folderTracker(root).capture()
+            try expect(snapshot.articles.count == cases.count, "source parsing hid an otherwise valid article")
+            for (index, item) in cases.enumerated() {
+                let article = try require(snapshot.articles.first { $0.path == "Notes/Source-\(index).md" }, "missing article")
+                try expect(article.sourceURL?.absoluteString == item.expected, "incorrect original link for case \(index): \(String(describing: article.sourceURL))")
+            }
+        },
+        CodexBarTestCase(name: "knowledge folder rejects invalid and nonweb article sources and refreshes changed links") {
+            let root = try knowledgeFolderFixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let invalid = ["javascript:alert(1)", "file:///tmp/note.md", "obsidian://open?vault=Test", "https://", "https:article",
+                           "/relative/article", "https://example.com/a b", "https://example.com/\u{0007}", "Publisher"]
+            for (index, value) in invalid.enumerated() {
+                let quoted = String(decoding: try JSONEncoder().encode(value), as: UTF8.self)
+                try writeFolderNote("---\ntype: article\ncollected: 2026-09-11\noriginal_url: \(quoted)\nsource: \(quoted)\n---\n# Article",
+                                    at: "Notes/Invalid-\(index).md", root: root)
+            }
+            let tracker = folderTracker(root)
+            let snapshot = try await tracker.capture()
+            try expect(snapshot.articles.count == invalid.count && snapshot.articles.allSatisfy { $0.sourceURL == nil },
+                       "invalid sources opened a different application or removed articles")
+            let revised = "---\ntype: article\ncollected: 2026-09-11\nsource: https://example.com/corrected\n---\n# Article"
+            try writeFolderNote(revised, at: "Notes/Invalid-0.md", root: root)
+            let refreshed = try await tracker.capture()
+            try expect(refreshed.articles.first { $0.path == "Notes/Invalid-0.md" }?.sourceURL?.absoluteString == "https://example.com/corrected",
+                       "refresh retained a stale source URL")
         },
         CodexBarTestCase(name: "knowledge folder leaves missing or empty article summaries absent") {
             let root = try knowledgeFolderFixture()
