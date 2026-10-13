@@ -19,6 +19,7 @@ struct TaskListView: View {
     let onTaskPositionChanged: (VSCodeTaskRow, CGFloat) -> Void
     private let onDismissTaskDetail: () -> Void
     let onKnowledgeRequested: () -> Void
+    let onSizeSettingsRequested: () -> Void
 
     init(
         model: CodexBarAppModel,
@@ -27,7 +28,8 @@ struct TaskListView: View {
         onTaskDetailRequested: @escaping (VSCodeTaskRow, CGFloat) -> Void = { _, _ in },
         onTaskPositionChanged: @escaping (VSCodeTaskRow, CGFloat) -> Void = { _, _ in },
         onDismissTaskDetail: @escaping () -> Void = {},
-        onKnowledgeRequested: @escaping () -> Void = {}
+        onKnowledgeRequested: @escaping () -> Void = {},
+        onSizeSettingsRequested: @escaping () -> Void = {}
     ) {
         self.model = model
         self.store = model.store
@@ -40,6 +42,7 @@ struct TaskListView: View {
         self.onTaskPositionChanged = onTaskPositionChanged
         self.onDismissTaskDetail = onDismissTaskDetail
         self.onKnowledgeRequested = onKnowledgeRequested
+        self.onSizeSettingsRequested = onSizeSettingsRequested
     }
 
     var body: some View {
@@ -144,6 +147,7 @@ struct TaskListView: View {
                 Button("清除已读", action: model.clearRead)
                     .disabled(!model.visibleTasks.contains { $0.status == .ready && !$0.isUnread })
                 Button("清除 7 天前不可匹配任务", action: model.clearOldUnmatchedTasks)
+                Button("界面大小…", action: onSizeSettingsRequested)
                 Picker("显示模式", selection: Binding(
                     get: { model.panelDisplayMode },
                     set: { model.setPanelDisplayMode($0) }

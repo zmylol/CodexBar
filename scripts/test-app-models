@@ -17,6 +17,12 @@ swift_flags=(-O -swift-version 6 -target "$(uname -m)-apple-macosx13.0" -parse-a
 core_objects=("$build_dir"/CodexBarCore.build/*.o)
 
 /usr/bin/swiftc "${swift_flags[@]}" "${core_objects[@]}" \
+    Sources/CodexBarApp/PanelSizePreferences.swift \
+    Tests/CodexBarAppTests/PanelSizePreferencesChecks.swift \
+    -o "$check_dir/panel-size-check"
+"$check_dir/panel-size-check"
+
+/usr/bin/swiftc "${swift_flags[@]}" "${core_objects[@]}" \
     Sources/CodexBarApp/RuntimeEventCoordinator.swift \
     Tests/CodexBarAppTests/RuntimeEventCoordinatorChecks.swift \
     -o "$check_dir/runtime-events-check"

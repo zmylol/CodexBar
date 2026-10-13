@@ -229,6 +229,88 @@ func panelLayoutTestCases() -> [CodexBarTestCase] {
             try expect(movedFrame.maxX == screen.maxX, "panel stayed beyond the screen right edge")
             try expect(movedFrame.minY == screen.minY, "panel did not stay within the new screen")
         },
+        CodexBarTestCase(name: "preserves a custom scrolling size as the task list changes") {
+            let currentFrame = CGRect(x: 300, y: 500, width: 126, height: 168)
+            let screen = CGRect(x: 18, y: 42, width: 1164, height: 840)
+            let expected = CGRect(x: 300, y: 348, width: 240, height: 320)
+            let taskFrame = CodexBarPanelLayout.panelFrame(
+                currentFrame: currentFrame, taskCount: 1, noticeVisible: false,
+                displayMode: .scrolling, visibleFrame: screen, width: 240, preferredHeight: 320
+            )
+            let mixedFrame = CodexBarPanelLayout.panelFrame(
+                currentFrame: taskFrame, rowHeights: [40, 28, 40, 28, 40, 28], noticeVisible: false,
+                displayMode: .scrolling, visibleFrame: screen, width: 240, preferredHeight: 320
+            )
+            try expect(taskFrame == expected, "custom size moved the top edge or horizontal position")
+            try expect(mixedFrame == expected, "a refreshed task list discarded the custom scrolling size")
+        },
+        CodexBarTestCase(name: "expanded mode retains custom width and sizes height from its content") {
+            let currentFrame = CGRect(x: 300, y: 500, width: 240, height: 168)
+            let screen = CGRect(x: 18, y: 42, width: 1164, height: 840)
+            let taskFrame = CodexBarPanelLayout.panelFrame(
+                currentFrame: currentFrame, taskCount: 12, noticeVisible: false,
+                displayMode: .expanded, visibleFrame: screen, width: 240, preferredHeight: 100
+            )
+            let mixedFrame = CodexBarPanelLayout.panelFrame(
+                currentFrame: currentFrame, rowHeights: [40, 28, 40, 28, 40, 28], noticeVisible: true,
+                displayMode: .expanded, visibleFrame: screen, width: 240, preferredHeight: 100
+            )
+            try expect(taskFrame.width == 240 && taskFrame.height == 364,
+                       "expanded tasks used the scrolling height override")
+            try expect(mixedFrame.width == 240 && mixedFrame.height == 316,
+                       "expanded mixed rows did not include all content and the notice")
+        },
+        CodexBarTestCase(name: "bounds custom panel dimensions and reserves notice space") {
+            let currentFrame = CGRect(x: 300, y: 300, width: 126, height: 1400)
+            let screen = CGRect(x: 0, y: 0, width: 2000, height: 2000)
+            let minimum = CodexBarPanelLayout.panelFrame(
+                currentFrame: currentFrame, rowHeights: [40], noticeVisible: false,
+                displayMode: .scrolling, visibleFrame: screen, width: -20, preferredHeight: -20
+            )
+            let maximum = CodexBarPanelLayout.panelFrame(
+                currentFrame: currentFrame, taskCount: 1, noticeVisible: false,
+                displayMode: .scrolling, visibleFrame: screen, width: 3000, preferredHeight: 3000
+            )
+            let notice = CodexBarPanelLayout.panelFrame(
+                currentFrame: currentFrame, rowHeights: [40], noticeVisible: true,
+                displayMode: .scrolling, visibleFrame: screen, width: 240, preferredHeight: 100
+            )
+            try expect(minimum.size == CGSize(width: 126, height: 84), "minimum usable panel size was lost")
+            try expect(maximum.size == CGSize(width: 480, height: 1200), "custom size exceeded its limits")
+            try expect(notice.height == 168, "the notice consumed the entire custom content area")
+        },
+        CodexBarTestCase(name: "fits custom dimensions onto a smaller screen") {
+            let screen = CGRect(x: -500, y: 24, width: 100, height: 80)
+            let frame = CodexBarPanelLayout.panelFrame(
+                currentFrame: CGRect(x: 900, y: 600, width: 240, height: 320),
+                taskCount: 10, noticeVisible: true, displayMode: .scrolling,
+                visibleFrame: screen, width: 240, preferredHeight: 320
+            )
+            try expect(frame == screen, "custom minimum dimensions overflowed the visible screen")
+            let defaultFrame = CodexBarPanelLayout.panelFrame(
+                currentFrame: frame, rowHeights: [40], noticeVisible: false,
+                displayMode: .scrolling, visibleFrame: screen
+            )
+            try expect(defaultFrame.width == screen.width, "the default width overflowed a narrow screen")
+        },
+        CodexBarTestCase(name: "invalid custom dimensions fall back to automatic compact sizing") {
+            let currentFrame = CGRect(x: 300, y: 500, width: 240, height: 168)
+            let screen = CGRect(x: 18, y: 42, width: 1164, height: 840)
+            for invalid: CGFloat in [.nan, .infinity, -.infinity] {
+                let taskFrame = CodexBarPanelLayout.panelFrame(
+                    currentFrame: currentFrame, taskCount: 4, noticeVisible: false,
+                    displayMode: .scrolling, visibleFrame: screen, width: invalid, preferredHeight: invalid
+                )
+                let mixedFrame = CodexBarPanelLayout.panelFrame(
+                    currentFrame: currentFrame, rowHeights: [40, 28], noticeVisible: false,
+                    displayMode: .scrolling, visibleFrame: screen, width: invalid, preferredHeight: invalid
+                )
+                try expect(taskFrame == CGRect(x: 300, y: 528, width: 126, height: 140),
+                           "invalid task size did not fall back to automatic dimensions")
+                try expect(mixedFrame == CGRect(x: 300, y: 572, width: 126, height: 96),
+                           "invalid mixed-row size did not fall back to automatic dimensions")
+            }
+        },
         CodexBarTestCase(name: "places hover details beside the matching compact row") {
             let panelFrame = CGRect(
                 x: 900,

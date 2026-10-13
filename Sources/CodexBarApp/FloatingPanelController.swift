@@ -57,6 +57,8 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     private let detailPanel: NSPanel
     private let knowledgePanel: NSPanel
     private let defaults: UserDefaults
+    private let sizePreferences: PanelSizePreferences
+    private var sizeSettingsWindow: NSWindow?
     private var detailHideTask: Task<Void, Never>?
     private var knowledgeHideGeneration = UUID()
     private var isKnowledgeHovered = false
@@ -73,19 +75,27 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
     init(model: CodexBarAppModel, defaults: UserDefaults = .standard) {
         self.model = model
         self.defaults = defaults
-        let initialHeight = CodexBarPanelLayout.height(
+        let sizePreferences = PanelSizePreferences(defaults: defaults)
+        self.sizePreferences = sizePreferences
+        let savedOrigin = NSPoint(
+            x: defaults.double(forKey: DefaultsKey.originX),
+            y: defaults.double(forKey: DefaultsKey.originY)
+        )
+        let initialScreen = NSScreen.screens.first { $0.visibleFrame.contains(savedOrigin) } ?? NSScreen.main
+        let visibleFrame = (initialScreen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900))
+            .insetBy(dx: Metrics.margin, dy: Metrics.margin)
+        // Restore the saved origin using the final size, so custom heights do not shift the top edge.
+        let initialFrame = CodexBarPanelLayout.panelFrame(
+            currentFrame: .zero,
             rowHeights: model.visibleRowHeights,
-            noticeVisible: false,
+            noticeVisible: model.notice != nil,
             displayMode: model.panelDisplayMode,
-            maximumHeight: max(0, (NSScreen.main?.visibleFrame.height ?? 900) - 2 * Metrics.margin)
+            visibleFrame: visibleFrame,
+            width: sizePreferences.width,
+            preferredHeight: sizePreferences.height
         )
         self.panel = CodexBarPanel(
-            contentRect: NSRect(
-                x: 0,
-                y: 0,
-                width: CodexBarPanelLayout.compactWidth,
-                height: initialHeight
-            ),
+            contentRect: NSRect(origin: .zero, size: initialFrame.size),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -145,6 +155,9 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
             },
             onKnowledgeRequested: { [weak self] in
                 self?.showKnowledgeLibrary()
+            },
+            onSizeSettingsRequested: { [weak self] in
+                self?.showSizeSettings()
             }
         ))
         hostingView.sizingOptions = []
@@ -186,6 +199,11 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
             self?.isKnowledgeKeyboardActive = true
             self?.cancelKnowledgeHide()
         }
+        sizePreferences.onChange = { [weak self] in
+            guard let self else { return }
+            self.updateHeight(taskCount: self.model.visibleRows.count,
+                              noticeVisible: self.model.notice != nil, animated: false)
+        }
         restorePosition()
         updateHeight(
             taskCount: model.visibleRows.count,
@@ -202,6 +220,31 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
 
     func show() {
         panel.orderFrontRegardless()
+    }
+
+    private func showSizeSettings() {
+        hideTaskDetail(clearTriggers: true)
+        NSApp.activate(ignoringOtherApps: true)
+        if let sizeSettingsWindow, sizeSettingsWindow.isVisible {
+            sizeSettingsWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+        let window = sizeSettingsWindow ?? NSWindow(
+            contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false
+        )
+        window.title = "CodexBar 界面大小"
+        window.isReleasedWhenClosed = false
+        window.level = .floating
+        let view = PanelSizeSettingsView(
+            preferences: sizePreferences, model: model, currentHeight: panel.frame.height,
+            onClose: { [weak window] in window?.close() }
+        )
+        let host = NSHostingView(rootView: view)
+        window.contentView = host
+        window.setContentSize(host.fittingSize)
+        if sizeSettingsWindow == nil { window.center() }
+        sizeSettingsWindow = window
+        window.makeKeyAndOrderFront(nil)
     }
 
     private func showKnowledgeLibrary() {
@@ -316,7 +359,9 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
             rowHeights: model.visibleRowHeights,
             noticeVisible: noticeVisible,
             displayMode: model.panelDisplayMode,
-            visibleFrame: visibleFrame
+            visibleFrame: visibleFrame,
+            width: sizePreferences.width,
+            preferredHeight: sizePreferences.height
         )
         guard frame != panel.frame else {
             if knowledgePanel.isVisible { updateKnowledgeFrame() }

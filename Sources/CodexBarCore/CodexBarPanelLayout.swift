@@ -16,6 +16,9 @@ public enum CodexBarPanelLayout {
     public static let cornerRadius: CGFloat = 11
     public static let emptyHeight: CGFloat = 56
     public static let noticeHeight: CGFloat = 84
+    public static let maximumWidth: CGFloat = 480
+    public static let minimumHeight: CGFloat = headerHeight + emptyHeight
+    public static let maximumHeight: CGFloat = 1200
     public static let maximumRows = 5
     public static let defaultDetailHeight: CGFloat = 520
 
@@ -76,7 +79,9 @@ public enum CodexBarPanelLayout {
         taskCount: Int,
         noticeVisible: Bool,
         displayMode: CodexBarPanelDisplayMode,
-        visibleFrame: CGRect
+        visibleFrame: CGRect,
+        width: CGFloat = compactWidth,
+        preferredHeight: CGFloat? = nil
     ) -> CGRect {
         let height = height(
             taskCount: taskCount,
@@ -84,7 +89,14 @@ public enum CodexBarPanelLayout {
             displayMode: displayMode,
             maximumHeight: visibleFrame.height
         )
-        return panelFrame(currentFrame: currentFrame, height: height, visibleFrame: visibleFrame)
+        return panelFrame(
+            currentFrame: currentFrame,
+            height: height,
+            visibleFrame: visibleFrame,
+            width: width,
+            preferredHeight: displayMode == .scrolling ? preferredHeight : nil,
+            noticeVisible: noticeVisible
+        )
     }
 
     public static func panelFrame(
@@ -92,7 +104,9 @@ public enum CodexBarPanelLayout {
         rowHeights: [CGFloat],
         noticeVisible: Bool,
         displayMode: CodexBarPanelDisplayMode,
-        visibleFrame: CGRect
+        visibleFrame: CGRect,
+        width: CGFloat = compactWidth,
+        preferredHeight: CGFloat? = nil
     ) -> CGRect {
         let height = height(
             rowHeights: rowHeights,
@@ -100,19 +114,37 @@ public enum CodexBarPanelLayout {
             displayMode: displayMode,
             maximumHeight: visibleFrame.height
         )
-        return panelFrame(currentFrame: currentFrame, height: height, visibleFrame: visibleFrame)
+        return panelFrame(
+            currentFrame: currentFrame,
+            height: height,
+            visibleFrame: visibleFrame,
+            width: width,
+            preferredHeight: displayMode == .scrolling ? preferredHeight : nil,
+            noticeVisible: noticeVisible
+        )
     }
 
     private static func panelFrame(
         currentFrame: CGRect,
         height: CGFloat,
-        visibleFrame: CGRect
+        visibleFrame: CGRect,
+        width: CGFloat,
+        preferredHeight: CGFloat?,
+        noticeVisible: Bool
     ) -> CGRect {
-        let maximumX = max(visibleFrame.minX, visibleFrame.maxX - compactWidth)
-        let maximumY = max(visibleFrame.minY, visibleFrame.maxY - height)
+        let requestedWidth = width.isFinite ? width : compactWidth
+        let boundedWidth = min(max(requestedWidth, compactWidth), maximumWidth, max(visibleFrame.width, 0))
+        var boundedHeight = height
+        if let preferredHeight, preferredHeight.isFinite {
+            let minimumCustomHeight = minimumHeight + (noticeVisible ? noticeHeight : 0)
+            boundedHeight = min(max(preferredHeight, minimumCustomHeight), maximumHeight)
+        }
+        boundedHeight = min(max(boundedHeight, 0), max(visibleFrame.height, 0))
+        let maximumX = max(visibleFrame.minX, visibleFrame.maxX - boundedWidth)
+        let maximumY = max(visibleFrame.minY, visibleFrame.maxY - boundedHeight)
         let x = min(max(currentFrame.minX, visibleFrame.minX), maximumX)
-        let y = min(max(currentFrame.maxY - height, visibleFrame.minY), maximumY)
-        return CGRect(x: x, y: y, width: compactWidth, height: height)
+        let y = min(max(currentFrame.maxY - boundedHeight, visibleFrame.minY), maximumY)
+        return CGRect(x: x, y: y, width: boundedWidth, height: boundedHeight)
     }
 
     public static func detailFrame(
